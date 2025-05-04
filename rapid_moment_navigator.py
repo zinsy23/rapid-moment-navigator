@@ -51,8 +51,11 @@ class RapidMomentNavigator:
         self.results_text.tag_configure("timecode", foreground="blue", underline=True)
         self.results_text.tag_configure("file_header", foreground="green", font=("TkDefaultFont", 10, "bold"))
         
-        # Explicitly bind the tag with our click handler
-        self.results_text.tag_bind("timecode", "<ButtonRelease-1>", self.on_timecode_click)
+        # Store tag information for click handling
+        self.tag_mapping = {}
+        
+        # Bind click events to the entire text widget
+        self.results_text.bind("<ButtonRelease-1>", self.on_text_click)
         
         # Make the cursor change to a hand when hovering over timecodes
         self.results_text.tag_bind("timecode", "<Enter>", lambda e: self.results_text.config(cursor="hand2"))
@@ -134,6 +137,7 @@ class RapidMomentNavigator:
         self.results_text.config(state="normal")
         self.results_text.delete(1.0, tk.END)
         self.search_results = []
+        self.tag_mapping = {}
         
         # Start search in a separate thread to keep UI responsive
         threading.Thread(target=self._search_thread, args=(keyword, selected_show)).start()
@@ -189,7 +193,8 @@ class RapidMomentNavigator:
                             'start_time': start_time,
                             'end_time': end_time,
                             'text': text,
-                            'mpc_start_time': mpc_time_format
+                            'mpc_start_time': mpc_time_format,
+                            'clean_text': clean_text
                         }
                         file_results.append(result)
                         self.search_results.append(result)
@@ -217,46 +222,56 @@ class RapidMomentNavigator:
         
         # Add each result
         for result in file_results:
-            # Display the timecode and text
-            tag_index = self.results_text.index(tk.END)
-            self.results_text.insert(tk.END, f"{result['start_time']} --> {result['end_time']}\n", "timecode")
+            # Get current position for tagging
+            start_pos = self.results_text.index(tk.END)
             
-            # Store the result index with the tag
-            result['tag_index'] = tag_index
+            # Insert the timecode as a clickable tag
+            timecode_text = f"{result['start_time']} --> {result['end_time']}"
+            self.results_text.insert(tk.END, timecode_text, "timecode")
             
-            # Display the text without HTML tags
-            clean_text = re.sub(r'<[^>]+>', '', result['text'])
-            self.results_text.insert(tk.END, f"{clean_text}\n\n")
+            # Get ending position of the inserted tag
+            end_pos = self.results_text.index(tk.END)
+            
+            # Store the tag range with the result for click handling
+            tag_id = f"timecode-{len(self.tag_mapping)}"
+            self.results_text.tag_add(tag_id, start_pos, end_pos)
+            self.tag_mapping[tag_id] = result
+            
+            # Insert the rest of the text
+            self.results_text.insert(tk.END, "\n")
+            self.results_text.insert(tk.END, f"{result['clean_text']}\n\n")
         
         self.results_text.config(state="disabled")
     
-    def on_timecode_click(self, event):
-        """Handle click on a timecode to play the video at that time"""
-        # Get the index of the clicked text
+    def on_text_click(self, event):
+        """Handle click events anywhere in the text widget"""
+        # Get click position
         index = self.results_text.index(f"@{event.x},{event.y}")
         
-        # Find which result was clicked by comparing tag positions
-        clicked_result = None
-        for result in self.search_results:
-            if 'tag_index' in result:
-                tag_start = result['tag_index']
-                tag_end = self.results_text.index(f"{tag_start} lineend")
+        # Check if the click is on a timecode tag
+        for tag_id, result in self.tag_mapping.items():
+            tag_ranges = self.results_text.tag_ranges(tag_id)
+            if tag_ranges:  # Check if the tag exists
+                start = tag_ranges[0]
+                end = tag_ranges[1]
                 
-                # Check if the click was between tag start and end
-                if self.results_text.compare(tag_start, "<=", index) and self.results_text.compare(index, "<=", tag_end):
-                    clicked_result = result
-                    break
+                # Check if the click is within the tag range
+                if self.results_text.compare(start, "<=", index) and self.results_text.compare(index, "<", end):
+                    self._handle_timecode_click(result)
+                    return
         
-        if clicked_result:
-            subtitle_file = clicked_result['file']
-            if subtitle_file in self.subtitle_to_video_map:
-                video_file = self.subtitle_to_video_map[subtitle_file]
-                self.play_video(video_file, clicked_result['mpc_start_time'])
-                self.status_var.set(f"Opening {os.path.basename(video_file)} at {clicked_result['mpc_start_time']}")
-            else:
-                self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
+        # If we get here, the click wasn't on a timecode
+        pass
+    
+    def _handle_timecode_click(self, result):
+        """Process a click on a timecode tag"""
+        subtitle_file = result['file']
+        if subtitle_file in self.subtitle_to_video_map:
+            video_file = self.subtitle_to_video_map[subtitle_file]
+            self.play_video(video_file, result['mpc_start_time'])
+            self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['mpc_start_time']}")
         else:
-            self.status_var.set("Could not determine which result was clicked")
+            self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
     
     def play_video(self, video_file, start_time):
         """Launch Media Player Classic with the video at the specified time"""
@@ -286,7 +301,7 @@ class RapidMomentNavigator:
             print(f"Executing command: {command}")
             
             # Use subprocess directly without shell=True for better security
-            subprocess.Popen(command, shell=False)
+            subprocess.Popen(command)
             
         except Exception as e:
             self.status_var.set(f"Error launching Media Player Classic: {e}")
