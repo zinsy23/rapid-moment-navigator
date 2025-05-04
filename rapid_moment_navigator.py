@@ -137,12 +137,33 @@ class RapidMomentNavigator:
                 if os.path.exists(subtitle_path):
                     subtitle_files.extend(glob.glob(os.path.join(subtitle_path, f'*{ext}')))
             
-            # Find all video files
+            # Find all video files - handle different directory structures
             video_files = []
-            for season_dir in [d for d in os.listdir(os.path.join(show)) if d.startswith('Season')]:
+            
+            # Handle "Season X" folders (Mr. Robot, Silicon Valley)
+            season_dirs = [d for d in os.listdir(os.path.join(show)) if d.startswith('Season')]
+            for season_dir in season_dirs:
                 season_path = os.path.join(show, season_dir)
                 if os.path.exists(season_path):
                     video_files.extend(glob.glob(os.path.join(season_path, '*.mp4')))
+            
+            # Handle "SXX" folders (The Big Bang Theory) with possible disc subfolders
+            s_dirs = [d for d in os.listdir(os.path.join(show)) if d.startswith('S') and len(d) <= 3]
+            for s_dir in s_dirs:
+                s_path = os.path.join(show, s_dir)
+                
+                # Check for disc subfolders (D1, D2, D3...)
+                if os.path.exists(s_path):
+                    # First check for MP4s directly in season folder
+                    video_files.extend(glob.glob(os.path.join(s_path, '*.mp4')))
+                    
+                    # Then check for disc subfolders
+                    for item in os.listdir(s_path):
+                        if item.startswith('D') and os.path.isdir(os.path.join(s_path, item)):
+                            disc_path = os.path.join(s_path, item)
+                            video_files.extend(glob.glob(os.path.join(disc_path, '*.mp4')))
+            
+            self.debug_print(f"Found {len(video_files)} video files for {show}")
             
             # Map subtitles to videos based on filename
             for subtitle_file in subtitle_files:
@@ -161,6 +182,7 @@ class RapidMomentNavigator:
                     
                     if subtitle_name == video_name or subtitle_basename.startswith(video_name):
                         self.subtitle_to_video_map[subtitle_file] = video_file
+                        self.debug_print(f"Mapped: {subtitle_basename} -> {video_basename}")
                         break
         
         self.debug_print(f"Mapped {len(self.subtitle_to_video_map)} subtitle files to videos")
