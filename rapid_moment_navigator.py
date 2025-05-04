@@ -434,7 +434,7 @@ class RapidMomentNavigator:
         if current_pos == 0:
             # Nothing to delete if cursor is at the beginning
             return "break"
-            
+        
         # Find the start of the current word
         word_start = current_pos - 1
         while word_start >= 0 and text[word_start] != ' ':
@@ -443,10 +443,17 @@ class RapidMomentNavigator:
         
         # Delete from word_start to current_pos
         new_text = text[:word_start] + text[current_pos:]
-        self.search_var.set(new_text)
         
-        # Move cursor to the word start
+        # Need to use delete and insert instead of setting StringVar
+        # This avoids issues with selection and cursor position
+        self.search_entry.delete(0, tk.END)
+        self.search_entry.insert(0, new_text)
+        
+        # Move cursor to the word start - must happen after text update
         self.search_entry.icursor(word_start)
+        
+        # Force update
+        self.search_entry.update()
         
         # Prevent the default behavior
         return "break"
