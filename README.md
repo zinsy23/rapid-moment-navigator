@@ -114,3 +114,4 @@ This approach handles various naming conventions and formats automatically.
 ## Future Improvements
 
 - Verify support for other video players and formats in Windows, Mac, and Linux
+- Verify AutoHotkey support in Windows and that it works
