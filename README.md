@@ -110,3 +110,7 @@ This approach handles various naming conventions and formats automatically.
 - The search is case-insensitive
 - HTML tags in subtitles are ignored during both search and display
 - The application supports a wide range of video formats - if MPC-HC can play it, the application can usually handle it 
+
+## Future Improvements
+
+- Verify support for other video players and formats in Windows, Mac, and Linux
