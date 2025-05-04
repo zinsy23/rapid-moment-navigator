@@ -324,7 +324,7 @@ class RapidMomentNavigator:
             abs_video_path = self.get_absolute_path(video_file)
             
             # Construct the command for MPC-HC
-            # MPC-HC accepts the /start parameter in hh:mm:ss format
+            # MPC-HC uses /startpos or /position for timestamp (not /start)
             mpc_path = "C:\\Program Files\\MPC-HC\\mpc-hc64.exe"
             
             # Check if default MPC path exists
@@ -347,12 +347,12 @@ class RapidMomentNavigator:
             if not os.path.exists(mpc_path):
                 self.debug_print("MPC-HC executable not found. Trying with shell=True")
                 # Try with shell=True as a fallback
-                command = f'start "" "C:\\Program Files\\MPC-HC\\mpc-hc64.exe" "{abs_video_path}" /start {start_time}'
+                command = f'start "" "C:\\Program Files\\MPC-HC\\mpc-hc64.exe" "{abs_video_path}" /startpos={start_time}'
                 self.debug_print(f"Shell command: {command}")
                 subprocess.Popen(command, shell=True)
             else:
-                # Construct and execute the command
-                command = [mpc_path, abs_video_path, "/start", start_time]
+                # Construct and execute the command - correct MPC parameter is /startpos=
+                command = [mpc_path, abs_video_path, f"/startpos={start_time}"]
                 self.debug_print(f"Executing command: {command}")
                 
                 # Use subprocess directly without shell=True for better security
@@ -366,7 +366,7 @@ class RapidMomentNavigator:
                 # Try shell=True as a fallback
                 self.debug_print("Trying alternate launch method with shell=True")
                 abs_video_path = self.get_absolute_path(video_file)
-                command = f'start "" "C:\\Program Files\\MPC-HC\\mpc-hc64.exe" "{abs_video_path}" /start {start_time}'
+                command = f'start "" "C:\\Program Files\\MPC-HC\\mpc-hc64.exe" "{abs_video_path}" /startpos={start_time}'
                 subprocess.Popen(command, shell=True)
             except Exception as e2:
                 self.debug_print(f"Error with alternate launch method: {str(e2)}")
