@@ -58,7 +58,8 @@ class RapidMomentNavigator:
         self.search_entry = ttk.Entry(self.search_frame, textvariable=self.search_var, width=30)
         self.search_entry.pack(side="left", padx=5)
         self.search_entry.bind("<Return>", self.search_subtitles)
-        # Add Ctrl+Backspace functionality to delete whole words
+        
+        # Use a direct binding approach for Ctrl+Backspace without KeyRelease complication
         self.search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
         
         self.search_button = ttk.Button(self.search_frame, text="Find All", command=self.search_subtitles)
@@ -427,33 +428,36 @@ class RapidMomentNavigator:
 
     def _ctrl_backspace_handler(self, event):
         """Handle Ctrl+Backspace to delete the word to the left of cursor"""
-        # Get current text and cursor position
-        text = self.search_var.get()
-        current_pos = self.search_entry.index(tk.INSERT)
+        entry_widget = event.widget
+        
+        # Get the current cursor position
+        current_pos = entry_widget.index(tk.INSERT)
         
         if current_pos == 0:
             # Nothing to delete if cursor is at the beginning
             return "break"
         
+        # Get the current text
+        text = entry_widget.get()
+        
         # Find the start of the current word
         word_start = current_pos - 1
+        
+        # Skip spaces if we're in a space region
+        while word_start >= 0 and text[word_start] == ' ':
+            word_start -= 1
+            
+        # Find the beginning of the word
         while word_start >= 0 and text[word_start] != ' ':
             word_start -= 1
+        
         word_start += 1  # Move past the space or to position 0
         
-        # Delete from word_start to current_pos
-        new_text = text[:word_start] + text[current_pos:]
+        # Delete directly using widget methods (more reliable than manipulating StringVar)
+        entry_widget.delete(word_start, current_pos)
         
-        # Need to use delete and insert instead of setting StringVar
-        # This avoids issues with selection and cursor position
-        self.search_entry.delete(0, tk.END)
-        self.search_entry.insert(0, new_text)
-        
-        # Move cursor to the word start - must happen after text update
-        self.search_entry.icursor(word_start)
-        
-        # Force update
-        self.search_entry.update()
+        # Ensure the widget updates immediately
+        entry_widget.update_idletasks()
         
         # Prevent the default behavior
         return "break"
