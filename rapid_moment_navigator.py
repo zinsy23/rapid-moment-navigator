@@ -130,63 +130,86 @@ class RapidMomentNavigator:
         self.status_var.set("Mapping subtitle files to videos...")
         
         for show in self.show_dropdown['values']:
-            # Find all subtitle files
+            # Find all subtitle files (focus on .srt files)
             subtitle_files = []
-            for ext in ['.srt', '.txt']:
-                subtitle_path = os.path.join(show, 'Subtitles')
-                if os.path.exists(subtitle_path):
-                    subtitle_files.extend(glob.glob(os.path.join(subtitle_path, f'*{ext}')))
+            subtitle_path = os.path.join(show, 'Subtitles')
             
-            # Find all video files - handle different directory structures
+            # Check if there's a dedicated Subtitles folder
+            if os.path.exists(subtitle_path):
+                subtitle_files.extend(glob.glob(os.path.join(subtitle_path, '*.srt')))
+            
+            # Find all video files anywhere in the show directory
             video_files = []
             
-            # Handle "Season X" folders (Mr. Robot, Silicon Valley)
-            season_dirs = [d for d in os.listdir(os.path.join(show)) if d.startswith('Season')]
-            for season_dir in season_dirs:
-                season_path = os.path.join(show, season_dir)
-                if os.path.exists(season_path):
-                    video_files.extend(glob.glob(os.path.join(season_path, '*.mp4')))
+            # Walk through the entire directory structure to find all mp4 files
+            for root, dirs, files in os.walk(os.path.join(show)):
+                for file in files:
+                    if file.endswith('.mp4'):
+                        video_files.append(os.path.join(root, file))
             
-            # Handle "SXX" folders (The Big Bang Theory) with possible disc subfolders
-            s_dirs = [d for d in os.listdir(os.path.join(show)) if d.startswith('S') and len(d) <= 3]
-            for s_dir in s_dirs:
-                s_path = os.path.join(show, s_dir)
-                
-                # Check for disc subfolders (D1, D2, D3...)
-                if os.path.exists(s_path):
-                    # First check for MP4s directly in season folder
-                    video_files.extend(glob.glob(os.path.join(s_path, '*.mp4')))
-                    
-                    # Then check for disc subfolders
-                    for item in os.listdir(s_path):
-                        if item.startswith('D') and os.path.isdir(os.path.join(s_path, item)):
-                            disc_path = os.path.join(s_path, item)
-                            video_files.extend(glob.glob(os.path.join(disc_path, '*.mp4')))
+            self.debug_print(f"Found {len(subtitle_files)} subtitle files and {len(video_files)} video files for {show}")
             
-            self.debug_print(f"Found {len(video_files)} video files for {show}")
-            
-            # Map subtitles to videos based on filename
+            # Map subtitles to videos based on similarity of filenames
             for subtitle_file in subtitle_files:
                 subtitle_basename = os.path.basename(subtitle_file)
                 # Remove extension
                 subtitle_name = os.path.splitext(subtitle_basename)[0]
                 
-                # For SRT files that have .mp4.srt extension, we need to extract the true base name
+                # For SRT files that have .mp4.srt extension, extract true base name
                 if subtitle_name.endswith('.mp4'):
                     subtitle_name = subtitle_name[:-4]  # Remove '.mp4'
                 
-                # Try to find matching video file
+                # Try exact matches first, then partial matches
+                matched = False
+                
+                # First pass: look for exact filename matches (without extensions)
                 for video_file in video_files:
                     video_basename = os.path.basename(video_file)
                     video_name = os.path.splitext(video_basename)[0]
                     
-                    if subtitle_name == video_name or subtitle_basename.startswith(video_name):
+                    if subtitle_name == video_name:
                         self.subtitle_to_video_map[subtitle_file] = video_file
-                        self.debug_print(f"Mapped: {subtitle_basename} -> {video_basename}")
+                        self.debug_print(f"Exact match: {subtitle_basename} -> {video_basename}")
+                        matched = True
                         break
+                
+                # If no exact match, try partial matches
+                if not matched:
+                    # Clean up filenames for better matching
+                    clean_subtitle_name = self._clean_filename(subtitle_name)
+                    
+                    for video_file in video_files:
+                        video_basename = os.path.basename(video_file)
+                        video_name = os.path.splitext(video_basename)[0]
+                        clean_video_name = self._clean_filename(video_name)
+                        
+                        # Check if the cleaned names match or one contains the other
+                        if (clean_subtitle_name == clean_video_name or
+                            clean_subtitle_name in clean_video_name or
+                            clean_video_name in clean_subtitle_name):
+                            self.subtitle_to_video_map[subtitle_file] = video_file
+                            self.debug_print(f"Partial match: {subtitle_basename} -> {video_basename}")
+                            matched = True
+                            break
         
         self.debug_print(f"Mapped {len(self.subtitle_to_video_map)} subtitle files to videos")
         self.status_var.set(f"Ready. Mapped {len(self.subtitle_to_video_map)} subtitle files to videos.")
+    
+    def _clean_filename(self, filename):
+        """Clean a filename to improve matching chances"""
+        # Convert to lowercase
+        filename = filename.lower()
+        # Remove common separators
+        filename = filename.replace('_', ' ').replace('-', ' ').replace('.', ' ')
+        # Remove common words/patterns that might differ between subtitle and video filenames
+        remove_patterns = ['disc', 'season', 'title', 'episode', 's0', 'e0', 'x0']
+        for pattern in remove_patterns:
+            filename = filename.replace(pattern, '')
+        # Remove numbers that might be disc/episode numbers
+        filename = re.sub(r'\b\d{1,2}\b', '', filename)
+        # Remove extra spaces
+        filename = re.sub(r'\s+', ' ', filename).strip()
+        return filename
     
     def search_subtitles(self, event=None):
         """Search for keywords in subtitle files"""
