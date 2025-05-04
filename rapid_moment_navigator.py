@@ -58,6 +58,8 @@ class RapidMomentNavigator:
         self.search_entry = ttk.Entry(self.search_frame, textvariable=self.search_var, width=30)
         self.search_entry.pack(side="left", padx=5)
         self.search_entry.bind("<Return>", self.search_subtitles)
+        # Add Ctrl+Backspace functionality to delete whole words
+        self.search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
         
         self.search_button = ttk.Button(self.search_frame, text="Find All", command=self.search_subtitles)
         self.search_button.pack(side="left", padx=5)
@@ -422,6 +424,32 @@ class RapidMomentNavigator:
                     except Exception as e4:
                         self.debug_print(f"Error opening with default player: {str(e4)}")
                         self.status_var.set(f"Error opening video: {e4}")
+
+    def _ctrl_backspace_handler(self, event):
+        """Handle Ctrl+Backspace to delete the word to the left of cursor"""
+        # Get current text and cursor position
+        text = self.search_var.get()
+        current_pos = self.search_entry.index(tk.INSERT)
+        
+        if current_pos == 0:
+            # Nothing to delete if cursor is at the beginning
+            return "break"
+            
+        # Find the start of the current word
+        word_start = current_pos - 1
+        while word_start >= 0 and text[word_start] != ' ':
+            word_start -= 1
+        word_start += 1  # Move past the space or to position 0
+        
+        # Delete from word_start to current_pos
+        new_text = text[:word_start] + text[current_pos:]
+        self.search_var.set(new_text)
+        
+        # Move cursor to the word start
+        self.search_entry.icursor(word_start)
+        
+        # Prevent the default behavior
+        return "break"
 
 if __name__ == "__main__":
     root = tk.Tk()
