@@ -50,7 +50,13 @@ class RapidMomentNavigator:
         self.results_text.config(state="disabled")
         self.results_text.tag_configure("timecode", foreground="blue", underline=True)
         self.results_text.tag_configure("file_header", foreground="green", font=("TkDefaultFont", 10, "bold"))
-        self.results_text.tag_bind("timecode", "<Button-1>", self.on_timecode_click)
+        
+        # Explicitly bind the tag with our click handler
+        self.results_text.tag_bind("timecode", "<ButtonRelease-1>", self.on_timecode_click)
+        
+        # Make the cursor change to a hand when hovering over timecodes
+        self.results_text.tag_bind("timecode", "<Enter>", lambda e: self.results_text.config(cursor="hand2"))
+        self.results_text.tag_bind("timecode", "<Leave>", lambda e: self.results_text.config(cursor=""))
         
         # Status bar
         self.status_var = tk.StringVar()
@@ -173,6 +179,9 @@ class RapidMomentNavigator:
                         # Convert comma separator to period for MPC
                         mpc_start_time = start_time.replace(',', '.')
                         
+                        # Store result with only the hh:mm:ss part (no milliseconds) for MPC
+                        mpc_time_format = mpc_start_time.split('.')[0]
+                        
                         # Store result
                         result = {
                             'file': subtitle_file,
@@ -180,7 +189,7 @@ class RapidMomentNavigator:
                             'start_time': start_time,
                             'end_time': end_time,
                             'text': text,
-                            'mpc_start_time': mpc_start_time
+                            'mpc_start_time': mpc_time_format
                         }
                         file_results.append(result)
                         self.search_results.append(result)
@@ -192,28 +201,34 @@ class RapidMomentNavigator:
             
             # If there are results for this file, display them in the UI
             if file_results:
-                self.results_text.config(state="normal")
-                
-                # Add file header
-                file_basename = os.path.basename(subtitle_file)
-                self.results_text.insert(tk.END, f"File: {file_basename}\n", "file_header")
-                
-                # Add each result
-                for result in file_results:
-                    # Display the timecode and text
-                    tag_index = self.results_text.index(tk.END)
-                    self.results_text.insert(tk.END, f"{result['start_time']} --> {result['end_time']}\n", "timecode")
-                    # Store the result index with the tag
-                    result['tag_index'] = tag_index
-                    
-                    # Display the text without HTML tags
-                    clean_text = re.sub(r'<[^>]+>', '', result['text'])
-                    self.results_text.insert(tk.END, f"{clean_text}\n\n")
-                
-                self.results_text.config(state="disabled")
+                # Use main thread to update the UI
+                self.root.after(0, self._update_results_ui, subtitle_file, file_results)
         
         # Update status
-        self.status_var.set(f"Found {total_results} matches in {selected_show}")
+        self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {selected_show}"))
+    
+    def _update_results_ui(self, subtitle_file, file_results):
+        """Update the UI with search results (called from main thread)"""
+        self.results_text.config(state="normal")
+        
+        # Add file header
+        file_basename = os.path.basename(subtitle_file)
+        self.results_text.insert(tk.END, f"File: {file_basename}\n", "file_header")
+        
+        # Add each result
+        for result in file_results:
+            # Display the timecode and text
+            tag_index = self.results_text.index(tk.END)
+            self.results_text.insert(tk.END, f"{result['start_time']} --> {result['end_time']}\n", "timecode")
+            
+            # Store the result index with the tag
+            result['tag_index'] = tag_index
+            
+            # Display the text without HTML tags
+            clean_text = re.sub(r'<[^>]+>', '', result['text'])
+            self.results_text.insert(tk.END, f"{clean_text}\n\n")
+        
+        self.results_text.config(state="disabled")
     
     def on_timecode_click(self, event):
         """Handle click on a timecode to play the video at that time"""
@@ -237,22 +252,42 @@ class RapidMomentNavigator:
             if subtitle_file in self.subtitle_to_video_map:
                 video_file = self.subtitle_to_video_map[subtitle_file]
                 self.play_video(video_file, clicked_result['mpc_start_time'])
+                self.status_var.set(f"Opening {os.path.basename(video_file)} at {clicked_result['mpc_start_time']}")
             else:
                 self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
+        else:
+            self.status_var.set("Could not determine which result was clicked")
     
     def play_video(self, video_file, start_time):
         """Launch Media Player Classic with the video at the specified time"""
-        # Convert time to MPC format
-        # MPC expects the format hh:mm:ss (without milliseconds)
-        mpc_time = start_time.split('.')[0]  # Take only hh:mm:ss part
-        
         try:
-            # Try to launch MPC-HC
-            command = f'start "" "C:\\Program Files\\MPC-HC\\mpc-hc64.exe" "{video_file}" /start {mpc_time}'
-            self.status_var.set(f"Opening {os.path.basename(video_file)} at {mpc_time}")
+            # Construct the command for MPC-HC
+            # MPC-HC accepts the /start parameter in hh:mm:ss format
+            mpc_path = "C:\\Program Files\\MPC-HC\\mpc-hc64.exe"
             
-            # Execute the command
-            subprocess.Popen(command, shell=True)
+            # Check if default MPC path exists
+            if not os.path.exists(mpc_path):
+                # Try alternative paths
+                alternative_paths = [
+                    "C:\\Program Files (x86)\\MPC-HC\\mpc-hc.exe",
+                    "C:\\Program Files (x86)\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe",
+                    "C:\\Program Files\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe"
+                ]
+                
+                for path in alternative_paths:
+                    if os.path.exists(path):
+                        mpc_path = path
+                        break
+            
+            # Construct and execute the command
+            command = f'"{mpc_path}" "{video_file}" /start {start_time}'
+            
+            # Log the command for debugging
+            print(f"Executing command: {command}")
+            
+            # Use subprocess directly without shell=True for better security
+            subprocess.Popen(command, shell=False)
+            
         except Exception as e:
             self.status_var.set(f"Error launching Media Player Classic: {e}")
             
