@@ -324,7 +324,7 @@ class RapidMomentNavigator:
             abs_video_path = self.get_absolute_path(video_file)
             
             # Construct the command for MPC-HC
-            # Different possible formats for MPC-HC timestamp parameter
+            # Documentation says correct parameter is /startpos hh:mm:ss
             mpc_path = "C:\\Program Files\\MPC-HC\\mpc-hc64.exe"
             
             # Check if default MPC path exists
@@ -343,11 +343,9 @@ class RapidMomentNavigator:
                         
             self.debug_print(f"Using MPC path: {mpc_path}")
             
-            # MPC-HC requires a different format - try /start followed by a space
-            command = [mpc_path, abs_video_path, "/start", start_time]
+            # Try method 1: Using /startpos as a separate parameter
+            command = [mpc_path, abs_video_path, "/startpos", start_time]
             self.debug_print(f"Executing command: {command}")
-            
-            # Use subprocess directly without shell=True for better security
             subprocess.Popen(command)
             
         except Exception as e:
@@ -355,25 +353,30 @@ class RapidMomentNavigator:
             self.status_var.set(f"Error launching Media Player Classic: {e}")
             
             try:
-                # Try shell=True with a different parameter format as a fallback
+                # Try method 2: Using shell=True with space-separated arguments
                 self.debug_print("Trying alternate launch method with shell=True")
                 abs_video_path = self.get_absolute_path(video_file)
-                # Try with a space between /start and the time
-                command = f'start "" "{mpc_path}" "{abs_video_path}" /start {start_time}'
+                command = f'start "" "{mpc_path}" "{abs_video_path}" /startpos {start_time}'
                 self.debug_print(f"Shell command: {command}")
                 subprocess.Popen(command, shell=True)
             except Exception as e2:
-                self.debug_print(f"Error with alternate launch method: {str(e2)}")
-                
-                # Fall back to default player if MPC fails
                 try:
-                    self.debug_print(f"Falling back to default player for {video_file}")
-                    abs_video_path = self.get_absolute_path(video_file)
-                    os.startfile(abs_video_path)
-                    self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                    # Try method 3: Using shell=True with parameter combined with value
+                    self.debug_print("Trying another alternative launch method")
+                    command = f'start "" "{mpc_path}" "{abs_video_path}" /startpos={start_time}'
+                    self.debug_print(f"Shell command: {command}")
+                    subprocess.Popen(command, shell=True)
                 except Exception as e3:
-                    self.debug_print(f"Error opening with default player: {str(e3)}")
-                    self.status_var.set(f"Error opening video: {e3}")
+                    self.debug_print(f"Error with all launch methods, falling back to default player")
+                    
+                    # Fall back to default player if MPC fails
+                    try:
+                        abs_video_path = self.get_absolute_path(video_file)
+                        os.startfile(abs_video_path)
+                        self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                    except Exception as e4:
+                        self.debug_print(f"Error opening with default player: {str(e4)}")
+                        self.status_var.set(f"Error opening video: {e4}")
 
 if __name__ == "__main__":
     root = tk.Tk()
