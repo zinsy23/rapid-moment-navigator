@@ -7,6 +7,7 @@ from tkinter import ttk, scrolledtext, Label, Frame
 import threading
 from pathlib import Path
 import sys
+import argparse
 
 class ClickableTimecode(Label):
     """A clickable label widget for timecodes"""
@@ -23,13 +24,13 @@ class ClickableTimecode(Label):
         self.callback(self.result)
 
 class RapidMomentNavigator:
-    def __init__(self, root):
+    def __init__(self, root, debug=False):
         self.root = root
         self.root.title("Rapid Moment Navigator")
         self.root.geometry("800x600")
         
-        # Enable debug mode
-        self.debug = True
+        # Debug mode setting
+        self.debug = debug
         
         # Store the script directory for relative path operations
         self.script_dir = os.path.abspath(os.path.dirname(__file__))
@@ -463,8 +464,14 @@ class RapidMomentNavigator:
         return "break"
 
 if __name__ == "__main__":
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Rapid Moment Navigator - Search subtitles and navigate to moments in videos")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    args = parser.parse_args()
+    
     root = tk.Tk()
-    app = RapidMomentNavigator(root)
-    # Force debug output to be flushed immediately
-    sys.stdout.flush()
+    app = RapidMomentNavigator(root, debug=args.debug)
+    # Force debug output to be flushed immediately if debug is enabled
+    if args.debug:
+        sys.stdout.flush()
     root.mainloop() 
