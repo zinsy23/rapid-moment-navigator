@@ -6,12 +6,16 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext
 import threading
 from pathlib import Path
+import sys
 
 class RapidMomentNavigator:
     def __init__(self, root):
         self.root = root
         self.root.title("Rapid Moment Navigator")
         self.root.geometry("800x600")
+        
+        # Enable debug mode
+        self.debug = True
         
         # Map to store relationship between subtitle files and video files
         self.subtitle_to_video_map = {}
@@ -72,6 +76,14 @@ class RapidMomentNavigator:
         
         # Store the search results for later reference
         self.search_results = []
+        
+        # Debug print
+        self.debug_print("Application initialized")
+    
+    def debug_print(self, message):
+        """Print debug messages if debug mode is enabled"""
+        if self.debug:
+            print(f"DEBUG: {message}", flush=True)
     
     def load_shows(self):
         """Load the available shows from the directory structure"""
@@ -79,6 +91,7 @@ class RapidMomentNavigator:
         self.show_dropdown['values'] = shows
         if shows:
             self.show_dropdown.current(0)
+        self.debug_print(f"Loaded shows: {shows}")
     
     def map_subtitles_to_videos(self):
         """Map subtitle files to their corresponding video files"""
@@ -118,6 +131,7 @@ class RapidMomentNavigator:
                         self.subtitle_to_video_map[subtitle_file] = video_file
                         break
         
+        self.debug_print(f"Mapped {len(self.subtitle_to_video_map)} subtitle files to videos")
         self.status_var.set(f"Ready. Mapped {len(self.subtitle_to_video_map)} subtitle files to videos.")
     
     def search_subtitles(self, event=None):
@@ -138,6 +152,8 @@ class RapidMomentNavigator:
         self.results_text.delete(1.0, tk.END)
         self.search_results = []
         self.tag_mapping = {}
+        
+        self.debug_print(f"Searching for '{keyword}' in {selected_show}")
         
         # Start search in a separate thread to keep UI responsive
         threading.Thread(target=self._search_thread, args=(keyword, selected_show)).start()
@@ -201,6 +217,7 @@ class RapidMomentNavigator:
                         total_results += 1
             
             except Exception as e:
+                self.debug_print(f"Error processing {subtitle_file}: {e}")
                 self.status_var.set(f"Error processing {subtitle_file}: {e}")
                 continue
             
@@ -210,6 +227,7 @@ class RapidMomentNavigator:
                 self.root.after(0, self._update_results_ui, subtitle_file, file_results)
         
         # Update status
+        self.debug_print(f"Found {total_results} matches in {selected_show}")
         self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {selected_show}"))
     
     def _update_results_ui(self, subtitle_file, file_results):
@@ -237,40 +255,54 @@ class RapidMomentNavigator:
             self.results_text.tag_add(tag_id, start_pos, end_pos)
             self.tag_mapping[tag_id] = result
             
+            self.debug_print(f"Added tag {tag_id} from {start_pos} to {end_pos} for timecode {timecode_text}")
+            
             # Insert the rest of the text
             self.results_text.insert(tk.END, "\n")
             self.results_text.insert(tk.END, f"{result['clean_text']}\n\n")
         
         self.results_text.config(state="disabled")
+        self.debug_print(f"UI updated with {len(file_results)} results from {file_basename}")
     
     def on_text_click(self, event):
         """Handle click events anywhere in the text widget"""
         # Get click position
         index = self.results_text.index(f"@{event.x},{event.y}")
+        self.debug_print(f"Click detected at position {index}")
         
         # Check if the click is on a timecode tag
+        found_tag = False
         for tag_id, result in self.tag_mapping.items():
             tag_ranges = self.results_text.tag_ranges(tag_id)
             if tag_ranges:  # Check if the tag exists
                 start = tag_ranges[0]
                 end = tag_ranges[1]
                 
+                self.debug_print(f"Checking tag {tag_id} with range {start} to {end}")
+                
                 # Check if the click is within the tag range
                 if self.results_text.compare(start, "<=", index) and self.results_text.compare(index, "<", end):
+                    self.debug_print(f"Click matches tag {tag_id} for timecode {result['start_time']}")
+                    found_tag = True
                     self._handle_timecode_click(result)
                     return
         
         # If we get here, the click wasn't on a timecode
-        pass
+        if not found_tag:
+            self.debug_print("Click did not match any timecode tag")
     
     def _handle_timecode_click(self, result):
         """Process a click on a timecode tag"""
         subtitle_file = result['file']
+        self.debug_print(f"Handling click for subtitle file: {subtitle_file}")
+        
         if subtitle_file in self.subtitle_to_video_map:
             video_file = self.subtitle_to_video_map[subtitle_file]
+            self.debug_print(f"Found matching video file: {video_file}")
             self.play_video(video_file, result['mpc_start_time'])
             self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['mpc_start_time']}")
         else:
+            self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
             self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
     
     def play_video(self, video_file, start_time):
@@ -293,27 +325,40 @@ class RapidMomentNavigator:
                     if os.path.exists(path):
                         mpc_path = path
                         break
+                        
+            self.debug_print(f"Using MPC path: {mpc_path}")
             
-            # Construct and execute the command
-            command = f'"{mpc_path}" "{video_file}" /start {start_time}'
-            
-            # Log the command for debugging
-            print(f"Executing command: {command}")
-            
-            # Use subprocess directly without shell=True for better security
-            subprocess.Popen(command)
+            # Check if MPC-HC executable was found
+            if not os.path.exists(mpc_path):
+                self.debug_print("MPC-HC executable not found. Trying with shell=True")
+                # Try with shell=True as a fallback
+                command = f'start "" "C:\\Program Files\\MPC-HC\\mpc-hc64.exe" "{video_file}" /start {start_time}'
+                self.debug_print(f"Shell command: {command}")
+                subprocess.Popen(command, shell=True)
+            else:
+                # Construct and execute the command
+                command = [mpc_path, video_file, "/start", start_time]
+                self.debug_print(f"Executing command: {command}")
+                
+                # Use subprocess directly without shell=True for better security
+                subprocess.Popen(command)
             
         except Exception as e:
+            self.debug_print(f"Error launching Media Player Classic: {str(e)}")
             self.status_var.set(f"Error launching Media Player Classic: {e}")
             
             # Fall back to default player if MPC fails
             try:
+                self.debug_print(f"Falling back to default player for {video_file}")
                 os.startfile(video_file)
                 self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
             except Exception as e2:
+                self.debug_print(f"Error opening with default player: {str(e2)}")
                 self.status_var.set(f"Error opening video: {e2}")
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = RapidMomentNavigator(root)
+    # Force debug output to be flushed immediately
+    sys.stdout.flush()
     root.mainloop() 
