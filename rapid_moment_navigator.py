@@ -133,6 +133,9 @@ class RapidMomentNavigator:
         """Map subtitle files to their corresponding video files"""
         self.status_var.set("Mapping subtitle files to videos...")
         
+        # Common video file extensions
+        video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.flv', '.webm']
+        
         for show in self.show_dropdown['values']:
             # Find all subtitle files (focus on .srt files)
             subtitle_files = []
@@ -145,10 +148,10 @@ class RapidMomentNavigator:
             # Find all video files anywhere in the show directory
             video_files = []
             
-            # Walk through the entire directory structure to find all mp4 files
+            # Walk through the entire directory structure to find all video files
             for root, dirs, files in os.walk(os.path.join(show)):
                 for file in files:
-                    if file.endswith('.mp4'):
+                    if any(file.lower().endswith(ext) for ext in video_extensions):
                         video_files.append(os.path.join(root, file))
             
             self.debug_print(f"Found {len(subtitle_files)} subtitle files and {len(video_files)} video files for {show}")

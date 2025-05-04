@@ -9,6 +9,7 @@ A Python application for searching subtitle files and quickly navigating to spec
 - View search results with clickable timecodes
 - Click on a result to open the corresponding video at the exact timestamp
 - Automatic mapping between subtitle files and video files
+- Support for various video formats (MP4, MKV, AVI, MOV, WMV, etc.)
 - Generic directory structure support - works with any organization pattern
 - Ctrl+Backspace support in the search field for faster text editing
 
@@ -50,6 +51,7 @@ The application is flexible and can handle various directory structures:
 1. Subtitle files should be in a folder named "Subtitles" within each show's directory
 2. Video files can be anywhere within the show's directory or subdirectories
 3. The application will automatically find and map subtitle files to video files based on filename similarity
+4. Supports common video formats including MP4, MKV, AVI, MOV, WMV, and more
 
 Example structures that are supported:
 
@@ -74,7 +76,7 @@ Parent Directory
 │   │   └── ...
 │   │
 │   ├── S01
-│   │   ├── SHOW2_S01E01.mp4
+│   │   ├── SHOW2_S01E01.mkv
 │   │   └── ...
 │   │
 │   └── S02
@@ -87,7 +89,7 @@ Parent Directory
     │
     └── S01
         ├── D1
-        │   ├── S01_DISC1_Title1.mp4
+        │   ├── S01_DISC1_Title1.mov
         │   └── ...
         └── D2
             └── ...
@@ -106,4 +108,5 @@ This approach handles various naming conventions and formats automatically.
 
 - If Media Player Classic (MPC-HC) isn't found at the default locations, the application will try alternative locations or fall back to the default media player
 - The search is case-insensitive
-- HTML tags in subtitles are ignored during both search and display 
+- HTML tags in subtitles are ignored during both search and display
+- The application supports a wide range of video formats - if MPC-HC can play it, the application can usually handle it 
