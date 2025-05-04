@@ -31,6 +31,10 @@ class RapidMomentNavigator:
         # Enable debug mode
         self.debug = True
         
+        # Store the script directory for relative path operations
+        self.script_dir = os.path.abspath(os.path.dirname(__file__))
+        self.debug_print(f"Script directory: {self.script_dir}")
+        
         # Map to store relationship between subtitle files and video files
         self.subtitle_to_video_map = {}
         
@@ -115,7 +119,7 @@ class RapidMomentNavigator:
     
     def load_shows(self):
         """Load the available shows from the directory structure"""
-        shows = [d for d in os.listdir() if os.path.isdir(d) and not d.startswith('.')]
+        shows = [d for d in os.listdir() if os.path.isdir(d) and not d.startswith('.') and d not in ['.git']]
         self.show_dropdown['values'] = shows
         if shows:
             self.show_dropdown.current(0)
@@ -307,9 +311,18 @@ class RapidMomentNavigator:
             self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
             self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
     
+    def get_absolute_path(self, relative_path):
+        """Convert a relative path to an absolute path based on script directory"""
+        abs_path = os.path.normpath(os.path.join(self.script_dir, relative_path))
+        self.debug_print(f"Converting relative path: {relative_path} to absolute: {abs_path}")
+        return abs_path
+    
     def play_video(self, video_file, start_time):
         """Launch Media Player Classic with the video at the specified time"""
         try:
+            # Convert the relative video path to absolute
+            abs_video_path = self.get_absolute_path(video_file)
+            
             # Construct the command for MPC-HC
             # MPC-HC accepts the /start parameter in hh:mm:ss format
             mpc_path = "C:\\Program Files\\MPC-HC\\mpc-hc64.exe"
@@ -334,12 +347,12 @@ class RapidMomentNavigator:
             if not os.path.exists(mpc_path):
                 self.debug_print("MPC-HC executable not found. Trying with shell=True")
                 # Try with shell=True as a fallback
-                command = f'start "" "C:\\Program Files\\MPC-HC\\mpc-hc64.exe" "{video_file}" /start {start_time}'
+                command = f'start "" "C:\\Program Files\\MPC-HC\\mpc-hc64.exe" "{abs_video_path}" /start {start_time}'
                 self.debug_print(f"Shell command: {command}")
                 subprocess.Popen(command, shell=True)
             else:
                 # Construct and execute the command
-                command = [mpc_path, video_file, "/start", start_time]
+                command = [mpc_path, abs_video_path, "/start", start_time]
                 self.debug_print(f"Executing command: {command}")
                 
                 # Use subprocess directly without shell=True for better security
@@ -349,14 +362,24 @@ class RapidMomentNavigator:
             self.debug_print(f"Error launching Media Player Classic: {str(e)}")
             self.status_var.set(f"Error launching Media Player Classic: {e}")
             
-            # Fall back to default player if MPC fails
             try:
-                self.debug_print(f"Falling back to default player for {video_file}")
-                os.startfile(video_file)
-                self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                # Try shell=True as a fallback
+                self.debug_print("Trying alternate launch method with shell=True")
+                abs_video_path = self.get_absolute_path(video_file)
+                command = f'start "" "C:\\Program Files\\MPC-HC\\mpc-hc64.exe" "{abs_video_path}" /start {start_time}'
+                subprocess.Popen(command, shell=True)
             except Exception as e2:
-                self.debug_print(f"Error opening with default player: {str(e2)}")
-                self.status_var.set(f"Error opening video: {e2}")
+                self.debug_print(f"Error with alternate launch method: {str(e2)}")
+                
+                # Fall back to default player if MPC fails
+                try:
+                    self.debug_print(f"Falling back to default player for {video_file}")
+                    abs_video_path = self.get_absolute_path(video_file)
+                    os.startfile(abs_video_path)
+                    self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                except Exception as e3:
+                    self.debug_print(f"Error opening with default player: {str(e3)}")
+                    self.status_var.set(f"Error opening video: {e3}")
 
 if __name__ == "__main__":
     root = tk.Tk()
