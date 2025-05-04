@@ -3,10 +3,24 @@ import re
 import glob
 import subprocess
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, Label, Frame
 import threading
 from pathlib import Path
 import sys
+
+class ClickableTimecode(Label):
+    """A clickable label widget for timecodes"""
+    def __init__(self, parent, timecode, result, callback, **kwargs):
+        super().__init__(parent, text=timecode, cursor="hand2", fg="blue", **kwargs)
+        self.result = result
+        self.callback = callback
+        self.bind("<Button-1>", self._on_click)
+        # Add underline
+        self.config(font=("TkDefaultFont", 10, "underline"))
+        
+    def _on_click(self, event):
+        """Handle click event"""
+        self.callback(self.result)
 
 class RapidMomentNavigator:
     def __init__(self, root):
@@ -44,26 +58,28 @@ class RapidMomentNavigator:
         self.search_button = ttk.Button(self.search_frame, text="Find All", command=self.search_subtitles)
         self.search_button.pack(side="left", padx=5)
         
-        # Create results frame
+        # Create results frame with canvas for scrolling
         self.results_frame = ttk.LabelFrame(self.main_frame, text="Search Results")
         self.results_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
-        # Create scrolled text widget for results
-        self.results_text = scrolledtext.ScrolledText(self.results_frame, wrap=tk.WORD, width=40, height=10)
-        self.results_text.pack(fill="both", expand=True, padx=5, pady=5)
-        self.results_text.config(state="disabled")
-        self.results_text.tag_configure("timecode", foreground="blue", underline=True)
-        self.results_text.tag_configure("file_header", foreground="green", font=("TkDefaultFont", 10, "bold"))
+        # Create a canvas with scrollbar for results
+        self.results_canvas = tk.Canvas(self.results_frame)
+        self.results_scrollbar = ttk.Scrollbar(self.results_frame, orient="vertical", command=self.results_canvas.yview)
+        self.results_scrollbar.pack(side="right", fill="y")
         
-        # Store tag information for click handling
-        self.tag_mapping = {}
+        self.results_canvas.pack(side="left", fill="both", expand=True)
+        self.results_canvas.configure(yscrollcommand=self.results_scrollbar.set)
         
-        # Bind click events to the entire text widget
-        self.results_text.bind("<ButtonRelease-1>", self.on_text_click)
+        # Frame inside canvas to hold results
+        self.results_container = ttk.Frame(self.results_canvas)
+        self.results_container_id = self.results_canvas.create_window((0, 0), window=self.results_container, anchor="nw")
         
-        # Make the cursor change to a hand when hovering over timecodes
-        self.results_text.tag_bind("timecode", "<Enter>", lambda e: self.results_text.config(cursor="hand2"))
-        self.results_text.tag_bind("timecode", "<Leave>", lambda e: self.results_text.config(cursor=""))
+        # Configure canvas scrolling
+        self.results_container.bind("<Configure>", self._configure_scroll_region)
+        self.results_canvas.bind("<Configure>", self._configure_canvas_width)
+        
+        # Bind mousewheel scrolling
+        self.results_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         
         # Status bar
         self.status_var = tk.StringVar()
@@ -79,6 +95,18 @@ class RapidMomentNavigator:
         
         # Debug print
         self.debug_print("Application initialized")
+    
+    def _configure_scroll_region(self, event):
+        """Configure the scroll region of the canvas"""
+        self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
+    
+    def _configure_canvas_width(self, event):
+        """Make the canvas width match its container"""
+        self.results_canvas.itemconfig(self.results_container_id, width=event.width)
+    
+    def _on_mousewheel(self, event):
+        """Handle mousewheel scrolling"""
+        self.results_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
     
     def debug_print(self, message):
         """Print debug messages if debug mode is enabled"""
@@ -148,10 +176,10 @@ class RapidMomentNavigator:
             return
         
         # Clear previous results
-        self.results_text.config(state="normal")
-        self.results_text.delete(1.0, tk.END)
+        for widget in self.results_container.winfo_children():
+            widget.destroy()
+        
         self.search_results = []
-        self.tag_mapping = {}
         
         self.debug_print(f"Searching for '{keyword}' in {selected_show}")
         
@@ -232,64 +260,38 @@ class RapidMomentNavigator:
     
     def _update_results_ui(self, subtitle_file, file_results):
         """Update the UI with search results (called from main thread)"""
-        self.results_text.config(state="normal")
-        
         # Add file header
         file_basename = os.path.basename(subtitle_file)
-        self.results_text.insert(tk.END, f"File: {file_basename}\n", "file_header")
+        file_header = ttk.Label(self.results_container, text=f"File: {file_basename}", 
+                               font=("TkDefaultFont", 10, "bold"), foreground="green")
+        file_header.pack(anchor="w", padx=5, pady=2)
         
         # Add each result
         for result in file_results:
-            # Get current position for tagging
-            start_pos = self.results_text.index(tk.END)
+            # Create a frame for this result
+            result_frame = ttk.Frame(self.results_container)
+            result_frame.pack(fill="x", padx=5, pady=2, anchor="w")
             
-            # Insert the timecode as a clickable tag
+            # Create clickable timecode label
             timecode_text = f"{result['start_time']} --> {result['end_time']}"
-            self.results_text.insert(tk.END, timecode_text, "timecode")
+            timecode_label = ClickableTimecode(
+                result_frame, 
+                timecode_text, 
+                result, 
+                self._handle_timecode_click
+            )
+            timecode_label.pack(anchor="w")
             
-            # Get ending position of the inserted tag
-            end_pos = self.results_text.index(tk.END)
+            # Add text label
+            text_label = ttk.Label(result_frame, text=result['clean_text'], wraplength=700)
+            text_label.pack(anchor="w", padx=10)
             
-            # Store the tag range with the result for click handling
-            tag_id = f"timecode-{len(self.tag_mapping)}"
-            self.results_text.tag_add(tag_id, start_pos, end_pos)
-            self.tag_mapping[tag_id] = result
+            # Add some space after each result
+            ttk.Separator(self.results_container, orient="horizontal").pack(fill="x", pady=5)
             
-            self.debug_print(f"Added tag {tag_id} from {start_pos} to {end_pos} for timecode {timecode_text}")
-            
-            # Insert the rest of the text
-            self.results_text.insert(tk.END, "\n")
-            self.results_text.insert(tk.END, f"{result['clean_text']}\n\n")
+            self.debug_print(f"Added clickable timecode for {timecode_text}")
         
-        self.results_text.config(state="disabled")
         self.debug_print(f"UI updated with {len(file_results)} results from {file_basename}")
-    
-    def on_text_click(self, event):
-        """Handle click events anywhere in the text widget"""
-        # Get click position
-        index = self.results_text.index(f"@{event.x},{event.y}")
-        self.debug_print(f"Click detected at position {index}")
-        
-        # Check if the click is on a timecode tag
-        found_tag = False
-        for tag_id, result in self.tag_mapping.items():
-            tag_ranges = self.results_text.tag_ranges(tag_id)
-            if tag_ranges:  # Check if the tag exists
-                start = tag_ranges[0]
-                end = tag_ranges[1]
-                
-                self.debug_print(f"Checking tag {tag_id} with range {start} to {end}")
-                
-                # Check if the click is within the tag range
-                if self.results_text.compare(start, "<=", index) and self.results_text.compare(index, "<", end):
-                    self.debug_print(f"Click matches tag {tag_id} for timecode {result['start_time']}")
-                    found_tag = True
-                    self._handle_timecode_click(result)
-                    return
-        
-        # If we get here, the click wasn't on a timecode
-        if not found_tag:
-            self.debug_print("Click did not match any timecode tag")
     
     def _handle_timecode_click(self, result):
         """Process a click on a timecode tag"""
