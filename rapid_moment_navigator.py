@@ -189,95 +189,145 @@ class RapidMomentNavigator:
         shows_paths = []
         self.show_name_to_path_map.clear()  # Clear the mapping
         
-        # Include current directory only if not excluded
+        # Prepare search directories
         current_dir = self.get_current_directory()
         search_dirs = []
         
+        # Handle current directory - if included, add subdirectories as individual shows
         if not self.preferences.get("exclude_current_dir", False):
-            search_dirs.append(current_dir)
             self.debug_print(f"Load shows - including current directory: {current_dir}")
+            
+            # Get all immediate subdirectories in the current directory
+            try:
+                current_dir_subdirs = [os.path.join(current_dir, d) for d in os.listdir(current_dir) 
+                                     if os.path.isdir(os.path.join(current_dir, d)) 
+                                     and not d.startswith('.') 
+                                     and d not in ['.git']]
+                
+                self.debug_print(f"Load shows - found {len(current_dir_subdirs)} subdirectories in current directory")
+                
+                # For each subdirectory in current directory, check if it has subtitle files
+                for subdir in current_dir_subdirs:
+                    # Check if this subdirectory has any SRT files (anywhere in its tree)
+                    has_srt_files = False
+                    
+                    try:
+                        for dirpath, dirnames, filenames in os.walk(subdir):
+                            # Skip hidden directories
+                            dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '.git']
+                            
+                            # Check if any SRT files exist in this directory
+                            if any(f.lower().endswith('.srt') for f in filenames):
+                                has_srt_files = True
+                                break
+                        
+                        if has_srt_files:
+                            # This is a valid show directory
+                            shows_paths.append(subdir)
+                            
+                            # Use the basename of the subdirectory as show name
+                            show_name = os.path.basename(subdir)
+                            
+                            # Handle duplicates by appending parent directory if needed
+                            count = 1
+                            original_name = show_name
+                            while show_name in self.show_name_to_path_map:
+                                show_name = f"{original_name} ({count})"
+                                count += 1
+                                if count > 10:  # Safety to prevent infinite loop
+                                    show_name = f"{original_name} ({subdir})"
+                                    break
+                            
+                            # Add to the mapping
+                            self.show_name_to_path_map[show_name] = subdir
+                            self.debug_print(f"Load shows - added current dir show: {show_name} -> {subdir}")
+                    
+                    except Exception as e:
+                        self.debug_print(f"Load shows - error scanning subdirectory {subdir}: {e}")
+            
+            except Exception as e:
+                self.debug_print(f"Load shows - error listing current directory contents: {e}")
         else:
             self.debug_print(f"Load shows - current directory is excluded: {current_dir}")
         
-        # Add custom directories from preferences - make a copy to avoid modification issues
+        # Handle custom directories from preferences (each is a complete show)
         custom_dirs = list(self.preferences.get("directories", []))
         self.debug_print(f"Load shows - custom directories from preferences: {custom_dirs}")
         
+        # Add custom directories (each directory is treated as a complete show)
         for directory in custom_dirs:
             # Don't duplicate the current directory
-            if directory != current_dir and directory not in search_dirs:
+            if directory != current_dir:
                 if os.path.exists(directory) and os.path.isdir(directory):
                     search_dirs.append(directory)
                     self.debug_print(f"Load shows - added directory to search: {directory}")
                 else:
                     self.debug_print(f"Load shows - ignoring non-existent directory: {directory}")
         
-        # If no directories to search, force include current directory
-        if not search_dirs:
-            search_dirs.append(current_dir)
+        self.debug_print(f"Load shows - custom search directories ({len(search_dirs)}): {search_dirs}")
+        
+        # If no directories and no shows from current directory, force include current directory
+        if not shows_paths and not search_dirs:
+            self.debug_print(f"Load shows - no shows or directories found, adding current directory")
             self.preferences["exclude_current_dir"] = False
             self.save_preferences()
-            self.debug_print(f"Load shows - no search directories, including current directory: {current_dir}")
-        
-        self.debug_print(f"Load shows - final search directories ({len(search_dirs)}): {search_dirs}")
-        
-        # Find all subtitle files in each root directory
-        for root_dir in search_dirs:
-            # Get the root directory name for display in the dropdown
-            root_name = os.path.basename(root_dir)
             
-            # Keep track of all subtitle files in this root directory
+            # Re-run the method to include current directory
+            return self.load_shows()
+        
+        # Process each custom directory as a complete show
+        for directory in search_dirs:
+            # Check if this directory has any SRT files
             subtitle_files = []
             
-            self.debug_print(f"Load shows - recursively scanning for SRT files in: {root_dir}")
+            self.debug_print(f"Load shows - recursively scanning for SRT files in: {directory}")
             
             # Walk through all subdirectories to find SRT files
             try:
-                for dirpath, dirnames, filenames in os.walk(root_dir):
+                for dirpath, dirnames, filenames in os.walk(directory):
                     # Skip hidden directories
                     dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '.git']
                     
                     # Find all SRT files in this directory
                     srt_files = [os.path.join(dirpath, f) for f in filenames if f.lower().endswith('.srt')]
-                    
                     if srt_files:
                         self.debug_print(f"Load shows - found {len(srt_files)} SRT files in: {dirpath}")
                         subtitle_files.extend(srt_files)
             
             except Exception as e:
-                self.debug_print(f"Load shows - error scanning directory {root_dir}: {e}")
+                self.debug_print(f"Load shows - error scanning directory {directory}: {e}")
                 continue
             
             # If we found subtitle files, add this as a show
             if subtitle_files:
-                self.debug_print(f"Load shows - found total of {len(subtitle_files)} SRT files in {root_name}")
+                self.debug_print(f"Load shows - found total of {len(subtitle_files)} SRT files in {os.path.basename(directory)}")
                 
                 # Add this directory as a show
-                shows_paths.append(root_dir)
+                shows_paths.append(directory)
                 
                 # Use the root directory name for display in the dropdown
-                show_name = root_name
+                show_name = os.path.basename(directory)
                 
                 # Handle duplicates by appending parent directory if needed
                 count = 1
                 original_name = show_name
                 while show_name in self.show_name_to_path_map:
-                    parent_dir = os.path.basename(os.path.dirname(root_dir))
+                    parent_dir = os.path.basename(os.path.dirname(directory))
                     show_name = f"{original_name} ({parent_dir})"
                     count += 1
                     if count > 10:  # Safety to prevent infinite loop
-                        show_name = f"{original_name} ({root_dir})"
+                        show_name = f"{original_name} ({directory})"
                         break
                 
                 # Add to the mapping
-                self.show_name_to_path_map[show_name] = root_dir
+                self.show_name_to_path_map[show_name] = directory
                 
-                self.debug_print(f"Load shows - added as show: {show_name} -> {root_dir}")
+                self.debug_print(f"Load shows - added custom dir show: {show_name} -> {directory}")
             else:
-                self.debug_print(f"Load shows - no SRT files found in {root_dir}")
+                self.debug_print(f"Load shows - no SRT files found in {directory}")
         
         # Update the dropdown with show names
-        self.debug_print(f"Load shows - completed. Found {len(self.show_name_to_path_map)} shows.")
+        self.debug_print(f"Load shows - completed. Found {len(self.show_name_to_path_map)} shows from all sources.")
         self.update_show_dropdown()
         
         return shows_paths
