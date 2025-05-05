@@ -50,6 +50,9 @@ class RapidMomentNavigator:
         # Map to store relationship between subtitle files and video files
         self.subtitle_to_video_map = {}
         
+        # Map to store relationship between show names and full paths
+        self.show_name_to_path_map = {}
+        
         # Create main frame
         self.main_frame = ttk.Frame(root)
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -164,7 +167,8 @@ class RapidMomentNavigator:
     
     def load_shows(self):
         """Load the available shows from the directory structure"""
-        shows = []
+        shows_paths = []
+        self.show_name_to_path_map = {}  # Clear the mapping
         
         # Include current directory only if not excluded
         current_dir = self.get_current_directory()
@@ -204,18 +208,38 @@ class RapidMomentNavigator:
                         # Check if the directory has a Subtitles folder
                         subtitle_path = os.path.join(full_path, 'Subtitles')
                         if os.path.exists(subtitle_path) and os.path.isdir(subtitle_path):
-                            shows.append(full_path)
-                            self.debug_print(f"Found show directory with subtitles: {full_path}")
+                            shows_paths.append(full_path)
+                            
+                            # Use just the show name for display, but handle potential duplicates
+                            show_name = os.path.basename(full_path)
+                            # If there's a duplicate show name, append the parent directory
+                            count = 1
+                            original_name = show_name
+                            while show_name in self.show_name_to_path_map:
+                                parent_dir = os.path.basename(os.path.dirname(full_path))
+                                show_name = f"{original_name} ({parent_dir})"
+                                count += 1
+                                if count > 10:  # Safety to prevent infinite loop
+                                    show_name = f"{original_name} ({full_path})"
+                                    break
+                                    
+                            # Add to the mapping
+                            self.show_name_to_path_map[show_name] = full_path
+                            
+                            self.debug_print(f"Found show directory with subtitles: {full_path} -> {show_name}")
                 except Exception as e:
                     self.debug_print(f"Error scanning directory {search_dir}: {e}")
         
-        # Update dropdown
-        self.show_dropdown['values'] = shows
-        if shows:
+        # Get sorted list of show names for the dropdown
+        show_names = sorted(list(self.show_name_to_path_map.keys()))
+        
+        # Update dropdown with show names (not full paths)
+        self.show_dropdown['values'] = show_names
+        if show_names:
             self.show_dropdown.current(0)
             
-        self.debug_print(f"Loaded {len(shows)} shows")
-        return shows
+        self.debug_print(f"Loaded {len(show_names)} shows")
+        return shows_paths
     
     def map_subtitles_to_videos(self):
         """Map subtitle files to their corresponding video files"""
@@ -227,7 +251,10 @@ class RapidMomentNavigator:
         # Common video file extensions
         video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.flv', '.webm']
         
-        for show_path in self.show_dropdown['values']:
+        # Get all show paths from the name-to-path mapping
+        show_paths = list(self.show_name_to_path_map.values())
+        
+        for show_path in show_paths:
             show_name = os.path.basename(show_path)
             # Find all subtitle files (focus on .srt files)
             subtitle_files = []
@@ -313,15 +340,22 @@ class RapidMomentNavigator:
     def search_subtitles(self, event=None):
         """Search for keywords in subtitle files"""
         keyword = self.search_var.get().strip()
-        selected_show = self.show_var.get()
+        selected_show_name = self.show_var.get()
         
         if not keyword:
             self.status_var.set("Please enter a search keyword.")
             return
             
-        if not selected_show:
+        if not selected_show_name:
             self.status_var.set("Please select a show.")
             return
+        
+        # Get the full path for the selected show
+        if selected_show_name not in self.show_name_to_path_map:
+            self.status_var.set(f"Show path not found for: {selected_show_name}")
+            return
+            
+        selected_show_path = self.show_name_to_path_map[selected_show_name]
         
         # Clear previous results
         for widget in self.results_container.winfo_children():
@@ -329,19 +363,19 @@ class RapidMomentNavigator:
         
         self.search_results = []
         
-        self.debug_print(f"Searching for '{keyword}' in {os.path.basename(selected_show)}")
+        self.debug_print(f"Searching for '{keyword}' in {selected_show_name} ({selected_show_path})")
         
         # Start search in a separate thread to keep UI responsive
-        threading.Thread(target=self._search_thread, args=(keyword, selected_show)).start()
+        threading.Thread(target=self._search_thread, args=(keyword, selected_show_path)).start()
     
-    def _search_thread(self, keyword, selected_show):
+    def _search_thread(self, keyword, selected_show_path):
         """Thread function to handle the search"""
-        self.status_var.set(f"Searching for '{keyword}' in {os.path.basename(selected_show)}...")
+        self.status_var.set(f"Searching for '{keyword}' in {os.path.basename(selected_show_path)}...")
         
         # Get the full path for the subtitle directory
-        subtitle_path = os.path.join(selected_show, 'Subtitles')
+        subtitle_path = os.path.join(selected_show_path, 'Subtitles')
         if not os.path.exists(subtitle_path):
-            self.status_var.set(f"Subtitle directory not found for {os.path.basename(selected_show)}")
+            self.status_var.set(f"Subtitle directory not found for {os.path.basename(selected_show_path)}")
             return
         
         subtitle_files = []
@@ -404,8 +438,8 @@ class RapidMomentNavigator:
                 self.root.after(0, self._update_results_ui, subtitle_file, file_results)
         
         # Update status
-        self.debug_print(f"Found {total_results} matches in {os.path.basename(selected_show)}")
-        self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {os.path.basename(selected_show)}"))
+        self.debug_print(f"Found {total_results} matches in {os.path.basename(selected_show_path)}")
+        self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {os.path.basename(selected_show_path)}"))
     
     def _update_results_ui(self, subtitle_file, file_results):
         """Update the UI with search results (called from main thread)"""
