@@ -47,7 +47,9 @@ The application now supports managing multiple media directories:
 
 1. **Adding Directories**: Click the "Add Directory" button to open the directory manager
    - You can add multiple directories that contain your show folders
-   - Each directory added will be scanned for shows with subtitle folders
+   - Existing directories are displayed in the dialog for easy management
+   - Use the "Add Multiple Directories" button to select multiple directories in sequence
+   - Each directory added will be scanned for SRT files in any subfolder
    - Preferences are automatically saved to `rapid_navigator_prefs.json`
 
 2. **Removing Directories**: Select a directory in the list and click "Remove Directory"
@@ -56,8 +58,9 @@ The application now supports managing multiple media directories:
    - The application ensures there is always at least one directory to search
 
 3. **Directory Structure**: The application is flexible and works with various folder structures
-   - Each show should have a "Subtitles" folder with .srt files
-   - Video files can be anywhere within the show's directory structure
+   - SRT files can be located anywhere within the directory tree
+   - Video files can be anywhere within the directory tree
+   - The application will automatically find and map subtitle files to video files
 
 ### Command-line Options
 
@@ -71,7 +74,7 @@ The application now supports managing multiple media directories:
 The application is flexible and can handle various directory structures:
 
 1. Subtitle files should be in a folder named "Subtitles" within each show's directory
-2. Video files can be anywhere within the show's directory or subdirectories
+2. Video files can be anywhere within the show's directory structure
 3. The application will automatically find and map subtitle files to video files based on filename similarity
 4. Supports common video formats including MP4, MKV, AVI, MOV, WMV, and more
 

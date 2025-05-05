@@ -3,7 +3,7 @@ import re
 import glob
 import subprocess
 import tkinter as tk
-from tkinter import ttk, scrolledtext, Label, Frame, filedialog
+from tkinter import ttk, scrolledtext, Label, Frame, filedialog, messagebox
 import threading
 from pathlib import Path
 import sys
@@ -139,6 +139,7 @@ class RapidMomentNavigator:
         self.status_bar.pack(fill="x", padx=5, pady=5)
         
         # Initialize the application
+        self.debug_print("Initializing shows and mapping...")
         self.load_shows()
         self.map_subtitles_to_videos()
         
@@ -146,7 +147,7 @@ class RapidMomentNavigator:
         self.search_results = []
         
         # Debug print
-        self.debug_print("Application initialized")
+        self.debug_print(f"Application initialized with {len(self.show_name_to_path_map)} shows")
     
     def _configure_scroll_region(self, event):
         """Configure the scroll region of the canvas"""
@@ -165,10 +166,28 @@ class RapidMomentNavigator:
         if self.debug:
             print(f"DEBUG: {message}", flush=True)
     
+    def update_show_dropdown(self):
+        """Update the show dropdown with current show names"""
+        # Get sorted list of show names for the dropdown
+        show_names = sorted(list(self.show_name_to_path_map.keys()))
+        
+        # Update dropdown with show names (not full paths)
+        self.debug_print(f"Updating dropdown with {len(show_names)} shows: {show_names}")
+        
+        # Directly set the 'values' property of the dropdown
+        self.show_dropdown['values'] = show_names
+        
+        # Select first item if available
+        if show_names:
+            self.show_dropdown.current(0)
+        
+        # Force immediate update
+        self.root.update_idletasks()
+            
     def load_shows(self):
         """Load the available shows from the directory structure"""
         shows_paths = []
-        self.show_name_to_path_map = {}  # Clear the mapping
+        self.show_name_to_path_map.clear()  # Clear the mapping
         
         # Include current directory only if not excluded
         current_dir = self.get_current_directory()
@@ -176,69 +195,91 @@ class RapidMomentNavigator:
         
         if not self.preferences.get("exclude_current_dir", False):
             search_dirs.append(current_dir)
+            self.debug_print(f"Load shows - including current directory: {current_dir}")
+        else:
+            self.debug_print(f"Load shows - current directory is excluded: {current_dir}")
         
-        # Add custom directories from preferences
-        for directory in self.preferences.get("directories", []):
+        # Add custom directories from preferences - make a copy to avoid modification issues
+        custom_dirs = list(self.preferences.get("directories", []))
+        self.debug_print(f"Load shows - custom directories from preferences: {custom_dirs}")
+        
+        for directory in custom_dirs:
             # Don't duplicate the current directory
             if directory != current_dir and directory not in search_dirs:
-                search_dirs.append(directory)
+                if os.path.exists(directory) and os.path.isdir(directory):
+                    search_dirs.append(directory)
+                    self.debug_print(f"Load shows - added directory to search: {directory}")
+                else:
+                    self.debug_print(f"Load shows - ignoring non-existent directory: {directory}")
         
         # If no directories to search, force include current directory
         if not search_dirs:
             search_dirs.append(current_dir)
             self.preferences["exclude_current_dir"] = False
             self.save_preferences()
-            self.debug_print("No search directories, including current directory")
+            self.debug_print(f"Load shows - no search directories, including current directory: {current_dir}")
         
-        self.debug_print(f"Searching in {len(search_dirs)} directories")
+        self.debug_print(f"Load shows - final search directories ({len(search_dirs)}): {search_dirs}")
         
-        # Search for show directories in all search directories
-        for search_dir in search_dirs:
-            if os.path.exists(search_dir) and os.path.isdir(search_dir):
-                self.debug_print(f"Searching for shows in: {search_dir}")
-                try:
-                    dir_contents = [d for d in os.listdir(search_dir) 
-                                   if os.path.isdir(os.path.join(search_dir, d)) 
-                                   and not d.startswith('.') 
-                                   and d not in ['.git']]
-                    
-                    # Add search_dir prefix to each show directory
-                    for show in dir_contents:
-                        full_path = os.path.join(search_dir, show)
-                        # Check if the directory has a Subtitles folder
-                        subtitle_path = os.path.join(full_path, 'Subtitles')
-                        if os.path.exists(subtitle_path) and os.path.isdir(subtitle_path):
-                            shows_paths.append(full_path)
-                            
-                            # Use just the show name for display, but handle potential duplicates
-                            show_name = os.path.basename(full_path)
-                            # If there's a duplicate show name, append the parent directory
-                            count = 1
-                            original_name = show_name
-                            while show_name in self.show_name_to_path_map:
-                                parent_dir = os.path.basename(os.path.dirname(full_path))
-                                show_name = f"{original_name} ({parent_dir})"
-                                count += 1
-                                if count > 10:  # Safety to prevent infinite loop
-                                    show_name = f"{original_name} ({full_path})"
-                                    break
-                                    
-                            # Add to the mapping
-                            self.show_name_to_path_map[show_name] = full_path
-                            
-                            self.debug_print(f"Found show directory with subtitles: {full_path} -> {show_name}")
-                except Exception as e:
-                    self.debug_print(f"Error scanning directory {search_dir}: {e}")
-        
-        # Get sorted list of show names for the dropdown
-        show_names = sorted(list(self.show_name_to_path_map.keys()))
-        
-        # Update dropdown with show names (not full paths)
-        self.show_dropdown['values'] = show_names
-        if show_names:
-            self.show_dropdown.current(0)
+        # Find all subtitle files in each root directory
+        for root_dir in search_dirs:
+            # Get the root directory name for display in the dropdown
+            root_name = os.path.basename(root_dir)
             
-        self.debug_print(f"Loaded {len(show_names)} shows")
+            # Keep track of all subtitle files in this root directory
+            subtitle_files = []
+            
+            self.debug_print(f"Load shows - recursively scanning for SRT files in: {root_dir}")
+            
+            # Walk through all subdirectories to find SRT files
+            try:
+                for dirpath, dirnames, filenames in os.walk(root_dir):
+                    # Skip hidden directories
+                    dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '.git']
+                    
+                    # Find all SRT files in this directory
+                    srt_files = [os.path.join(dirpath, f) for f in filenames if f.lower().endswith('.srt')]
+                    
+                    if srt_files:
+                        self.debug_print(f"Load shows - found {len(srt_files)} SRT files in: {dirpath}")
+                        subtitle_files.extend(srt_files)
+            
+            except Exception as e:
+                self.debug_print(f"Load shows - error scanning directory {root_dir}: {e}")
+                continue
+            
+            # If we found subtitle files, add this as a show
+            if subtitle_files:
+                self.debug_print(f"Load shows - found total of {len(subtitle_files)} SRT files in {root_name}")
+                
+                # Add this directory as a show
+                shows_paths.append(root_dir)
+                
+                # Use the root directory name for display in the dropdown
+                show_name = root_name
+                
+                # Handle duplicates by appending parent directory if needed
+                count = 1
+                original_name = show_name
+                while show_name in self.show_name_to_path_map:
+                    parent_dir = os.path.basename(os.path.dirname(root_dir))
+                    show_name = f"{original_name} ({parent_dir})"
+                    count += 1
+                    if count > 10:  # Safety to prevent infinite loop
+                        show_name = f"{original_name} ({root_dir})"
+                        break
+                
+                # Add to the mapping
+                self.show_name_to_path_map[show_name] = root_dir
+                
+                self.debug_print(f"Load shows - added as show: {show_name} -> {root_dir}")
+            else:
+                self.debug_print(f"Load shows - no SRT files found in {root_dir}")
+        
+        # Update the dropdown with show names
+        self.debug_print(f"Load shows - completed. Found {len(self.show_name_to_path_map)} shows.")
+        self.update_show_dropdown()
+        
         return shows_paths
     
     def map_subtitles_to_videos(self):
@@ -256,24 +297,36 @@ class RapidMomentNavigator:
         
         for show_path in show_paths:
             show_name = os.path.basename(show_path)
-            # Find all subtitle files (focus on .srt files)
+            
+            # Find all subtitle files (anywhere in the directory tree)
             subtitle_files = []
-            subtitle_path = os.path.join(show_path, 'Subtitles')
-            
-            # Check if there's a dedicated Subtitles folder
-            if os.path.exists(subtitle_path):
-                subtitle_files.extend(glob.glob(os.path.join(subtitle_path, '*.srt')))
-            
-            # Find all video files anywhere in the show directory
+            # Find all video files (anywhere in the directory tree)
             video_files = []
             
-            # Walk through the entire directory structure to find all video files
-            for root, dirs, files in os.walk(show_path):
-                for file in files:
-                    if any(file.lower().endswith(ext) for ext in video_extensions):
-                        video_files.append(os.path.join(root, file))
+            self.debug_print(f"Mapping - scanning for subtitle and video files in: {show_path}")
             
-            self.debug_print(f"Found {len(subtitle_files)} subtitle files and {len(video_files)} video files for {show_name}")
+            # Walk through all subdirectories
+            try:
+                for dirpath, dirnames, filenames in os.walk(show_path):
+                    # Skip hidden directories
+                    dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '.git']
+                    
+                    # Find all SRT files in this directory
+                    srt_files = [os.path.join(dirpath, f) for f in filenames if f.lower().endswith('.srt')]
+                    if srt_files:
+                        subtitle_files.extend(srt_files)
+                        
+                    # Find all video files in this directory
+                    video_files_here = [os.path.join(dirpath, f) for f in filenames 
+                                       if any(f.lower().endswith(ext) for ext in video_extensions)]
+                    if video_files_here:
+                        video_files.extend(video_files_here)
+            
+            except Exception as e:
+                self.debug_print(f"Mapping - error scanning directory {show_path}: {e}")
+                continue
+            
+            self.debug_print(f"Mapping - found {len(subtitle_files)} subtitle files and {len(video_files)} video files in {show_name}")
             
             # Map subtitles to videos based on similarity of filenames
             for subtitle_file in subtitle_files:
@@ -295,7 +348,7 @@ class RapidMomentNavigator:
                     
                     if subtitle_name == video_name:
                         self.subtitle_to_video_map[subtitle_file] = video_file
-                        self.debug_print(f"Exact match: {subtitle_basename} -> {video_basename}")
+                        self.debug_print(f"Mapping - exact match: {subtitle_basename} -> {video_basename}")
                         matched = True
                         break
                 
@@ -314,11 +367,11 @@ class RapidMomentNavigator:
                             clean_subtitle_name in clean_video_name or
                             clean_video_name in clean_subtitle_name):
                             self.subtitle_to_video_map[subtitle_file] = video_file
-                            self.debug_print(f"Partial match: {subtitle_basename} -> {video_basename}")
+                            self.debug_print(f"Mapping - partial match: {subtitle_basename} -> {video_basename}")
                             matched = True
                             break
         
-        self.debug_print(f"Mapped {len(self.subtitle_to_video_map)} subtitle files to videos")
+        self.debug_print(f"Mapping - completed. Mapped {len(self.subtitle_to_video_map)} subtitle files to videos")
         self.status_var.set(f"Ready. Mapped {len(self.subtitle_to_video_map)} subtitle files to videos.")
     
     def _clean_filename(self, filename):
@@ -370,17 +423,38 @@ class RapidMomentNavigator:
     
     def _search_thread(self, keyword, selected_show_path):
         """Thread function to handle the search"""
-        self.status_var.set(f"Searching for '{keyword}' in {os.path.basename(selected_show_path)}...")
+        show_name = os.path.basename(selected_show_path)
+        self.status_var.set(f"Searching for '{keyword}' in {show_name}...")
         
-        # Get the full path for the subtitle directory
-        subtitle_path = os.path.join(selected_show_path, 'Subtitles')
-        if not os.path.exists(subtitle_path):
-            self.status_var.set(f"Subtitle directory not found for {os.path.basename(selected_show_path)}")
+        # Find all SRT files in the selected show directory
+        subtitle_files = []
+        
+        self.debug_print(f"Search - recursively scanning for SRT files in: {selected_show_path}")
+        
+        # Walk through all subdirectories to find SRT files
+        try:
+            for dirpath, dirnames, filenames in os.walk(selected_show_path):
+                # Skip hidden directories
+                dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != '.git']
+                
+                # Find all SRT files in this directory
+                srt_files = [os.path.join(dirpath, f) for f in filenames 
+                            if f.lower().endswith('.srt') or f.lower().endswith('.txt')]
+                
+                if srt_files:
+                    self.debug_print(f"Search - found {len(srt_files)} subtitle files in: {dirpath}")
+                    subtitle_files.extend(srt_files)
+        
+        except Exception as e:
+            self.debug_print(f"Search - error scanning directory {selected_show_path}: {e}")
+            self.status_var.set(f"Error scanning directory: {e}")
             return
         
-        subtitle_files = []
-        for ext in ['.srt', '.txt']:
-            subtitle_files.extend(glob.glob(os.path.join(subtitle_path, f'*{ext}')))
+        if not subtitle_files:
+            self.status_var.set(f"No subtitle files found in {show_name}")
+            return
+            
+        self.debug_print(f"Search - found total of {len(subtitle_files)} subtitle files to search")
         
         # Store the results count
         total_results = 0
@@ -438,17 +512,31 @@ class RapidMomentNavigator:
                 self.root.after(0, self._update_results_ui, subtitle_file, file_results)
         
         # Update status
-        self.debug_print(f"Found {total_results} matches in {os.path.basename(selected_show_path)}")
-        self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {os.path.basename(selected_show_path)}"))
+        self.debug_print(f"Found {total_results} matches in {show_name}")
+        self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {show_name}"))
     
     def _update_results_ui(self, subtitle_file, file_results):
         """Update the UI with search results (called from main thread)"""
         # Add file header
         file_basename = os.path.basename(subtitle_file)
-        show_name = os.path.basename(os.path.dirname(os.path.dirname(subtitle_file)))
+        
+        # Find the show name this subtitle belongs to
+        show_path = None
+        for show_name, path in self.show_name_to_path_map.items():
+            if subtitle_file.startswith(path):
+                show_path = path
+                break
+        
+        # Get relative path from show root if possible
+        if show_path:
+            relative_path = os.path.relpath(subtitle_file, show_path)
+            header_text = f"File: {relative_path}"
+        else:
+            header_text = f"File: {file_basename}"
+        
         file_header = ttk.Label(
             self.results_container, 
-            text=f"Show: {show_name} | File: {file_basename}", 
+            text=header_text, 
             font=("TkDefaultFont", 10, "bold"), 
             foreground="green"
         )
@@ -608,6 +696,22 @@ class RapidMomentNavigator:
                 with open(prefs_path, 'r') as f:
                     prefs = json.load(f)
                     self.debug_print(f"Loaded preferences: {prefs}")
+                    
+                    # Ensure all expected keys are present
+                    for key in DEFAULT_PREFS.keys():
+                        if key not in prefs:
+                            prefs[key] = DEFAULT_PREFS[key]
+                    
+                    # Validate directory paths
+                    valid_dirs = []
+                    for dir_path in prefs.get("directories", []):
+                        if os.path.exists(dir_path) and os.path.isdir(dir_path):
+                            valid_dirs.append(dir_path)
+                        else:
+                            self.debug_print(f"Ignoring non-existent directory from preferences: {dir_path}")
+                    
+                    prefs["directories"] = valid_dirs
+                    
                     return prefs
         except Exception as e:
             self.debug_print(f"Error loading preferences: {e}")
@@ -681,6 +785,11 @@ class RapidMomentNavigator:
         scrollbar.pack(side="right", fill="y")
         listbox.configure(yscrollcommand=scrollbar.set)
         
+        # Add existing directories to the listbox
+        existing_dirs = self.preferences.get("directories", [])
+        for dir_path in existing_dirs:
+            listbox.insert(tk.END, dir_path)
+        
         # Function to add a directory
         def select_dir():
             new_dir = filedialog.askdirectory(
@@ -702,32 +811,58 @@ class RapidMomentNavigator:
         def save_and_close():
             # Get all directories from the listbox
             new_dirs = [listbox.get(i) for i in range(listbox.size())]
+            self.debug_print(f"Directory dialog - new directories: {new_dirs}")
             
-            # Update preferences
-            if "directories" not in self.preferences:
-                self.preferences["directories"] = []
-                
             # Keep track of current directory
             current_dir = self.get_current_directory()
-                
-            # Add new directories if not already in preferences, excluding current directory
-            # since it's always added automatically
+            self.debug_print(f"Directory dialog - current directory: {current_dir}")
+            
+            # Get existing directories from preferences
+            existing_dirs = self.preferences.get("directories", [])
+            self.debug_print(f"Directory dialog - existing directories: {existing_dirs}")
+            
+            # Track if we've made any changes
+            changes_made = False
+            
+            # Add new directories if not already in preferences
             added_count = 0
             for new_dir in new_dirs:
-                if new_dir != current_dir and new_dir not in self.preferences["directories"]:
+                # Skip current directory since it's handled separately
+                if new_dir == current_dir:
+                    continue
+                    
+                # Check if this is a new directory to add
+                if new_dir not in existing_dirs:
+                    self.debug_print(f"Directory dialog - adding new directory: {new_dir}")
+                    if "directories" not in self.preferences:
+                        self.preferences["directories"] = []
                     self.preferences["directories"].append(new_dir)
                     added_count += 1
+                    changes_made = True
             
-            # Save and update
-            if added_count > 0:
+            # Save and update if changes were made
+            if changes_made:
                 self.save_preferences()
+                self.debug_print(f"Directory dialog - saved preferences: {self.preferences}")
                 self.update_directory_listbox()
                 
+                # Clear existing show map and reload everything
+                self.debug_print("Directory dialog - clearing show map and reloading shows")
+                self.show_name_to_path_map.clear()
+                
                 # Reload shows and remap files
-                self.load_shows()
+                self.debug_print("Directory dialog - reloading shows after directory changes")
+                shows_paths = self.load_shows()
+                self.debug_print(f"Directory dialog - loaded shows: {len(shows_paths)}, names: {list(self.show_name_to_path_map.keys())}")
                 self.map_subtitles_to_videos()
                 
-                self.status_var.set(f"Added {added_count} new directories to preferences")
+                # Force the dropdown to update with the new values
+                self.debug_print(f"Directory dialog - updating dropdown with {len(self.show_name_to_path_map)} shows")
+                self.update_show_dropdown()
+                
+                self.status_var.set(f"Added {added_count} directories. Found {len(self.show_name_to_path_map)} shows")
+            else:
+                self.status_var.set("No changes made to media directories")
             
             # Close the dialog
             root.destroy()
@@ -739,6 +874,49 @@ class RapidMomentNavigator:
         # Buttons
         select_btn = ttk.Button(button_frame, text="Add Directory", command=select_dir)
         select_btn.pack(side="left", padx=5)
+        
+        # Function to add multiple directories at once using a directory selection dialog
+        def select_multiple_dirs():
+            # Show info message about selecting multiple directories
+            self.debug_print("Opening directory selection dialog for multiple directories")
+            root.withdraw()  # Hide the current dialog temporarily
+            
+            # Use a message box to instruct the user
+            tk.messagebox.showinfo(
+                "Multiple Directory Selection",
+                "Please select directories one by one. Click Cancel when done."
+            )
+            
+            # Keep track of added directories
+            added_dirs = []
+            
+            # Loop to select multiple directories
+            while True:
+                new_dir = filedialog.askdirectory(
+                    title="Select Media Directory (Cancel when done)",
+                    initialdir=self.script_dir if not added_dirs else added_dirs[-1],  # Start from last selected directory
+                    mustexist=True
+                )
+                
+                if not new_dir:  # User clicked Cancel
+                    break
+                    
+                added_dirs.append(new_dir)
+                
+                # Add to listbox if not already there
+                if new_dir not in [listbox.get(i) for i in range(listbox.size())]:
+                    listbox.insert(tk.END, new_dir)
+            
+            # Show the dialog again
+            root.deiconify()
+            
+            # Report how many directories were added
+            if added_dirs:
+                self.debug_print(f"Added {len(added_dirs)} directories through multiple selection")
+        
+        # Add button for multiple directory selection
+        multi_select_btn = ttk.Button(button_frame, text="Add Multiple Directories", command=select_multiple_dirs)
+        multi_select_btn.pack(side="left", padx=5)
         
         remove_btn = ttk.Button(button_frame, text="Remove Selected", command=remove_selected)
         remove_btn.pack(side="left", padx=5)
@@ -770,6 +948,8 @@ class RapidMomentNavigator:
         selected_dir = self.dir_listbox.get(selected_index)
         current_dir = self.get_current_directory()
         
+        self.debug_print(f"Remove directory - selected: {selected_dir}, current: {current_dir}")
+        
         # Check if it's the "Current" directory
         is_current = "(Current)" in selected_dir
         
@@ -777,6 +957,8 @@ class RapidMomentNavigator:
         custom_dirs_count = len(self.preferences.get("directories", []))
         if current_dir in self.preferences.get("directories", []):
             custom_dirs_count -= 1  # Don't count current dir if it's in the list
+            
+        self.debug_print(f"Remove directory - is current: {is_current}, custom dirs count: {custom_dirs_count}")
             
         # Only allow removing current directory if we have other directories
         if is_current:
@@ -789,11 +971,14 @@ class RapidMomentNavigator:
                 self.save_preferences()
                 self.update_directory_listbox()
                 
+                # Clear existing show map and reload everything
+                self.show_name_to_path_map.clear()
+                
                 # Reload shows and remap files
-                self.load_shows()
+                shows_paths = self.load_shows()
                 self.map_subtitles_to_videos()
                 
-                self.status_var.set("Current directory excluded from search")
+                self.status_var.set(f"Current directory excluded. Found {len(self.show_name_to_path_map)} shows")
                 return
             
         # Handle removal of non-current directory
@@ -801,14 +986,17 @@ class RapidMomentNavigator:
             self.preferences["directories"].remove(selected_dir)
             self.save_preferences()
             
-            # Reload shows and remap files
-            self.load_shows()
-            self.map_subtitles_to_videos()
+            # Clear existing show map and reload everything
+            self.show_name_to_path_map.clear()
             
             # Update the listbox
             self.update_directory_listbox()
             
-            self.status_var.set(f"Removed directory: {selected_dir}")
+            # Reload shows and remap files
+            shows_paths = self.load_shows()
+            self.map_subtitles_to_videos()
+            
+            self.status_var.set(f"Removed directory: {selected_dir}. Found {len(self.show_name_to_path_map)} shows")
         else:
             self.status_var.set("Directory not found in preferences")
 
@@ -817,6 +1005,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rapid Moment Navigator - Search subtitles and navigate to moments in videos")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
     args = parser.parse_args()
+    
+    if args.debug:
+        print(f"DEBUG: Starting application in debug mode")
+        print(f"DEBUG: Current directory: {os.path.abspath('.')}")
+        print(f"DEBUG: Script directory: {os.path.dirname(os.path.abspath(__file__))}")
     
     root = tk.Tk()
     app = RapidMomentNavigator(root, debug=args.debug)
