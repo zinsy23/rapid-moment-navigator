@@ -13,7 +13,8 @@ import json
 # Constants
 PREFS_FILENAME = "rapid_navigator_prefs.json"
 DEFAULT_PREFS = {
-    "directories": []
+    "directories": [],
+    "exclude_current_dir": False
 }
 
 class ClickableTimecode(Label):
@@ -165,18 +166,27 @@ class RapidMomentNavigator:
         """Load the available shows from the directory structure"""
         shows = []
         
-        # Get directories to search - either from preferences or current directory
-        directories = self.preferences.get("directories", [])
+        # Include current directory only if not excluded
+        current_dir = self.get_current_directory()
+        search_dirs = []
         
-        if not directories:
-            # If no custom directories, use current directory
-            self.debug_print("No custom directories, using current directory")
-            current_dir = os.path.abspath(".")
-            search_dirs = [current_dir]
-        else:
-            # Use custom directories from preferences
-            self.debug_print(f"Using {len(directories)} custom directories")
-            search_dirs = directories
+        if not self.preferences.get("exclude_current_dir", False):
+            search_dirs.append(current_dir)
+        
+        # Add custom directories from preferences
+        for directory in self.preferences.get("directories", []):
+            # Don't duplicate the current directory
+            if directory != current_dir and directory not in search_dirs:
+                search_dirs.append(directory)
+        
+        # If no directories to search, force include current directory
+        if not search_dirs:
+            search_dirs.append(current_dir)
+            self.preferences["exclude_current_dir"] = False
+            self.save_preferences()
+            self.debug_print("No search directories, including current directory")
+        
+        self.debug_print(f"Searching in {len(search_dirs)} directories")
         
         # Search for show directories in all search directories
         for search_dir in search_dirs:
@@ -585,17 +595,31 @@ class RapidMomentNavigator:
             self.debug_print(f"Error saving preferences: {e}")
             self.status_var.set(f"Error saving preferences: {e}")
     
+    def get_current_directory(self):
+        """Get the current directory with a consistent format"""
+        return os.path.abspath(".")
+        
     def update_directory_listbox(self):
         """Update the directory listbox with current preferences"""
         self.dir_listbox.delete(0, tk.END)
         
-        # If there are no directories in preferences, show current directory
-        if not self.preferences.get("directories", []):
-            self.dir_listbox.insert(tk.END, os.path.abspath(".") + " (Current)")
-        else:
-            # Add all directories from preferences
-            for directory in self.preferences.get("directories", []):
+        # Add current directory if not excluded
+        current_dir = self.get_current_directory()
+        if not self.preferences.get("exclude_current_dir", False):
+            self.dir_listbox.insert(tk.END, current_dir + " (Current)")
+        
+        # Add all directories from preferences
+        for directory in self.preferences.get("directories", []):
+            # Don't add the current directory twice
+            if directory != current_dir:
                 self.dir_listbox.insert(tk.END, directory)
+                
+        # If the listbox is empty, force add current directory and update preferences
+        if self.dir_listbox.size() == 0:
+            self.dir_listbox.insert(tk.END, current_dir + " (Current)")
+            self.preferences["exclude_current_dir"] = False
+            self.save_preferences()
+            self.debug_print("No directories left, re-added current directory")
     
     def add_directory(self):
         """Open file dialog to add directories to preferences"""
@@ -610,6 +634,7 @@ class RapidMomentNavigator:
         
         # Instructions label
         ttk.Label(frame, text="Select one or more directories that contain your media:").pack(pady=5, anchor="w")
+        ttk.Label(frame, text="Note: You can remove the current directory if you have other directories added.").pack(pady=2, anchor="w")
         
         # Listbox to display selected directories
         listbox_frame = ttk.Frame(frame)
@@ -648,10 +673,14 @@ class RapidMomentNavigator:
             if "directories" not in self.preferences:
                 self.preferences["directories"] = []
                 
-            # Add new directories if not already in preferences
+            # Keep track of current directory
+            current_dir = self.get_current_directory()
+                
+            # Add new directories if not already in preferences, excluding current directory
+            # since it's always added automatically
             added_count = 0
             for new_dir in new_dirs:
-                if new_dir not in self.preferences["directories"]:
+                if new_dir != current_dir and new_dir not in self.preferences["directories"]:
                     self.preferences["directories"].append(new_dir)
                     added_count += 1
             
@@ -703,14 +732,26 @@ class RapidMomentNavigator:
             self.status_var.set("No directory selected")
             return
         
-        # Only attempt to remove if we have custom directories
-        if self.preferences.get("directories", []):
-            selected_index = selected_indices[0]
-            selected_dir = self.dir_listbox.get(selected_index)
+        selected_index = selected_indices[0]
+        selected_dir = self.dir_listbox.get(selected_index)
+        current_dir = self.get_current_directory()
+        
+        # Check if it's the "Current" directory
+        is_current = "(Current)" in selected_dir
+        
+        # Count total non-current directories
+        custom_dirs_count = len(self.preferences.get("directories", []))
+        if current_dir in self.preferences.get("directories", []):
+            custom_dirs_count -= 1  # Don't count current dir if it's in the list
             
-            # Check if it's not the "Current" directory
-            if "(Current)" not in selected_dir:
-                self.preferences["directories"].remove(selected_dir)
+        # Only allow removing current directory if we have other directories
+        if is_current:
+            if custom_dirs_count == 0:
+                self.status_var.set("Cannot remove current directory when it's the only one")
+                return
+            else:
+                # Mark current directory as excluded in preferences
+                self.preferences["exclude_current_dir"] = True
                 self.save_preferences()
                 self.update_directory_listbox()
                 
@@ -718,11 +759,24 @@ class RapidMomentNavigator:
                 self.load_shows()
                 self.map_subtitles_to_videos()
                 
-                self.status_var.set(f"Removed directory: {selected_dir}")
-            else:
-                self.status_var.set("Cannot remove current directory")
+                self.status_var.set("Current directory excluded from search")
+                return
+            
+        # Handle removal of non-current directory
+        if selected_dir in self.preferences.get("directories", []):
+            self.preferences["directories"].remove(selected_dir)
+            self.save_preferences()
+            
+            # Reload shows and remap files
+            self.load_shows()
+            self.map_subtitles_to_videos()
+            
+            # Update the listbox
+            self.update_directory_listbox()
+            
+            self.status_var.set(f"Removed directory: {selected_dir}")
         else:
-            self.status_var.set("No custom directories to remove")
+            self.status_var.set("Directory not found in preferences")
 
 if __name__ == "__main__":
     # Parse command line arguments

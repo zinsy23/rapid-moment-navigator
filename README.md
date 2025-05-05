@@ -51,7 +51,9 @@ The application now supports managing multiple media directories:
    - Preferences are automatically saved to `rapid_navigator_prefs.json`
 
 2. **Removing Directories**: Select a directory in the list and click "Remove Directory"
-   - The application will update its preferences and rescan remaining directories
+   - You can remove the current directory, but only if you've added other directories
+   - If you remove all directories, the current directory will be automatically re-added
+   - The application ensures there is always at least one directory to search
 
 3. **Directory Structure**: The application is flexible and works with various folder structures
    - Each show should have a "Subtitles" folder with .srt files
