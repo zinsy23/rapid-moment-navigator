@@ -3,11 +3,18 @@ import re
 import glob
 import subprocess
 import tkinter as tk
-from tkinter import ttk, scrolledtext, Label, Frame
+from tkinter import ttk, scrolledtext, Label, Frame, filedialog
 import threading
 from pathlib import Path
 import sys
 import argparse
+import json
+
+# Constants
+PREFS_FILENAME = "rapid_navigator_prefs.json"
+DEFAULT_PREFS = {
+    "directories": []
+}
 
 class ClickableTimecode(Label):
     """A clickable label widget for timecodes"""
@@ -36,12 +43,45 @@ class RapidMomentNavigator:
         self.script_dir = os.path.abspath(os.path.dirname(__file__))
         self.debug_print(f"Script directory: {self.script_dir}")
         
+        # Load preferences from file
+        self.preferences = self.load_preferences()
+        
         # Map to store relationship between subtitle files and video files
         self.subtitle_to_video_map = {}
         
         # Create main frame
         self.main_frame = ttk.Frame(root)
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Create directory management frame
+        self.dir_frame = ttk.LabelFrame(self.main_frame, text="Media Directories")
+        self.dir_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Directory listbox with scrollbar
+        self.dir_list_frame = ttk.Frame(self.dir_frame)
+        self.dir_list_frame.pack(fill="x", padx=5, pady=5, side="left", expand=True)
+        
+        self.dir_listbox = tk.Listbox(self.dir_list_frame, height=3, width=50)
+        self.dir_listbox.pack(side="left", fill="both", expand=True)
+        
+        dir_scrollbar = ttk.Scrollbar(self.dir_list_frame, orient="vertical", command=self.dir_listbox.yview)
+        dir_scrollbar.pack(side="right", fill="y")
+        self.dir_listbox.configure(yscrollcommand=dir_scrollbar.set)
+        
+        # Populate the directory listbox
+        self.update_directory_listbox()
+        
+        # Directory buttons frame
+        self.dir_btn_frame = ttk.Frame(self.dir_frame)
+        self.dir_btn_frame.pack(fill="y", padx=5, pady=5, side="right")
+        
+        # Add directory button
+        self.add_dir_btn = ttk.Button(self.dir_btn_frame, text="Add Directory", command=self.add_directory)
+        self.add_dir_btn.pack(fill="x", padx=5, pady=2)
+        
+        # Remove directory button
+        self.remove_dir_btn = ttk.Button(self.dir_btn_frame, text="Remove Directory", command=self.remove_directory)
+        self.remove_dir_btn.pack(fill="x", padx=5, pady=2)
         
         # Create search frame
         self.search_frame = ttk.Frame(self.main_frame)
@@ -123,23 +163,65 @@ class RapidMomentNavigator:
     
     def load_shows(self):
         """Load the available shows from the directory structure"""
-        shows = [d for d in os.listdir() if os.path.isdir(d) and not d.startswith('.') and d not in ['.git']]
+        shows = []
+        
+        # Get directories to search - either from preferences or current directory
+        directories = self.preferences.get("directories", [])
+        
+        if not directories:
+            # If no custom directories, use current directory
+            self.debug_print("No custom directories, using current directory")
+            current_dir = os.path.abspath(".")
+            search_dirs = [current_dir]
+        else:
+            # Use custom directories from preferences
+            self.debug_print(f"Using {len(directories)} custom directories")
+            search_dirs = directories
+        
+        # Search for show directories in all search directories
+        for search_dir in search_dirs:
+            if os.path.exists(search_dir) and os.path.isdir(search_dir):
+                self.debug_print(f"Searching for shows in: {search_dir}")
+                try:
+                    dir_contents = [d for d in os.listdir(search_dir) 
+                                   if os.path.isdir(os.path.join(search_dir, d)) 
+                                   and not d.startswith('.') 
+                                   and d not in ['.git']]
+                    
+                    # Add search_dir prefix to each show directory
+                    for show in dir_contents:
+                        full_path = os.path.join(search_dir, show)
+                        # Check if the directory has a Subtitles folder
+                        subtitle_path = os.path.join(full_path, 'Subtitles')
+                        if os.path.exists(subtitle_path) and os.path.isdir(subtitle_path):
+                            shows.append(full_path)
+                            self.debug_print(f"Found show directory with subtitles: {full_path}")
+                except Exception as e:
+                    self.debug_print(f"Error scanning directory {search_dir}: {e}")
+        
+        # Update dropdown
         self.show_dropdown['values'] = shows
         if shows:
             self.show_dropdown.current(0)
-        self.debug_print(f"Loaded shows: {shows}")
+            
+        self.debug_print(f"Loaded {len(shows)} shows")
+        return shows
     
     def map_subtitles_to_videos(self):
         """Map subtitle files to their corresponding video files"""
         self.status_var.set("Mapping subtitle files to videos...")
         
+        # Clear previous mappings
+        self.subtitle_to_video_map = {}
+        
         # Common video file extensions
         video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.flv', '.webm']
         
-        for show in self.show_dropdown['values']:
+        for show_path in self.show_dropdown['values']:
+            show_name = os.path.basename(show_path)
             # Find all subtitle files (focus on .srt files)
             subtitle_files = []
-            subtitle_path = os.path.join(show, 'Subtitles')
+            subtitle_path = os.path.join(show_path, 'Subtitles')
             
             # Check if there's a dedicated Subtitles folder
             if os.path.exists(subtitle_path):
@@ -149,12 +231,12 @@ class RapidMomentNavigator:
             video_files = []
             
             # Walk through the entire directory structure to find all video files
-            for root, dirs, files in os.walk(os.path.join(show)):
+            for root, dirs, files in os.walk(show_path):
                 for file in files:
                     if any(file.lower().endswith(ext) for ext in video_extensions):
                         video_files.append(os.path.join(root, file))
             
-            self.debug_print(f"Found {len(subtitle_files)} subtitle files and {len(video_files)} video files for {show}")
+            self.debug_print(f"Found {len(subtitle_files)} subtitle files and {len(video_files)} video files for {show_name}")
             
             # Map subtitles to videos based on similarity of filenames
             for subtitle_file in subtitle_files:
@@ -237,18 +319,19 @@ class RapidMomentNavigator:
         
         self.search_results = []
         
-        self.debug_print(f"Searching for '{keyword}' in {selected_show}")
+        self.debug_print(f"Searching for '{keyword}' in {os.path.basename(selected_show)}")
         
         # Start search in a separate thread to keep UI responsive
         threading.Thread(target=self._search_thread, args=(keyword, selected_show)).start()
     
     def _search_thread(self, keyword, selected_show):
         """Thread function to handle the search"""
-        self.status_var.set(f"Searching for '{keyword}' in {selected_show}...")
+        self.status_var.set(f"Searching for '{keyword}' in {os.path.basename(selected_show)}...")
         
+        # Get the full path for the subtitle directory
         subtitle_path = os.path.join(selected_show, 'Subtitles')
         if not os.path.exists(subtitle_path):
-            self.status_var.set(f"Subtitle directory not found for {selected_show}")
+            self.status_var.set(f"Subtitle directory not found for {os.path.basename(selected_show)}")
             return
         
         subtitle_files = []
@@ -311,15 +394,20 @@ class RapidMomentNavigator:
                 self.root.after(0, self._update_results_ui, subtitle_file, file_results)
         
         # Update status
-        self.debug_print(f"Found {total_results} matches in {selected_show}")
-        self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {selected_show}"))
+        self.debug_print(f"Found {total_results} matches in {os.path.basename(selected_show)}")
+        self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {os.path.basename(selected_show)}"))
     
     def _update_results_ui(self, subtitle_file, file_results):
         """Update the UI with search results (called from main thread)"""
         # Add file header
         file_basename = os.path.basename(subtitle_file)
-        file_header = ttk.Label(self.results_container, text=f"File: {file_basename}", 
-                               font=("TkDefaultFont", 10, "bold"), foreground="green")
+        show_name = os.path.basename(os.path.dirname(os.path.dirname(subtitle_file)))
+        file_header = ttk.Label(
+            self.results_container, 
+            text=f"Show: {show_name} | File: {file_basename}", 
+            font=("TkDefaultFont", 10, "bold"), 
+            foreground="green"
+        )
         file_header.pack(anchor="w", padx=5, pady=2)
         
         # Add each result
@@ -465,6 +553,176 @@ class RapidMomentNavigator:
         
         # Prevent the default behavior
         return "break"
+
+    def load_preferences(self):
+        """Load preferences from file or create default preferences if file doesn't exist"""
+        prefs_path = os.path.join(self.script_dir, PREFS_FILENAME)
+        self.debug_print(f"Loading preferences from: {prefs_path}")
+        
+        try:
+            if os.path.exists(prefs_path):
+                with open(prefs_path, 'r') as f:
+                    prefs = json.load(f)
+                    self.debug_print(f"Loaded preferences: {prefs}")
+                    return prefs
+        except Exception as e:
+            self.debug_print(f"Error loading preferences: {e}")
+            
+        # Return default preferences if file doesn't exist or has errors
+        self.debug_print("Using default preferences")
+        return DEFAULT_PREFS.copy()
+    
+    def save_preferences(self):
+        """Save preferences to file"""
+        prefs_path = os.path.join(self.script_dir, PREFS_FILENAME)
+        self.debug_print(f"Saving preferences to: {prefs_path}")
+        
+        try:
+            with open(prefs_path, 'w') as f:
+                json.dump(self.preferences, f, indent=4)
+                self.debug_print("Preferences saved successfully")
+        except Exception as e:
+            self.debug_print(f"Error saving preferences: {e}")
+            self.status_var.set(f"Error saving preferences: {e}")
+    
+    def update_directory_listbox(self):
+        """Update the directory listbox with current preferences"""
+        self.dir_listbox.delete(0, tk.END)
+        
+        # If there are no directories in preferences, show current directory
+        if not self.preferences.get("directories", []):
+            self.dir_listbox.insert(tk.END, os.path.abspath(".") + " (Current)")
+        else:
+            # Add all directories from preferences
+            for directory in self.preferences.get("directories", []):
+                self.dir_listbox.insert(tk.END, directory)
+    
+    def add_directory(self):
+        """Open file dialog to add directories to preferences"""
+        # Add a button to select multiple directories
+        root = tk.Toplevel(self.root)
+        root.title("Add Media Directories")
+        root.geometry("500x400")
+        
+        # Create frame to hold the listbox and buttons
+        frame = ttk.Frame(root)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Instructions label
+        ttk.Label(frame, text="Select one or more directories that contain your media:").pack(pady=5, anchor="w")
+        
+        # Listbox to display selected directories
+        listbox_frame = ttk.Frame(frame)
+        listbox_frame.pack(fill="both", expand=True, pady=5)
+        
+        listbox = tk.Listbox(listbox_frame, selectmode="extended", height=10)
+        listbox.pack(side="left", fill="both", expand=True)
+        
+        scrollbar = ttk.Scrollbar(listbox_frame, orient="vertical", command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.configure(yscrollcommand=scrollbar.set)
+        
+        # Function to add a directory
+        def select_dir():
+            new_dir = filedialog.askdirectory(
+                title="Select Media Directory",
+                initialdir=self.script_dir,
+                mustexist=True
+            )
+            if new_dir and new_dir not in [listbox.get(i) for i in range(listbox.size())]:
+                listbox.insert(tk.END, new_dir)
+        
+        # Function to remove selected directories from the listbox
+        def remove_selected():
+            selected = list(listbox.curselection())
+            selected.reverse()  # Reverse to delete from bottom to top
+            for i in selected:
+                listbox.delete(i)
+        
+        # Function to save and close
+        def save_and_close():
+            # Get all directories from the listbox
+            new_dirs = [listbox.get(i) for i in range(listbox.size())]
+            
+            # Update preferences
+            if "directories" not in self.preferences:
+                self.preferences["directories"] = []
+                
+            # Add new directories if not already in preferences
+            added_count = 0
+            for new_dir in new_dirs:
+                if new_dir not in self.preferences["directories"]:
+                    self.preferences["directories"].append(new_dir)
+                    added_count += 1
+            
+            # Save and update
+            if added_count > 0:
+                self.save_preferences()
+                self.update_directory_listbox()
+                
+                # Reload shows and remap files
+                self.load_shows()
+                self.map_subtitles_to_videos()
+                
+                self.status_var.set(f"Added {added_count} new directories to preferences")
+            
+            # Close the dialog
+            root.destroy()
+        
+        # Button frame
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill="x", pady=10)
+        
+        # Buttons
+        select_btn = ttk.Button(button_frame, text="Add Directory", command=select_dir)
+        select_btn.pack(side="left", padx=5)
+        
+        remove_btn = ttk.Button(button_frame, text="Remove Selected", command=remove_selected)
+        remove_btn.pack(side="left", padx=5)
+        
+        # Bottom button frame
+        bottom_button_frame = ttk.Frame(frame)
+        bottom_button_frame.pack(fill="x", pady=10)
+        
+        cancel_btn = ttk.Button(bottom_button_frame, text="Cancel", command=root.destroy)
+        cancel_btn.pack(side="right", padx=5)
+        
+        save_btn = ttk.Button(bottom_button_frame, text="Save and Close", command=save_and_close)
+        save_btn.pack(side="right", padx=5)
+        
+        # Make the dialog modal
+        root.transient(self.root)
+        root.grab_set()
+        self.root.wait_window(root)
+    
+    def remove_directory(self):
+        """Remove selected directory from preferences"""
+        selected_indices = self.dir_listbox.curselection()
+        
+        if not selected_indices:
+            self.status_var.set("No directory selected")
+            return
+        
+        # Only attempt to remove if we have custom directories
+        if self.preferences.get("directories", []):
+            selected_index = selected_indices[0]
+            selected_dir = self.dir_listbox.get(selected_index)
+            
+            # Check if it's not the "Current" directory
+            if "(Current)" not in selected_dir:
+                self.preferences["directories"].remove(selected_dir)
+                self.save_preferences()
+                self.update_directory_listbox()
+                
+                # Reload shows and remap files
+                self.load_shows()
+                self.map_subtitles_to_videos()
+                
+                self.status_var.set(f"Removed directory: {selected_dir}")
+            else:
+                self.status_var.set("Cannot remove current directory")
+        else:
+            self.status_var.set("No custom directories to remove")
 
 if __name__ == "__main__":
     # Parse command line arguments
