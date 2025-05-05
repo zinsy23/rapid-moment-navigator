@@ -12,6 +12,8 @@ A Python application for searching subtitle files and quickly navigating to spec
 - Support for various video formats (MP4, MKV, AVI, MOV, WMV, etc.)
 - Generic directory structure support - works with any organization pattern
 - Ctrl+Backspace support in the search field for faster text editing
+- Multi-directory support with preferences system
+- Add and remove media directories through a user-friendly interface
 
 ## Requirements
 
@@ -26,16 +28,39 @@ A Python application for searching subtitle files and quickly navigating to spec
 
 ## Usage
 
-1. Place the `rapid_moment_navigator.py` script in the parent directory of your show folders
+1. Place the `rapid_moment_navigator.py` script in any directory
 2. Run the script with Python:
    ```
    python rapid_moment_navigator.py
    ```
-3. Select a show from the dropdown menu
-4. Enter a search term
-5. Click "Find All" or press Enter to search
-6. Results will display with clickable timecodes
-7. Click on any timecode to open the corresponding video at that timestamp
+3. By default, the application will scan the current directory for show folders
+4. To add additional media directories, click the "Add Directory" button
+5. Select a show from the dropdown menu
+6. Enter a search term
+7. Click "Find All" or press Enter to search
+8. Results will display with clickable timecodes
+9. Click on any timecode to open the corresponding video at that timestamp
+
+### Media Directory Management
+
+The application now supports managing multiple media directories:
+
+1. **Adding Directories**: Click the "Add Directory" button to open the directory manager
+   - You can add multiple directories that contain your show folders
+   - Existing directories are displayed in the dialog for easy management
+   - Use the "Add Multiple Directories" button to select multiple directories in sequence
+   - Each directory added will be scanned for SRT files in any subfolder
+   - Preferences are automatically saved to `rapid_navigator_prefs.json`
+
+2. **Removing Directories**: Select a directory in the list and click "Remove Directory"
+   - You can remove the current directory, but only if you've added other directories
+   - If you remove all directories, the current directory will be automatically re-added
+   - The application ensures there is always at least one directory to search
+
+3. **Directory Structure**: The application is flexible and works with various folder structures
+   - SRT files can be located anywhere within the directory tree
+   - Video files can be anywhere within the directory tree
+   - The application will automatically find and map subtitle files to video files
 
 ### Command-line Options
 
@@ -49,7 +74,7 @@ A Python application for searching subtitle files and quickly navigating to spec
 The application is flexible and can handle various directory structures:
 
 1. Subtitle files should be in a folder named "Subtitles" within each show's directory
-2. Video files can be anywhere within the show's directory or subdirectories
+2. Video files can be anywhere within the show's directory structure
 3. The application will automatically find and map subtitle files to video files based on filename similarity
 4. Supports common video formats including MP4, MKV, AVI, MOV, WMV, and more
 
@@ -94,6 +119,14 @@ Parent Directory
         └── D2
             └── ...
 ```
+
+## Preferences System
+
+The application stores your preferences in a JSON file named `rapid_navigator_prefs.json` located in the same directory as the script. The preferences include:
+
+- Media directories: Paths to directories containing show folders
+
+If the preferences file doesn't exist or no directories are defined, the application will use the current directory by default.
 
 ## Filename Matching Logic
 
