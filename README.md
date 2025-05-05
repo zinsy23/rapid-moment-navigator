@@ -12,6 +12,8 @@ A Python application for searching subtitle files and quickly navigating to spec
 - Support for various video formats (MP4, MKV, AVI, MOV, WMV, etc.)
 - Generic directory structure support - works with any organization pattern
 - Ctrl+Backspace support in the search field for faster text editing
+- Multi-directory support with preferences system
+- Add and remove media directories through a user-friendly interface
 
 ## Requirements
 
@@ -26,16 +28,34 @@ A Python application for searching subtitle files and quickly navigating to spec
 
 ## Usage
 
-1. Place the `rapid_moment_navigator.py` script in the parent directory of your show folders
+1. Place the `rapid_moment_navigator.py` script in any directory
 2. Run the script with Python:
    ```
    python rapid_moment_navigator.py
    ```
-3. Select a show from the dropdown menu
-4. Enter a search term
-5. Click "Find All" or press Enter to search
-6. Results will display with clickable timecodes
-7. Click on any timecode to open the corresponding video at that timestamp
+3. By default, the application will scan the current directory for show folders
+4. To add additional media directories, click the "Add Directory" button
+5. Select a show from the dropdown menu
+6. Enter a search term
+7. Click "Find All" or press Enter to search
+8. Results will display with clickable timecodes
+9. Click on any timecode to open the corresponding video at that timestamp
+
+### Media Directory Management
+
+The application now supports managing multiple media directories:
+
+1. **Adding Directories**: Click the "Add Directory" button to open the directory manager
+   - You can add multiple directories that contain your show folders
+   - Each directory added will be scanned for shows with subtitle folders
+   - Preferences are automatically saved to `rapid_navigator_prefs.json`
+
+2. **Removing Directories**: Select a directory in the list and click "Remove Directory"
+   - The application will update its preferences and rescan remaining directories
+
+3. **Directory Structure**: The application is flexible and works with various folder structures
+   - Each show should have a "Subtitles" folder with .srt files
+   - Video files can be anywhere within the show's directory structure
 
 ### Command-line Options
 
@@ -94,6 +114,14 @@ Parent Directory
         └── D2
             └── ...
 ```
+
+## Preferences System
+
+The application stores your preferences in a JSON file named `rapid_navigator_prefs.json` located in the same directory as the script. The preferences include:
+
+- Media directories: Paths to directories containing show folders
+
+If the preferences file doesn't exist or no directories are defined, the application will use the current directory by default.
 
 ## Filename Matching Logic
 
