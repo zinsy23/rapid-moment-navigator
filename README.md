@@ -137,6 +137,21 @@ The application attempts to match subtitle and video files using the following s
 
 This approach handles various naming conventions and formats automatically.
 
+## Running Globally
+
+To run the application globally using an AutoHotkey mapping, follow these steps:
+
+1. Install AutoHotkey from [https://www.autohotkey.com/](https://www.autohotkey.com/)
+2. If you want to use the included `rapid_moment_navigator.ahk` script directly, you can add an AutoHotkey shortcut mapping to it using standard syntax. I personally have a master AutoHotkey script for all my shortcuts, so to make it run globally across the system, I've created a `.lnk` shortcut file to the script and run that from the master script using the following syntax in the same directory as my master script:
+
+```
+#+s::
+run, launch-rapid-moment-navigator.ahk.lnk,,hide
+return
+```
+
+**Note:** The reason I'm doing it this way with my setup is because I want to keep this script in my GitHub repository on my system, but access it from my AutoHotkey scripts on my system. It works great if I have the `launch-rapid-moment-navigator.ahk` file in the repository, and then have a Windows `.lnk` shortcut to that in my AutoHotkey scripts directory where I have all my personal scripts, including the one that runs this using the above syntax. The `,,hide` prevents a console window from appearing when the script is run.
+
 ## Notes
 
 - If Media Player Classic (MPC-HC) isn't found at the default locations, the application will try alternative locations or fall back to the default media player
@@ -147,4 +162,4 @@ This approach handles various naming conventions and formats automatically.
 ## Future Improvements
 
 - Verify support for other video players and formats in Windows, Mac, and Linux
-- Verify AutoHotkey support in Windows and that it works
+- Add some support to import clips based on displayed transcript results at the timecode of the result
