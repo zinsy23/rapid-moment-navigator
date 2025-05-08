@@ -14,13 +14,28 @@ import json
 PREFS_FILENAME = "rapid_navigator_prefs.json"
 DEFAULT_PREFS = {
     "directories": [],
-    "exclude_current_dir": False
+    "exclude_current_dir": False,
+    "selected_editor": "None"
 }
 
 class ClickableTimecode(Label):
     """A clickable label widget for timecodes"""
     def __init__(self, parent, timecode, result, callback, **kwargs):
         super().__init__(parent, text=timecode, cursor="hand2", fg="blue", **kwargs)
+        self.result = result
+        self.callback = callback
+        self.bind("<Button-1>", self._on_click)
+        # Add underline
+        self.config(font=("TkDefaultFont", 10, "underline"))
+        
+    def _on_click(self, event):
+        """Handle click event"""
+        self.callback(self.result)
+
+class ClickableImport(Label):
+    """A clickable label widget for import buttons"""
+    def __init__(self, parent, text, result, callback, **kwargs):
+        super().__init__(parent, text=text, cursor="hand2", fg="blue", **kwargs)
         self.result = result
         self.callback = callback
         self.bind("<Button-1>", self._on_click)
@@ -109,6 +124,22 @@ class RapidMomentNavigator:
         
         self.search_button = ttk.Button(self.search_frame, text="Find All", command=self.search_subtitles)
         self.search_button.pack(side="left", padx=5)
+        
+        # Create editor selection dropdown
+        ttk.Label(self.search_frame, text="Editor:").pack(side="left", padx=5)
+        self.editor_var = tk.StringVar()
+        self.editor_dropdown = ttk.Combobox(self.search_frame, textvariable=self.editor_var, state="readonly", width=15)
+        self.editor_dropdown.pack(side="left", padx=5)
+        
+        # Set editor dropdown options
+        self.editor_dropdown['values'] = ["None", "DaVinci Resolve"]
+        
+        # Set default value from preferences
+        selected_editor = self.preferences.get("selected_editor", "None")
+        self.editor_var.set(selected_editor)
+        
+        # Bind editor dropdown change
+        self.editor_dropdown.bind("<<ComboboxSelected>>", self._on_editor_changed)
         
         # Create results frame with canvas for scrolling
         self.results_frame = ttk.LabelFrame(self.main_frame, text="Search Results")
@@ -592,16 +623,24 @@ class RapidMomentNavigator:
         )
         file_header.pack(anchor="w", padx=5, pady=2)
         
+        # Check if we should show import buttons
+        selected_editor = self.editor_var.get()
+        show_import_buttons = selected_editor != "None"
+        
         # Add each result
         for result in file_results:
             # Create a frame for this result
             result_frame = ttk.Frame(self.results_container)
             result_frame.pack(fill="x", padx=5, pady=2, anchor="w")
             
+            # Create left side frame for timecode and text
+            left_frame = ttk.Frame(result_frame)
+            left_frame.pack(side="left", fill="both", expand=True, anchor="w")
+            
             # Create clickable timecode label
             timecode_text = f"{result['start_time']} --> {result['end_time']}"
             timecode_label = ClickableTimecode(
-                result_frame, 
+                left_frame, 
                 timecode_text, 
                 result, 
                 self._handle_timecode_click
@@ -609,8 +648,34 @@ class RapidMomentNavigator:
             timecode_label.pack(anchor="w")
             
             # Add text label
-            text_label = ttk.Label(result_frame, text=result['clean_text'], wraplength=700)
+            text_label = ttk.Label(left_frame, text=result['clean_text'], wraplength=600)
             text_label.pack(anchor="w", padx=10)
+            
+            # Create import buttons frame (right side)
+            import_buttons_frame = ttk.Frame(result_frame)
+            # Store reference to the import buttons frame for later visibility updates
+            result_frame.import_buttons_frame = import_buttons_frame
+            
+            if show_import_buttons:
+                import_buttons_frame.pack(side="right", padx=5)
+            
+            # Add Import Media button
+            import_media_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Media", 
+                result, 
+                self._handle_import_media_click
+            )
+            import_media_btn.pack(anchor="e", pady=2)
+            
+            # Add Import Clip button
+            import_clip_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Clip", 
+                result, 
+                self._handle_import_clip_click
+            )
+            import_clip_btn.pack(anchor="e", pady=2)
             
             # Add some space after each result
             ttk.Separator(self.results_container, orient="horizontal").pack(fill="x", pady=5)
@@ -736,6 +801,86 @@ class RapidMomentNavigator:
         # Prevent the default behavior
         return "break"
 
+    def _on_editor_changed(self, event):
+        """Handle editor dropdown change"""
+        selected_editor = self.editor_var.get()
+        self.debug_print(f"Editor changed to: {selected_editor}")
+        
+        # Update preferences
+        self.preferences["selected_editor"] = selected_editor
+        self.save_preferences()
+        
+        # Update UI to show/hide import buttons
+        self._update_import_buttons_visibility()
+    
+    def _update_import_buttons_visibility(self):
+        """Update visibility of import buttons based on selected editor"""
+        selected_editor = self.editor_var.get()
+        show_import_buttons = selected_editor != "None"
+        
+        # Loop through all result frames and update import buttons visibility
+        for widget in self.results_container.winfo_children():
+            if isinstance(widget, ttk.Frame) and hasattr(widget, "import_buttons_frame"):
+                if show_import_buttons:
+                    widget.import_buttons_frame.pack(side="right", padx=5)
+                else:
+                    widget.import_buttons_frame.pack_forget()
+        
+        # Update the canvas scroll region
+        self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
+    
+    def _handle_import_media_click(self, result):
+        """Handle click on Import Media button"""
+        selected_editor = self.editor_var.get()
+        subtitle_file = result['file']
+        
+        if subtitle_file in self.subtitle_to_video_map:
+            video_file = self.subtitle_to_video_map[subtitle_file]
+            self.debug_print(f"Import Media clicked for {os.path.basename(video_file)} with editor {selected_editor}")
+            
+            # Call the appropriate import function based on selected editor
+            if selected_editor == "DaVinci Resolve":
+                self._import_media_to_davinci_resolve(video_file)
+            # Add more editors as needed
+            
+            self.status_var.set(f"Importing {os.path.basename(video_file)} to {selected_editor}")
+        else:
+            self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
+            self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
+    
+    def _handle_import_clip_click(self, result):
+        """Handle click on Import Clip button"""
+        selected_editor = self.editor_var.get()
+        subtitle_file = result['file']
+        start_time = result['mpc_start_time']
+        end_time = result['end_time'].replace(',', '.').split('.')[0]  # Convert to MPC format
+        
+        if subtitle_file in self.subtitle_to_video_map:
+            video_file = self.subtitle_to_video_map[subtitle_file]
+            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {start_time}-{end_time} with editor {selected_editor}")
+            
+            # Call the appropriate import function based on selected editor
+            if selected_editor == "DaVinci Resolve":
+                self._import_clip_to_davinci_resolve(video_file, start_time, end_time)
+            # Add more editors as needed
+            
+            self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {start_time}-{end_time} to {selected_editor}")
+        else:
+            self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
+            self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
+    
+    def _import_media_to_davinci_resolve(self, video_file):
+        """Import full media file to DaVinci Resolve"""
+        # This is a placeholder for future implementation
+        self.debug_print(f"TODO: Implement importing {video_file} to DaVinci Resolve")
+        # Future implementation will go here
+    
+    def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
+        """Import clip with time range to DaVinci Resolve"""
+        # This is a placeholder for future implementation
+        self.debug_print(f"TODO: Implement importing {video_file} from {start_time} to {end_time} to DaVinci Resolve")
+        # Future implementation will go here
+    
     def load_preferences(self):
         """Load preferences from file or create default preferences if file doesn't exist"""
         prefs_path = os.path.join(self.script_dir, PREFS_FILENAME)
