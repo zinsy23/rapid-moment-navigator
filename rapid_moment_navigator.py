@@ -615,11 +615,11 @@ class RapidMomentNavigator:
         else:
             header_text = f"File: {file_basename}"
         
-        # Create a frame for the file header and import buttons
+        # Create a frame for the file header
         header_frame = ttk.Frame(self.results_container)
         header_frame.pack(fill="x", padx=5, pady=2)
         
-        # Add file header label on the left
+        # Add file header label
         file_header = ttk.Label(
             header_frame, 
             text=header_text, 
@@ -632,17 +632,19 @@ class RapidMomentNavigator:
         selected_editor = self.editor_var.get()
         show_import_buttons = selected_editor != "None"
         
-        # Create import buttons frame (right side of header)
-        import_buttons_frame = ttk.Frame(header_frame)
-        # Store reference to the import buttons frame for later visibility updates
-        header_frame.import_buttons_frame = import_buttons_frame
-        
-        if show_import_buttons:
-            import_buttons_frame.pack(side="right", padx=5)
-        
-            # First result will be used for the file-level import
-            if file_results:
-                result = file_results[0]
+        # Add each result
+        for result in file_results:
+            # Create a frame for this result
+            result_frame = ttk.Frame(self.results_container)
+            result_frame.pack(fill="x", padx=5, pady=2, anchor="w")
+            
+            # Create import buttons frame at the top right
+            import_buttons_frame = ttk.Frame(result_frame)
+            # Store reference to the import buttons frame for later visibility updates
+            result_frame.import_buttons_frame = import_buttons_frame
+            
+            if show_import_buttons:
+                import_buttons_frame.pack(side="right", padx=5, anchor="ne")
                 
                 # Add Import Media button
                 import_media_btn = ClickableImport(
@@ -653,7 +655,7 @@ class RapidMomentNavigator:
                 )
                 import_media_btn.pack(side="left", padx=5)
                 
-                # Add Import Clip button (but this will use the entire file's duration)
+                # Add Import Clip button
                 import_clip_btn = ClickableImport(
                     import_buttons_frame, 
                     "Import Clip", 
@@ -661,16 +663,10 @@ class RapidMomentNavigator:
                     self._handle_import_clip_click
                 )
                 import_clip_btn.pack(side="left", padx=5)
-        
-        # Add each result
-        for result in file_results:
-            # Create a frame for this result
-            result_frame = ttk.Frame(self.results_container)
-            result_frame.pack(fill="x", padx=5, pady=2, anchor="w")
             
-            # Create timecode and text frame
+            # Create content frame (with timecode and text) that fills the remaining space
             content_frame = ttk.Frame(result_frame)
-            content_frame.pack(fill="both", expand=True, anchor="w")
+            content_frame.pack(side="left", fill="both", expand=True, anchor="w")
             
             # Create clickable timecode label
             timecode_text = f"{result['start_time']} --> {result['end_time']}"
