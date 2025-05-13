@@ -9,12 +9,18 @@ from pathlib import Path
 import sys
 import argparse
 import json
+import logging
+import time
+import traceback
+import multiprocessing
+import tempfile
 
 # Constants
 PREFS_FILENAME = "rapid_navigator_prefs.json"
 DEFAULT_PREFS = {
     "directories": [],
-    "exclude_current_dir": False
+    "exclude_current_dir": False,
+    "selected_editor": "None"
 }
 
 class ClickableTimecode(Label):
@@ -31,6 +37,69 @@ class ClickableTimecode(Label):
         """Handle click event"""
         self.callback(self.result)
 
+class ClickableImport(Label):
+    """A clickable label widget for import buttons"""
+    def __init__(self, parent, text, result, callback, tooltip=None, **kwargs):
+        super().__init__(parent, text=text, cursor="hand2", fg="blue", **kwargs)
+        self.result = result
+        self.callback = callback
+        self.bind("<Button-1>", self._on_click)
+        # Add underline
+        self.config(font=("TkDefaultFont", 10, "underline"))
+        
+        # Add tooltip functionality
+        self.tooltip_text = tooltip
+        if tooltip:
+            self.bind("<Enter>", self._on_enter)
+            self.bind("<Leave>", self._on_leave)
+            self.tooltip = None
+            self.tooltip_timer = None
+        
+    def _on_click(self, event):
+        """Handle click event"""
+        self.callback(self.result)
+        
+    def _on_enter(self, event):
+        """Start timer to show tooltip when mouse enters the widget"""
+        if self.tooltip_text:
+            # Cancel any existing timer
+            self._cancel_timer()
+            # Start a new timer - 1000ms = 1 second
+            self.tooltip_timer = self.after(1000, self._show_tooltip)
+    
+    def _show_tooltip(self):
+        """Display the tooltip after delay"""
+        x, y, _, _ = self.bbox("insert")
+        x += self.winfo_rootx() + 25
+        y += self.winfo_rooty() + 25
+        
+        # Create a toplevel window
+        self.tooltip = tk.Toplevel(self)
+        self.tooltip.wm_overrideredirect(True)
+        self.tooltip.wm_geometry(f"+{x}+{y}")
+        
+        # Create tooltip content
+        frame = tk.Frame(self.tooltip, background="#ffffe0", borderwidth=1, relief="solid")
+        frame.pack(ipadx=3, ipady=2)
+        
+        label = tk.Label(frame, text=self.tooltip_text, justify="left",
+                      background="#ffffe0", fg="#000000", 
+                      wraplength=250, font=("TkDefaultFont", 9))
+        label.pack()
+    
+    def _on_leave(self, event):
+        """Hide tooltip and cancel timer when mouse leaves the widget"""
+        self._cancel_timer()
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
+            
+    def _cancel_timer(self):
+        """Cancel any pending tooltip timer"""
+        if self.tooltip_timer:
+            self.after_cancel(self.tooltip_timer)
+            self.tooltip_timer = None
+
 class RapidMomentNavigator:
     def __init__(self, root, debug=False):
         self.root = root
@@ -39,6 +108,12 @@ class RapidMomentNavigator:
         
         # Debug mode setting
         self.debug = debug
+        
+        # Initialize debug window to None
+        self.debug_window = None
+        
+        # Setup exception handling for Tkinter
+        self.setup_exception_handler()
         
         # Store the script directory for relative path operations
         self.script_dir = os.path.abspath(os.path.dirname(__file__))
@@ -110,6 +185,22 @@ class RapidMomentNavigator:
         self.search_button = ttk.Button(self.search_frame, text="Find All", command=self.search_subtitles)
         self.search_button.pack(side="left", padx=5)
         
+        # Create editor selection dropdown
+        ttk.Label(self.search_frame, text="Editor:").pack(side="left", padx=5)
+        self.editor_var = tk.StringVar()
+        self.editor_dropdown = ttk.Combobox(self.search_frame, textvariable=self.editor_var, state="readonly", width=15)
+        self.editor_dropdown.pack(side="left", padx=5)
+        
+        # Set editor dropdown options
+        self.editor_dropdown['values'] = ["None", "DaVinci Resolve"]
+        
+        # Set default value from preferences
+        selected_editor = self.preferences.get("selected_editor", "None")
+        self.editor_var.set(selected_editor)
+        
+        # Bind editor dropdown change
+        self.editor_dropdown.bind("<<ComboboxSelected>>", self._on_editor_changed)
+        
         # Create results frame with canvas for scrolling
         self.results_frame = ttk.LabelFrame(self.main_frame, text="Search Results")
         self.results_frame.pack(fill="both", expand=True, padx=5, pady=5)
@@ -148,6 +239,67 @@ class RapidMomentNavigator:
         
         # Debug print
         self.debug_print(f"Application initialized with {len(self.show_name_to_path_map)} shows")
+        
+        # Initialize safe mode flag for editors
+        self.resolve_in_safe_mode = False
+    
+    def setup_exception_handler(self):
+        """Setup global exception handler to catch and display errors"""
+        # Store the original exception handler
+        self.original_exception_handler = sys.excepthook
+        
+        # Create a new exception handler
+        def exception_handler(exc_type, exc_value, exc_traceback):
+            # Format the exception and traceback
+            error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+            
+            # Log the error
+            self.debug_print(f"UNCAUGHT EXCEPTION: {error_msg}")
+            
+            # Show in GUI
+            self.show_error_in_gui("Application Error", 
+                                  f"An unexpected error occurred:\n\n{str(exc_value)}\n\nSee debug window for details.")
+            
+            # Show in debug window
+            self.ensure_debug_window()
+            if self.debug_window:
+                self.debug_window.insert_text(error_msg)
+            
+            # Call the original handler
+            self.original_exception_handler(exc_type, exc_value, exc_traceback)
+        
+        # Set our custom exception handler
+        sys.excepthook = exception_handler
+    
+    def ensure_debug_window(self):
+        """Create debug window if it doesn't exist"""
+        try:
+            if not hasattr(self, 'debug_window') or self.debug_window is None or not self.debug_window.winfo_exists():
+                self.debug_window = DebugWindow(self.root, self.debug)
+        except Exception as e:
+            print(f"Error creating debug window: {e}", file=sys.stderr)
+    
+    def show_error_in_gui(self, title, message):
+        """Display an error message in the GUI"""
+        # Update status bar
+        first_line = message.split('\n')[0]
+        self.status_var.set(f"Error: {first_line}")
+        
+        # Show error dialog (in a separate thread to avoid blocking)
+        threading.Thread(target=lambda: messagebox.showerror(title, message)).start()
+
+    def debug_print(self, message):
+        """Print debug messages and add to debug window if available"""
+        if self.debug:
+            print(f"DEBUG: {message}", flush=True)
+            
+            # Only try to use the debug window if it's properly initialized
+            try:
+                if hasattr(self, 'debug_window') and self.debug_window is not None and self.debug_window.winfo_exists():
+                    self.debug_window.insert_text(f"DEBUG: {message}\n")
+            except Exception:
+                # Silently ignore any errors with the debug window
+                pass
     
     def _configure_scroll_region(self, event):
         """Configure the scroll region of the canvas"""
@@ -160,11 +312,6 @@ class RapidMomentNavigator:
     def _on_mousewheel(self, event):
         """Handle mousewheel scrolling"""
         self.results_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-    
-    def debug_print(self, message):
-        """Print debug messages if debug mode is enabled"""
-        if self.debug:
-            print(f"DEBUG: {message}", flush=True)
     
     def update_show_dropdown(self):
         """Update the show dropdown with current show names"""
@@ -584,13 +731,22 @@ class RapidMomentNavigator:
         else:
             header_text = f"File: {file_basename}"
         
+        # Create a frame for the file header
+        header_frame = ttk.Frame(self.results_container)
+        header_frame.pack(fill="x", padx=5, pady=2)
+        
+        # Add file header label
         file_header = ttk.Label(
-            self.results_container, 
+            header_frame, 
             text=header_text, 
             font=("TkDefaultFont", 10, "bold"), 
             foreground="green"
         )
-        file_header.pack(anchor="w", padx=5, pady=2)
+        file_header.pack(side="left", anchor="w")
+        
+        # Check if we should show import buttons
+        selected_editor = self.editor_var.get()
+        show_import_buttons = selected_editor != "None"
         
         # Add each result
         for result in file_results:
@@ -598,10 +754,43 @@ class RapidMomentNavigator:
             result_frame = ttk.Frame(self.results_container)
             result_frame.pack(fill="x", padx=5, pady=2, anchor="w")
             
+            # Create import buttons frame at the top right
+            import_buttons_frame = ttk.Frame(result_frame)
+            # Store reference to the import buttons frame for later visibility updates
+            result_frame.import_buttons_frame = import_buttons_frame
+            
+            # Always create the import buttons, but only show the frame if editor is selected
+            if show_import_buttons:
+                import_buttons_frame.pack(side="right", padx=5, anchor="ne")
+            
+            # Add Import Media button (always create, will be visible only if frame is visible)
+            import_media_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Media", 
+                result, 
+                self._handle_import_media_click,
+                tooltip="Import the entire video file to the DaVinci Resolve timeline"
+            )
+            import_media_btn.pack(side="left", padx=5)
+            
+            # Add Import Clip button (always create, will be visible only if frame is visible)
+            import_clip_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Clip", 
+                result, 
+                self._handle_import_clip_click,
+                tooltip="Import only the time range from this subtitle entry to the DaVinci Resolve timeline"
+            )
+            import_clip_btn.pack(side="left", padx=5)
+            
+            # Create content frame (with timecode and text) that fills the remaining space
+            content_frame = ttk.Frame(result_frame)
+            content_frame.pack(side="left", fill="both", expand=True, anchor="w")
+            
             # Create clickable timecode label
             timecode_text = f"{result['start_time']} --> {result['end_time']}"
             timecode_label = ClickableTimecode(
-                result_frame, 
+                content_frame, 
                 timecode_text, 
                 result, 
                 self._handle_timecode_click
@@ -609,7 +798,7 @@ class RapidMomentNavigator:
             timecode_label.pack(anchor="w")
             
             # Add text label
-            text_label = ttk.Label(result_frame, text=result['clean_text'], wraplength=700)
+            text_label = ttk.Label(content_frame, text=result['clean_text'], wraplength=700)
             text_label.pack(anchor="w", padx=10)
             
             # Add some space after each result
@@ -736,6 +925,408 @@ class RapidMomentNavigator:
         # Prevent the default behavior
         return "break"
 
+    def _on_editor_changed(self, event):
+        """Handle editor dropdown change"""
+        try:
+            selected_editor = self.editor_var.get()
+            self.debug_print(f"Editor changed to: {selected_editor}")
+            
+            # Update preferences
+            self.preferences["selected_editor"] = selected_editor
+            self.save_preferences()
+            
+            # Just update the UI and status - no API loading here
+            self._update_import_buttons_visibility()
+            
+            # Update status
+            if selected_editor == "None":
+                self.status_var.set("Editor integration disabled")
+            else:
+                self.status_var.set(f"{selected_editor} selected. API will be initialized when needed.")
+            
+        except Exception as e:
+            error_msg = f"Error changing editor: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
+
+    def _update_import_buttons_visibility(self):
+        """Update visibility of import buttons based on selected editor"""
+        selected_editor = self.editor_var.get()
+        show_import_buttons = selected_editor != "None"
+        
+        # Loop through all result frames and update import buttons visibility
+        for widget in self.results_container.winfo_children():
+            # Check if this is a result frame with import_buttons_frame attribute
+            if isinstance(widget, ttk.Frame) and hasattr(widget, "import_buttons_frame"):
+                # Get the import buttons frame
+                import_buttons_frame = widget.import_buttons_frame
+                
+                if show_import_buttons:
+                    # Show the buttons frame
+                    import_buttons_frame.pack(side="right", padx=5, anchor="ne")
+                else:
+                    # Hide the buttons frame
+                    import_buttons_frame.pack_forget()
+        
+        # Update the canvas scroll region
+        self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
+    
+    def _handle_import_media_click(self, result):
+        """Handle click on Import Media button"""
+        selected_editor = self.editor_var.get()
+        subtitle_file = result['file']
+        
+        if subtitle_file in self.subtitle_to_video_map:
+            video_file = self.subtitle_to_video_map[subtitle_file]
+            self.debug_print(f"Import Media clicked for {os.path.basename(video_file)} with editor {selected_editor}")
+            
+            # Call the appropriate import function based on selected editor
+            if selected_editor == "DaVinci Resolve":
+                self._import_media_to_davinci_resolve(video_file)
+            # Add more editors as needed
+            
+            self.status_var.set(f"Importing {os.path.basename(video_file)} to {selected_editor}")
+        else:
+            self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
+            self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
+    
+    def _handle_import_clip_click(self, result):
+        """Handle click on Import Clip button"""
+        selected_editor = self.editor_var.get()
+        subtitle_file = result['file']
+        start_time = result['mpc_start_time']
+        end_time = result['end_time'].replace(',', '.').split('.')[0]  # Convert to MPC format
+        
+        if subtitle_file in self.subtitle_to_video_map:
+            video_file = self.subtitle_to_video_map[subtitle_file]
+            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {start_time}-{end_time} with editor {selected_editor}")
+            
+            # Call the appropriate import function based on selected editor
+            if selected_editor == "DaVinci Resolve":
+                self._import_clip_to_davinci_resolve(video_file, start_time, end_time)
+            # Add more editors as needed
+            
+            self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {start_time}-{end_time} to {selected_editor}")
+        else:
+            self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
+            self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
+    
+    def _import_media_to_davinci_resolve(self, video_file):
+        """Import full media file to DaVinci Resolve"""
+        selected_editor = self.editor_var.get()
+        if selected_editor != "DaVinci Resolve":
+            self.debug_print(f"Wrong editor selected: {selected_editor}")
+            self.status_var.set("Please select DaVinci Resolve as the editor first")
+            return
+        
+        try:
+            # If we haven't initialized yet or previously failed, initialize now
+            if not hasattr(self, 'resolve_in_safe_mode') or not hasattr(self, 'resolve_initialized'):
+                self.resolve_in_safe_mode = False
+                self.resolve_initialized = False
+            
+            # Don't attempt to use the API if we're in safe mode
+            if self.resolve_in_safe_mode:
+                self.debug_print("Resolve is in safe mode - import functionality disabled")
+                self.status_var.set("Cannot import: DaVinci Resolve integration is in safe mode")
+                self.show_error_in_gui("DaVinci Resolve Safe Mode", 
+                                     "The integration is running in safe mode due to initialization errors.\n\n"
+                                     "Import functionality is disabled to prevent crashes.\n\n"
+                                     "Please check that DaVinci Resolve is properly installed and running.")
+                return
+            
+            # Check if API is initialized, if not initialize it now
+            if not self.resolve_initialized:
+                self.status_var.set("Testing DaVinci Resolve API safety...")
+                self.debug_print("Initializing DaVinci Resolve API on first use...")
+                
+                # First, test in subprocess for safety
+                try:
+                    subprocess_test_result = self._test_resolve_import_in_subprocess()
+                    if not subprocess_test_result:
+                        self.resolve_in_safe_mode = True
+                        self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
+                        self.show_error_in_gui("DaVinci Resolve Error",
+                                            "The DaVinci Resolve API failed the safety test.\n\n"
+                                            "Import functionality has been disabled for safety.\n\n"
+                                            "This usually happens if there is an incompatibility between the\n"
+                                            "Python version and the DaVinci Resolve API.")
+                        return
+                        
+                    self.debug_print("Safety test passed, attempting actual initialization")
+                    success = self._init_davinci_resolve_api()
+                    
+                    if success:
+                        self.resolve_initialized = True
+                        self.status_var.set("DaVinci Resolve API initialized")
+                    else:
+                        self.resolve_in_safe_mode = True
+                        self.status_var.set("Failed to initialize DaVinci Resolve API")
+                        self.show_error_in_gui("DaVinci Resolve Error",
+                                            "Failed to initialize DaVinci Resolve API.\n\n"
+                                            "Please ensure DaVinci Resolve is installed correctly and running.")
+                        return
+                        
+                except Exception as init_error:
+                    self.resolve_in_safe_mode = True
+                    error_msg = f"Error initializing DaVinci Resolve API: {str(init_error)}"
+                    self.debug_print(error_msg)
+                    self.status_var.set(f"Error: {error_msg}")
+                    self.show_error_in_gui("DaVinci Resolve Error",
+                                         f"Error initializing DaVinci Resolve API:\n\n{str(init_error)}")
+                    return
+            
+            # Get absolute path to the video file
+            abs_video_path = self.get_absolute_path(video_file)
+            
+            # Call the timeline import function without time range parameters
+            success = self.import_clip_to_timeline(abs_video_path)
+            
+            if success:
+                self.debug_print(f"Successfully imported media to DaVinci Resolve timeline")
+                self.status_var.set("Media successfully imported to DaVinci Resolve timeline")
+            else:
+                self.debug_print("Failed to import media to DaVinci Resolve timeline")
+                self.status_var.set("Failed to import media to DaVinci Resolve timeline")
+        except Exception as e:
+            error_msg = f"Error importing media to DaVinci Resolve: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
+            self.show_error_in_gui("DaVinci Resolve Error", f"Error importing media:\n\n{str(e)}")
+            
+            # Enable safe mode to prevent further crashes
+            self.resolve_in_safe_mode = True
+
+    def _test_resolve_import_in_subprocess(self):
+        """Test importing DaVinciResolveScript in a separate process for safety"""
+        self.debug_print("Testing DaVinci Resolve import in a separate process...")
+        
+        # Create a temporary Python file with the import test
+        with tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w') as f:
+            test_script = f.name
+            
+            # Write a script that attempts the import and exits with code 0 if successful
+            f.write(f'''
+import os
+import sys
+
+# Set required environment variables
+os.environ["RESOLVE_SCRIPT_API"] = r"{os.environ.get('RESOLVE_SCRIPT_API')}"
+os.environ["RESOLVE_SCRIPT_LIB"] = r"{os.environ.get('RESOLVE_SCRIPT_LIB')}"
+
+# Add module path to sys.path
+resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
+if os.path.exists(resolve_script_path) and resolve_script_path not in sys.path:
+    sys.path.append(resolve_script_path)
+    print(f"Added {{resolve_script_path}} to Python path")
+
+# Try to import the module
+try:
+    import DaVinciResolveScript
+    print("Successfully imported DaVinciResolveScript in test process")
+    sys.exit(0)  # Success
+except Exception as e:
+    print(f"Error importing DaVinciResolveScript in test process: {{e}}")
+    sys.exit(1)  # Failure
+''')
+        
+        try:
+            # Run the test script in a separate process
+            self.debug_print(f"Running import test script: {test_script}")
+            result = subprocess.run(
+                [sys.executable, test_script],
+                capture_output=True, 
+                text=True,
+                timeout=10  # Set a timeout to avoid hanging
+            )
+            
+            # Check the result
+            if result.returncode == 0:
+                self.debug_print("Import test succeeded in subprocess")
+                self.debug_print(f"Subprocess stdout: {result.stdout}")
+                return True
+            else:
+                self.debug_print(f"Import test failed in subprocess with exit code {result.returncode}")
+                self.debug_print(f"Subprocess stderr: {result.stderr}")
+                self.debug_print(f"Subprocess stdout: {result.stdout}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            self.debug_print("Import test timed out - this suggests the import would hang or crash")
+            return False
+        except Exception as e:
+            self.debug_print(f"Error running import test: {e}")
+            return False
+        finally:
+            # Clean up the temporary file
+            try:
+                os.unlink(test_script)
+            except:
+                pass
+
+    def import_clip_to_timeline(self, clip_path, start_tc=None, end_tc=None, start_frame=None, end_frame=None):
+        """
+        Import a clip to the current timeline with specified in/out points
+        
+        Args:
+            clip_path (str): Path to the clip to import
+            start_tc (str, optional): Start timecode in HH:MM:SS format
+            end_tc (str, optional): End timecode in HH:MM:SS format
+            start_frame (int, optional): Start frame (alternative to start_tc)
+            end_frame (int, optional): End frame (alternative to end_frame)
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.debug_print(f"Importing clip: {clip_path}")
+            
+            # Convert timecodes to frames if provided
+            if start_tc:
+                start_frame = self.timecode_to_frames(start_tc)
+                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame}")
+            
+            if end_tc:
+                end_frame = self.timecode_to_frames(end_tc)
+                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame}")
+            
+            # Get Resolve
+            resolve = dvr_script.scriptapp("Resolve")
+            if not resolve:
+                self.debug_print("Failed to get Resolve object")
+                return False
+            
+            # Get project manager
+            project_manager = resolve.GetProjectManager()
+            if not project_manager:
+                self.debug_print("Failed to get project manager")
+                return False
+            
+            # Get current project
+            project = project_manager.GetCurrentProject()
+            if not project:
+                self.debug_print("No project is currently open")
+                return False
+            
+            self.debug_print(f"Current project: {project.GetName()}")
+            
+            # Make sure we're on the Edit page
+            current_page = resolve.GetCurrentPage()
+            if current_page != "edit":
+                resolve.OpenPage("edit")
+                time.sleep(0.5)
+            
+            # Get media pool
+            media_pool = project.GetMediaPool()
+            if not media_pool:
+                self.debug_print("Failed to get media pool")
+                return False
+            
+            # Get current timeline
+            timeline = project.GetCurrentTimeline()
+            if not timeline:
+                self.debug_print("No timeline is currently open")
+                return False
+            
+            self.debug_print(f"Current timeline: {timeline.GetName()}")
+            
+            # Normalize path
+            abs_path = os.path.abspath(clip_path)
+            if not os.path.exists(abs_path):
+                self.debug_print(f"File not found: {abs_path}")
+                return False
+            
+            # Import media
+            imported_media = media_pool.ImportMedia([abs_path])
+            if not imported_media or len(imported_media) == 0:
+                self.debug_print("Failed to import media")
+                return False
+            
+            media_item = imported_media[0]
+            self.debug_print(f"Successfully imported: {media_item.GetName()}")
+            
+            # Create clip info dictionary with explicit frame ranges
+            clip_info = {
+                "mediaPoolItem": media_item
+            }
+            
+            # Add in/out points if specified
+            if start_frame is not None:
+                clip_info["startFrame"] = start_frame
+            
+            if end_frame is not None:
+                clip_info["endFrame"] = end_frame
+            
+            self.debug_print(f"Appending clip with time range {start_frame if start_frame is not None else 0} to {end_frame if end_frame is not None else 'end'}")
+            
+            # Append to timeline with clip info dictionary
+            appended_items = media_pool.AppendToTimeline([clip_info])
+            
+            if appended_items and len(appended_items) > 0:
+                self.debug_print(f"Successfully appended clip to timeline with specified time range")
+                return True
+            else:
+                # Fallback to just appending the media item if the clip info approach fails
+                self.debug_print("Failed to append clip with time range, trying without time range...")
+                appended_items = media_pool.AppendToTimeline([media_item])
+                
+                if appended_items and len(appended_items) > 0:
+                    self.debug_print("Successfully appended clip to timeline (without time range)")
+                    return True
+                
+            self.debug_print("Failed to append clip to timeline")
+            return False
+                
+        except Exception as e:
+            self.debug_print(f"Error importing clip: {e}")
+            return False
+        
+    def timecode_to_frames(self, timecode, fps=24):
+        """
+        Convert HH:MM:SS or HH:MM:SS:FF timecode to frames
+        
+        Args:
+            timecode (str): Timecode in HH:MM:SS, HH:MM:SS.MS or HH:MM:SS:FF format
+            fps (float): Frames per second (default: 24)
+        
+        Returns:
+            int: Frame number
+        """
+        try:
+            # Check if we have a DaVinci Resolve style timecode with HH:MM:SS:FF
+            if len(timecode.split(':')) == 4:
+                hours, minutes, seconds, frames = map(int, timecode.split(':'))
+                total_frames = (hours * 3600 + minutes * 60 + seconds) * fps + frames
+                return int(total_frames)
+            
+            # Handle HH:MM:SS or HH:MM:SS.MS format
+            if '.' in timecode:
+                time_parts, ms_part = timecode.split('.')
+                ms = int(ms_part) if ms_part else 0
+            else:
+                time_parts = timecode
+                ms = 0
+            
+            # Split time parts
+            parts = time_parts.split(':')
+            if len(parts) == 3:  # HH:MM:SS
+                hours, minutes, seconds = map(int, parts)
+            elif len(parts) == 2:  # MM:SS
+                hours = 0
+                minutes, seconds = map(int, parts)
+            else:
+                self.debug_print(f"Invalid timecode format: {timecode}")
+                return 0
+            
+            # Calculate total seconds
+            total_seconds = hours * 3600 + minutes * 60 + seconds + ms/1000
+            
+            # Convert to frames
+            return int(total_seconds * fps)
+        except Exception as e:
+            self.debug_print(f"Invalid timecode format: {timecode}")
+            return 0
+    
     def load_preferences(self):
         """Load preferences from file or create default preferences if file doesn't exist"""
         prefs_path = os.path.join(self.script_dir, PREFS_FILENAME)
@@ -1050,6 +1641,230 @@ class RapidMomentNavigator:
         else:
             self.status_var.set("Directory not found in preferences")
 
+    def _init_davinci_resolve_api(self):
+        """Initialize the DaVinci Resolve API"""
+        try:
+            self.debug_print("Initializing DaVinci Resolve API...")
+            
+            # Set Resolve environment variables if not set
+            if not os.getenv("RESOLVE_SCRIPT_API"):
+                resolve_api_path = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting"
+                os.environ["RESOLVE_SCRIPT_API"] = resolve_api_path
+                self.debug_print(f"Set RESOLVE_SCRIPT_API to {resolve_api_path}")
+            
+            if not os.getenv("RESOLVE_SCRIPT_LIB"):
+                resolve_lib_path = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
+                os.environ["RESOLVE_SCRIPT_LIB"] = resolve_lib_path
+                self.debug_print(f"Set RESOLVE_SCRIPT_LIB to {resolve_lib_path}")
+
+            # Add Resolve scripting module path
+            resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
+            self.debug_print(f"Checking if script path exists: {resolve_script_path}")
+            
+            if not os.path.exists(resolve_script_path):
+                error_msg = f"Resolve script path does not exist: {resolve_script_path}"
+                self.debug_print(error_msg)
+                self.status_var.set(f"Error: {error_msg}")
+                return False
+                
+            if resolve_script_path not in sys.path:
+                sys.path.append(resolve_script_path)
+                self.debug_print(f"Added {resolve_script_path} to Python path")
+            
+            # List all files in the modules directory
+            try:
+                module_files = os.listdir(resolve_script_path)
+                self.debug_print(f"Files in module directory: {module_files}")
+            except Exception as e:
+                self.debug_print(f"Error listing module directory: {e}")
+            
+            # Simple direct import approach
+            try:
+                global dvr_script
+                self.debug_print("Attempting to import DaVinciResolveScript...")
+                import DaVinciResolveScript as dvr_script
+                self.debug_print("Successfully imported DaVinciResolveScript")
+                return True
+            except ImportError as e:
+                error_msg = f"Failed to import DaVinciResolveScript: {str(e)}"
+                self.debug_print(error_msg)
+                return False
+                
+        except Exception as e:
+            error_msg = f"Error initializing DaVinci Resolve API: {str(e)}"
+            self.debug_print(error_msg)
+            return False
+            
+    def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
+        """Import clip with time range to DaVinci Resolve"""
+        selected_editor = self.editor_var.get()
+        if selected_editor != "DaVinci Resolve":
+            self.debug_print(f"Wrong editor selected: {selected_editor}")
+            self.status_var.set("Please select DaVinci Resolve as the editor first")
+            return
+            
+        try:
+            # If we haven't initialized yet or previously failed, initialize now
+            if not hasattr(self, 'resolve_in_safe_mode') or not hasattr(self, 'resolve_initialized'):
+                self.resolve_in_safe_mode = False
+                self.resolve_initialized = False
+            
+            # Don't attempt to use the API if we're in safe mode
+            if self.resolve_in_safe_mode:
+                self.debug_print("Resolve is in safe mode - import functionality disabled")
+                self.status_var.set("Cannot import: DaVinci Resolve integration is in safe mode")
+                self.show_error_in_gui("DaVinci Resolve Safe Mode", 
+                                     "The integration is running in safe mode due to initialization errors.\n\n"
+                                     "Import functionality is disabled to prevent crashes.\n\n"
+                                     "Please check that DaVinci Resolve is properly installed and running.")
+                return
+            
+            # Check if API is initialized, if not initialize it now
+            if not self.resolve_initialized:
+                self.status_var.set("Testing DaVinci Resolve API safety...")
+                self.debug_print("Initializing DaVinci Resolve API on first use...")
+                
+                # First, test in subprocess for safety
+                try:
+                    subprocess_test_result = self._test_resolve_import_in_subprocess()
+                    if not subprocess_test_result:
+                        self.resolve_in_safe_mode = True
+                        self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
+                        self.show_error_in_gui("DaVinci Resolve Error",
+                                            "The DaVinci Resolve API failed the safety test.\n\n"
+                                            "Import functionality has been disabled for safety.\n\n"
+                                            "This usually happens if there is an incompatibility between the\n"
+                                            "Python version and the DaVinci Resolve API.")
+                        return
+                        
+                    self.debug_print("Safety test passed, attempting actual initialization")
+                    success = self._init_davinci_resolve_api()
+                    
+                    if success:
+                        self.resolve_initialized = True
+                        self.status_var.set("DaVinci Resolve API initialized")
+                    else:
+                        self.resolve_in_safe_mode = True
+                        self.status_var.set("Failed to initialize DaVinci Resolve API")
+                        self.show_error_in_gui("DaVinci Resolve Error",
+                                            "Failed to initialize DaVinci Resolve API.\n\n"
+                                            "Please ensure DaVinci Resolve is installed correctly and running.")
+                        return
+                        
+                except Exception as init_error:
+                    self.resolve_in_safe_mode = True
+                    error_msg = f"Error initializing DaVinci Resolve API: {str(init_error)}"
+                    self.debug_print(error_msg)
+                    self.status_var.set(f"Error: {error_msg}")
+                    self.show_error_in_gui("DaVinci Resolve Error",
+                                         f"Error initializing DaVinci Resolve API:\n\n{str(init_error)}")
+                    return
+            
+            # Get absolute path to the video file
+            abs_video_path = self.get_absolute_path(video_file)
+            
+            # Call the timeline import function
+            success = self.import_clip_to_timeline(
+                abs_video_path, 
+                start_tc=start_time, 
+                end_tc=end_time
+            )
+            
+            if success:
+                self.debug_print(f"Successfully imported clip to DaVinci Resolve timeline")
+                self.status_var.set("Clip successfully imported to DaVinci Resolve timeline")
+            else:
+                self.debug_print("Failed to import clip to DaVinci Resolve timeline")
+                self.status_var.set("Failed to import clip to DaVinci Resolve timeline")
+        except Exception as e:
+            error_msg = f"Error importing clip to DaVinci Resolve: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
+            self.show_error_in_gui("DaVinci Resolve Error", f"Error importing clip:\n\n{str(e)}")
+            
+            # Enable safe mode to prevent further crashes
+            self.resolve_in_safe_mode = True
+
+class DebugWindow:
+    """A debug window to display errors and debug information"""
+    def __init__(self, parent, auto_show=False):
+        self.parent = parent
+        self.window = tk.Toplevel(parent)
+        self.window.title("Debug Console")
+        self.window.geometry("800x400")
+        
+        # Create a frame for the text area and scrollbars
+        frame = ttk.Frame(self.window)
+        frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Create text area with scrollbars
+        self.text_area = scrolledtext.ScrolledText(frame, wrap=tk.WORD, font=("Consolas", 10))
+        self.text_area.pack(fill="both", expand=True)
+        
+        # Create a frame for buttons
+        button_frame = ttk.Frame(self.window)
+        button_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Add clear button
+        clear_btn = ttk.Button(button_frame, text="Clear", command=self.clear_text)
+        clear_btn.pack(side="left", padx=5)
+        
+        # Add close button
+        close_btn = ttk.Button(button_frame, text="Close", command=self.window.withdraw)
+        close_btn.pack(side="right", padx=5)
+        
+        # Add save button
+        save_btn = ttk.Button(button_frame, text="Save Log", command=self.save_log)
+        save_btn.pack(side="right", padx=5)
+        
+        # If auto_show is False, hide the window initially
+        if not auto_show:
+            self.window.withdraw()
+            
+        # Add help text
+        self.insert_text("Debug Console - Errors and detailed messages will appear here.\n")
+        self.insert_text("If you encounter problems, please save this log and include it in any bug reports.\n\n")
+    
+    def winfo_exists(self):
+        """Check if window still exists"""
+        try:
+            return self.window.winfo_exists()
+        except:
+            return False
+    
+    def insert_text(self, text):
+        """Insert text into the debug window"""
+        try:
+            self.text_area.insert(tk.END, text)
+            self.text_area.see(tk.END)  # Auto-scroll to the end
+            
+            # Make the window visible if it's hidden
+            if not self.window.winfo_viewable():
+                self.window.deiconify()
+        except:
+            pass  # Silently fail if window is closed
+    
+    def clear_text(self):
+        """Clear all text from the window"""
+        try:
+            self.text_area.delete(1.0, tk.END)
+        except:
+            pass
+    
+    def save_log(self):
+        """Save the log contents to a file"""
+        try:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                title="Save Debug Log"
+            )
+            if filename:
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(self.text_area.get(1.0, tk.END))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save log: {e}")
+
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Rapid Moment Navigator - Search subtitles and navigate to moments in videos")
@@ -1061,9 +1876,46 @@ if __name__ == "__main__":
         print(f"DEBUG: Current directory: {os.path.abspath('.')}")
         print(f"DEBUG: Script directory: {os.path.dirname(os.path.abspath(__file__))}")
     
+    # Create the main window
     root = tk.Tk()
-    app = RapidMomentNavigator(root, debug=args.debug)
-    # Force debug output to be flushed immediately if debug is enabled
-    if args.debug:
-        sys.stdout.flush()
-    root.mainloop() 
+    
+    try:
+        # Initialize and run the application
+        app = RapidMomentNavigator(root, debug=args.debug)
+        
+        # Force debug output to be flushed immediately if debug is enabled
+        if args.debug:
+            sys.stdout.flush()
+            
+        # Add debug menu toggle to main window
+        def toggle_debug_window():
+            try:
+                app.ensure_debug_window()
+                if app.debug_window and app.debug_window.window.winfo_viewable():
+                    app.debug_window.window.withdraw()
+                else:
+                    app.debug_window.window.deiconify()
+            except Exception as e:
+                print(f"Error toggling debug window: {e}", file=sys.stderr)
+                messagebox.showerror("Error", f"Could not open debug window: {e}")
+                
+        # Add Debug menu
+        try:
+            menu_bar = tk.Menu(root)
+            debug_menu = tk.Menu(menu_bar, tearoff=0)
+            debug_menu.add_command(label="Show Debug Window", command=toggle_debug_window)
+            menu_bar.add_cascade(label="Debug", menu=debug_menu)
+            root.config(menu=menu_bar)
+        except Exception as e:
+            print(f"Error creating debug menu: {e}", file=sys.stderr)
+        
+        # Start the main loop
+        root.mainloop()
+        
+    except Exception as e:
+        # Handle any uncaught exceptions during initialization
+        print(f"CRITICAL ERROR: {e}", file=sys.stderr)
+        traceback.print_exc()
+        messagebox.showerror("Critical Error", 
+                            f"The application encountered a critical error and cannot start:\n\n{str(e)}")
+        sys.exit(1) 
