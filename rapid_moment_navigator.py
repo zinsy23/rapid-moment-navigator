@@ -17,11 +17,35 @@ import tempfile
 
 # Constants
 PREFS_FILENAME = "rapid_navigator_prefs.json"
+RESOLVE_PATHS_FILENAME = "resolve_paths.json"
 DEFAULT_PREFS = {
     "directories": [],
     "exclude_current_dir": False,
     "selected_editor": "None"
 }
+
+def find_module_locations(base_path):
+    """Find possible locations of DaVinciResolveScript.py based on a base path.
+    Only checks the standard location and directly in the specified path."""
+    locations = []
+    module_paths = []
+    
+    # Check standard location (base_path/Modules/DaVinciResolveScript.py)
+    standard_location = os.path.join(base_path, "Modules", "DaVinciResolveScript.py")
+    if os.path.isfile(standard_location):
+        locations.append(os.path.dirname(standard_location))
+        module_paths.append(standard_location)
+        
+    # Check directly in base path (base_path/DaVinciResolveScript.py)
+    direct_location = os.path.join(base_path, "DaVinciResolveScript.py")
+    if os.path.isfile(direct_location):
+        locations.append(base_path)
+        module_paths.append(direct_location)
+    
+    return {
+        "locations": locations,  # Directories containing the module
+        "module_paths": module_paths  # Full paths to the module files
+    }
 
 class ClickableTimecode(Label):
     """A clickable label widget for timecodes"""
@@ -1101,6 +1125,34 @@ class RapidMomentNavigator:
         """Test importing DaVinciResolveScript in a separate process for safety"""
         self.debug_print("Testing DaVinci Resolve import in a separate process...")
         
+        # Get the current API path
+        api_path = os.environ.get("RESOLVE_SCRIPT_API", "")
+        lib_path = os.environ.get("RESOLVE_SCRIPT_LIB", "")
+        
+        # Find all possible module locations
+        module_info = find_module_locations(api_path)
+        module_locations = module_info["locations"]
+        module_files = module_info["module_paths"]
+        
+        # Print found paths for debugging
+        self.debug_print("Found module locations:")
+        for path in module_files:
+            self.debug_print(f"  - {path}")
+        
+        # Add the API path itself and its parent to search paths
+        search_paths = []
+        if os.path.exists(api_path):
+            search_paths.append(api_path)
+        if os.path.exists(os.path.dirname(api_path)):
+            search_paths.append(os.path.dirname(api_path))
+            
+        # Add module locations to search paths
+        for loc in module_locations:
+            if loc not in search_paths and os.path.exists(loc):
+                search_paths.append(loc)
+        
+        self.debug_print(f"Search paths to be used: {search_paths}")
+        
         # Create a temporary Python file with the import test
         with tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w') as f:
             test_script = f.name
@@ -1109,25 +1161,76 @@ class RapidMomentNavigator:
             f.write(f'''
 import os
 import sys
+import glob
 
 # Set required environment variables
-os.environ["RESOLVE_SCRIPT_API"] = r"{os.environ.get('RESOLVE_SCRIPT_API')}"
-os.environ["RESOLVE_SCRIPT_LIB"] = r"{os.environ.get('RESOLVE_SCRIPT_LIB')}"
+os.environ["RESOLVE_SCRIPT_API"] = r"{api_path}"
+os.environ["RESOLVE_SCRIPT_LIB"] = r"{lib_path}"
 
-# Add module path to sys.path
-resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
-if os.path.exists(resolve_script_path) and resolve_script_path not in sys.path:
-    sys.path.append(resolve_script_path)
-    print(f"Added {{resolve_script_path}} to Python path")
+# Add all possible module paths to sys.path
+search_paths = {search_paths!r}
+for path in search_paths:
+    if path and path not in sys.path:
+        sys.path.append(path)
+        print(f"Added {{path}} to Python path")
 
-# Try to import the module
+# Known module files
+module_files = {module_files!r}
+for module_file in module_files:
+    print(f"Known module file: {{module_file}}")
+
+# Print sys.path for debugging
+print(f"Python sys.path: {{sys.path}}")
+
+# Try direct import first
 try:
     import DaVinciResolveScript
     print("Successfully imported DaVinciResolveScript in test process")
-    sys.exit(0)  # Success
+    sys.exit(0)
+except ImportError as e:
+    print(f"Standard import failed: {{e}}")
+
+# Try alternate import approaches
+for module_file in module_files:
+    module_dir = os.path.dirname(module_file)
+    module_name = os.path.splitext(os.path.basename(module_file))[0]
+    
+    try:
+        # Try adding module dir directly to path and importing
+        if module_dir not in sys.path:
+            sys.path.append(module_dir)
+            print(f"Added module directory {{module_dir}} directly to path")
+        
+        # Try to import again
+        import DaVinciResolveScript
+        print(f"Successfully imported DaVinciResolveScript after adding {{module_dir}}")
+        sys.exit(0)
+    except ImportError as e:
+        print(f"Import still failed with {{module_dir}} in path: {{e}}")
+
+# If all previous attempts failed, try more aggressive approaches
+# Try to load the module directly using importlib
+print("Trying direct module loading with importlib...")
+try:
+    import importlib.util
+    
+    for module_file in module_files:
+        try:
+            print(f"Trying to load {{module_file}} with importlib...")
+            spec = importlib.util.spec_from_file_location("DaVinciResolveScript", module_file)
+            if spec:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                print(f"Successfully loaded {{module_file}} with importlib")
+                sys.path.insert(0, os.path.dirname(module_file))
+                sys.exit(0)
+        except Exception as e:
+            print(f"Importlib loading failed for {{module_file}}: {{e}}")
 except Exception as e:
-    print(f"Error importing DaVinciResolveScript in test process: {{e}}")
-    sys.exit(1)  # Failure
+    print(f"Importlib approach failed: {{e}}")
+
+print("All import attempts failed")
+sys.exit(1)
 ''')
         
         try:
@@ -1646,39 +1749,168 @@ except Exception as e:
         try:
             self.debug_print("Initializing DaVinci Resolve API...")
             
-            # Set Resolve environment variables if not set
-            if not os.getenv("RESOLVE_SCRIPT_API"):
-                resolve_api_path = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting"
-                os.environ["RESOLVE_SCRIPT_API"] = resolve_api_path
-                self.debug_print(f"Set RESOLVE_SCRIPT_API to {resolve_api_path}")
+            # Get configuration file path
+            config_file = os.path.join(self.script_dir, RESOLVE_PATHS_FILENAME)
+            config = {}
+            modified = False
             
-            if not os.getenv("RESOLVE_SCRIPT_LIB"):
-                resolve_lib_path = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
-                os.environ["RESOLVE_SCRIPT_LIB"] = resolve_lib_path
-                self.debug_print(f"Set RESOLVE_SCRIPT_LIB to {resolve_lib_path}")
-
-            # Add Resolve scripting module path
-            resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
-            self.debug_print(f"Checking if script path exists: {resolve_script_path}")
+            # Load saved paths if available
+            if os.path.exists(config_file):
+                try:
+                    with open(config_file, 'r') as f:
+                        config = json.load(f)
+                        self.debug_print(f"Loaded config from: {config_file}")
+                        if "RESOLVE_SCRIPT_API" in config:
+                            self.debug_print(f"Config API path: {config['RESOLVE_SCRIPT_API']}")
+                        if "RESOLVE_SCRIPT_LIB" in config:
+                            self.debug_print(f"Config LIB path: {config['RESOLVE_SCRIPT_LIB']}")
+                except Exception as e:
+                    self.debug_print(f"Failed to load config file: {str(e)}")
             
-            if not os.path.exists(resolve_script_path):
-                error_msg = f"Resolve script path does not exist: {resolve_script_path}"
-                self.debug_print(error_msg)
-                self.status_var.set(f"Error: {error_msg}")
-                return False
+            # Get default API path based on OS
+            if sys.platform.startswith("win"):  # Windows
+                default_api_path = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting"
+            elif sys.platform == "darwin":  # macOS
+                default_api_path = r"/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
+            elif sys.platform.startswith("linux"):  # Linux
+                default_api_path = r"/opt/resolve/Developer/Scripting"
+            else:
+                default_api_path = ""
+            
+            # Get default LIB path based on OS
+            if sys.platform.startswith("win"):  # Windows
+                default_lib_path = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
+            elif sys.platform == "darwin":  # macOS
+                default_lib_path = r"/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
+            elif sys.platform.startswith("linux"):  # Linux
+                default_lib_path = r"/opt/resolve/libs/Fusion/fusionscript.so"
+            else:
+                default_lib_path = ""
+            
+            self.debug_print(f"Default API path: {default_api_path}")
+            self.debug_print(f"Default LIB path: {default_lib_path}")
+            
+            # Check if default paths are valid
+            default_module_paths = find_module_locations(default_api_path)
+            default_api_valid = len(default_module_paths["module_paths"]) > 0
+            default_lib_valid = os.path.isfile(default_lib_path)
+            
+            self.debug_print(f"Default module file exists: {default_api_valid}")
+            self.debug_print(f"Default library file exists: {default_lib_valid}")
+            
+            # Use a dialog to get custom paths if needed
+            need_custom_paths = False
+            
+            # Set initial API path from config or env
+            api_path = None
+            if "RESOLVE_SCRIPT_API" in config:
+                api_path = config["RESOLVE_SCRIPT_API"]
+                os.environ["RESOLVE_SCRIPT_API"] = api_path
+                self.debug_print(f"Using API path from config: {api_path}")
+            elif os.getenv("RESOLVE_SCRIPT_API"):
+                api_path = os.getenv("RESOLVE_SCRIPT_API")
+                self.debug_print(f"Using existing API path from env: {api_path}")
+            else:
+                api_path = default_api_path
+                os.environ["RESOLVE_SCRIPT_API"] = api_path
+                self.debug_print(f"Using default API path: {api_path}")
                 
-            if resolve_script_path not in sys.path:
-                sys.path.append(resolve_script_path)
-                self.debug_print(f"Added {resolve_script_path} to Python path")
+            # Set initial LIB path from config or env
+            lib_path = None
+            if "RESOLVE_SCRIPT_LIB" in config:
+                lib_path = config["RESOLVE_SCRIPT_LIB"]
+                os.environ["RESOLVE_SCRIPT_LIB"] = lib_path
+                self.debug_print(f"Using LIB path from config: {lib_path}")
+            elif os.getenv("RESOLVE_SCRIPT_LIB"):
+                lib_path = os.getenv("RESOLVE_SCRIPT_LIB")
+                self.debug_print(f"Using existing LIB path from env: {lib_path}")
+            else:
+                lib_path = default_lib_path
+                os.environ["RESOLVE_SCRIPT_LIB"] = lib_path
+                self.debug_print(f"Using default LIB path: {lib_path}")
             
-            # List all files in the modules directory
-            try:
-                module_files = os.listdir(resolve_script_path)
-                self.debug_print(f"Files in module directory: {module_files}")
-            except Exception as e:
-                self.debug_print(f"Error listing module directory: {e}")
+            # Check if module file exists at any possible location
+            module_info = find_module_locations(api_path)
+            module_exists = len(module_info["module_paths"]) > 0
             
-            # Simple direct import approach
+            # Print all found locations
+            self.debug_print("Checking possible module locations:")
+            for path in module_info["module_paths"]:
+                self.debug_print(f"  - {path}: Found")
+            
+            # Check if library file exists
+            lib_file_exists = os.path.isfile(lib_path)
+            self.debug_print(f"Library exists at {lib_path}: {lib_file_exists}")
+            
+            # If the module or library is missing, show dialog to input paths
+            if not module_exists or not lib_file_exists:
+                need_custom_paths = True
+                
+                # Create a dialog to get the custom paths
+                self.debug_print("Need to get custom paths from user")
+                # Show dialog to get paths
+                result = self._show_resolve_paths_dialog(
+                    api_path, lib_path, 
+                    default_api_path, default_lib_path,
+                    default_api_valid, default_lib_valid,
+                    module_exists, lib_file_exists
+                )
+                
+                # Process the result
+                if not result['success']:
+                    self.debug_print("User cancelled path configuration")
+                    return False
+                
+                # Update paths if changed
+                if result['api_path'] != api_path:
+                    api_path = result['api_path']
+                    os.environ["RESOLVE_SCRIPT_API"] = api_path
+                    config["RESOLVE_SCRIPT_API"] = api_path
+                    modified = True
+                    self.debug_print(f"Updated API path: {api_path}")
+                
+                if result['lib_path'] != lib_path:
+                    lib_path = result['lib_path']
+                    os.environ["RESOLVE_SCRIPT_LIB"] = lib_path
+                    config["RESOLVE_SCRIPT_LIB"] = lib_path
+                    modified = True
+                    self.debug_print(f"Updated LIB path: {lib_path}")
+            
+            # Add module paths to sys.path
+            self.debug_print("========== FINAL PATH CONFIGURATION ==========")
+            self.debug_print(f"Using RESOLVE_SCRIPT_API: {api_path}")
+            self.debug_print(f"Using RESOLVE_SCRIPT_LIB: {lib_path}")
+            
+            # Add all module locations to sys.path
+            module_info = find_module_locations(api_path)
+            for path in module_info["locations"]:
+                if path not in sys.path:
+                    sys.path.append(path)
+                    self.debug_print(f"Added to Python path: {path}")
+                    
+            # Also add the API path itself if not already added
+            if api_path and api_path not in sys.path and os.path.exists(api_path):
+                sys.path.append(api_path)
+                self.debug_print(f"Added API path to Python path: {api_path}")
+            
+            self.debug_print("=============================================")
+            
+            # Save config if modified
+            if modified:
+                try:
+                    # If config is empty, delete the file instead
+                    if not config:
+                        if os.path.exists(config_file):
+                            os.remove(config_file)
+                            self.debug_print(f"Removed empty config file: {config_file}")
+                    else:
+                        with open(config_file, 'w') as f:
+                            json.dump(config, f, indent=2)
+                            self.debug_print(f"Saved custom paths to {config_file}")
+                except Exception as e:
+                    self.debug_print(f"Failed to save config file: {str(e)}")
+            
+            # Attempt to import the module
             try:
                 global dvr_script
                 self.debug_print("Attempting to import DaVinciResolveScript...")
@@ -1688,13 +1920,208 @@ except Exception as e:
             except ImportError as e:
                 error_msg = f"Failed to import DaVinciResolveScript: {str(e)}"
                 self.debug_print(error_msg)
+                self.show_error_in_gui("DaVinci Resolve Import Error", 
+                                      f"Failed to import DaVinciResolveScript module.\n\n{str(e)}\n\nPlease check your DaVinci Resolve installation.")
                 return False
                 
         except Exception as e:
             error_msg = f"Error initializing DaVinci Resolve API: {str(e)}"
             self.debug_print(error_msg)
+            self.show_error_in_gui("DaVinci Resolve Error", 
+                                  f"Error initializing DaVinci Resolve API:\n\n{str(e)}")
             return False
             
+    def _show_resolve_paths_dialog(self, current_api, current_lib, default_api, default_lib, 
+                                 default_api_valid, default_lib_valid, module_exists, lib_exists):
+        """Show a dialog to get custom paths for DaVinci Resolve scripting"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("DaVinci Resolve Scripting Setup")
+        dialog.geometry("600x500")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Set the result
+        result = {
+            'success': False,
+            'api_path': current_api,
+            'lib_path': current_lib
+        }
+        
+        # Create main frame
+        main_frame = ttk.Frame(dialog, padding=10)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title and explanation
+        ttk.Label(main_frame, text="DaVinci Resolve Scripting Setup", font=("TkDefaultFont", 14, "bold")).pack(pady=5)
+        
+        explanation_text = "The application needs to know where DaVinci Resolve scripting files are located."
+        if not module_exists:
+            explanation_text += "\n\nThe script module file (DaVinciResolveScript.py) was not found."
+        if not lib_exists:
+            explanation_text += "\n\nThe script library file (fusionscript.dll) was not found."
+        
+        explanation = ttk.Label(main_frame, text=explanation_text, wraplength=550, justify="left")
+        explanation.pack(pady=10, fill="x")
+        
+        # Create API path input frame
+        api_frame = ttk.LabelFrame(main_frame, text="API Script Directory", padding=10)
+        api_frame.pack(fill="x", expand=False, pady=5)
+        
+        ttk.Label(api_frame, text="Directory containing DaVinciResolveScript.py (or its Modules subfolder):").pack(anchor="w")
+        
+        api_path_frame = ttk.Frame(api_frame)
+        api_path_frame.pack(fill="x", expand=True, pady=5)
+        
+        api_path_var = tk.StringVar(value=current_api)
+        api_path_entry = ttk.Entry(api_path_frame, textvariable=api_path_var, width=50)
+        api_path_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        def browse_api():
+            path = filedialog.askdirectory(
+                title="Select API Directory",
+                initialdir=os.path.dirname(api_path_var.get()) if os.path.exists(os.path.dirname(api_path_var.get())) else None
+            )
+            if path:
+                api_path_var.set(path)
+                check_api_path_valid()
+        
+        api_browse_btn = ttk.Button(api_path_frame, text="Browse...", command=browse_api)
+        api_browse_btn.pack(side="right")
+        
+        # Add a label to show if the path is valid
+        api_valid_var = tk.StringVar(value="")
+        api_valid_label = ttk.Label(api_frame, textvariable=api_valid_var)
+        api_valid_label.pack(anchor="w", pady=5)
+        
+        def check_api_path_valid():
+            path = api_path_var.get()
+            if not path:
+                api_valid_var.set("Error: No path specified")
+                api_valid_label.config(foreground="red")
+                return False
+                
+            # Check if path exists
+            if not os.path.exists(path):
+                api_valid_var.set("Error: Directory does not exist")
+                api_valid_label.config(foreground="red")
+                return False
+                
+            # Check if module exists
+            module_info = find_module_locations(path)
+            if len(module_info["module_paths"]) > 0:
+                found_at = module_info["module_paths"][0]
+                api_valid_var.set(f"Found at: {found_at}")
+                api_valid_label.config(foreground="green")
+                return True
+            else:
+                api_valid_var.set("Error: DaVinciResolveScript.py not found at this location")
+                api_valid_label.config(foreground="red")
+                return False
+        
+        # Default button
+        def use_default_api():
+            api_path_var.set(default_api)
+            check_api_path_valid()
+        
+        api_default_btn = ttk.Button(api_frame, text="Use Default Path", command=use_default_api)
+        api_default_btn.pack(anchor="w", pady=5)
+        api_default_btn.config(state="normal" if default_api_valid else "disabled")
+        
+        # Create Library path input frame
+        lib_frame = ttk.LabelFrame(main_frame, text="Script Library File", padding=10)
+        lib_frame.pack(fill="x", expand=False, pady=5)
+        
+        ttk.Label(lib_frame, text="Path to fusionscript.dll/.so:").pack(anchor="w")
+        
+        lib_path_frame = ttk.Frame(lib_frame)
+        lib_path_frame.pack(fill="x", expand=True, pady=5)
+        
+        lib_path_var = tk.StringVar(value=current_lib)
+        lib_path_entry = ttk.Entry(lib_path_frame, textvariable=lib_path_var, width=50)
+        lib_path_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        def browse_lib():
+            path = filedialog.askopenfilename(
+                title="Select Library File",
+                initialdir=os.path.dirname(lib_path_var.get()) if os.path.exists(os.path.dirname(lib_path_var.get())) else None,
+                filetypes=[("Library Files", "*.dll *.so"), ("All Files", "*.*")]
+            )
+            if path:
+                lib_path_var.set(path)
+                check_lib_path_valid()
+        
+        lib_browse_btn = ttk.Button(lib_path_frame, text="Browse...", command=browse_lib)
+        lib_browse_btn.pack(side="right")
+        
+        # Add a label to show if the path is valid
+        lib_valid_var = tk.StringVar(value="")
+        lib_valid_label = ttk.Label(lib_frame, textvariable=lib_valid_var)
+        lib_valid_label.pack(anchor="w", pady=5)
+        
+        def check_lib_path_valid():
+            path = lib_path_var.get()
+            if not path:
+                lib_valid_var.set("Error: No path specified")
+                lib_valid_label.config(foreground="red")
+                return False
+                
+            # Check if path exists
+            if os.path.isfile(path):
+                lib_valid_var.set("File exists")
+                lib_valid_label.config(foreground="green")
+                return True
+            else:
+                lib_valid_var.set("Error: File not found")
+                lib_valid_label.config(foreground="red")
+                return False
+        
+        # Default button
+        def use_default_lib():
+            lib_path_var.set(default_lib)
+            check_lib_path_valid()
+        
+        lib_default_btn = ttk.Button(lib_frame, text="Use Default Path", command=use_default_lib)
+        lib_default_btn.pack(anchor="w", pady=5)
+        lib_default_btn.config(state="normal" if default_lib_valid else "disabled")
+        
+        # Check initial validity
+        check_api_path_valid()
+        check_lib_path_valid()
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill="x", pady=10)
+        
+        def on_cancel():
+            dialog.destroy()
+            
+        def on_ok():
+            # Validate both paths
+            api_valid = check_api_path_valid()
+            lib_valid = check_lib_path_valid()
+            
+            if not api_valid or not lib_valid:
+                messagebox.showerror("Invalid Paths", 
+                                    "One or both paths are invalid. Please provide valid paths or cancel.")
+                return
+            
+            # Set result
+            result['success'] = True
+            result['api_path'] = api_path_var.get()
+            result['lib_path'] = lib_path_var.get()
+            dialog.destroy()
+        
+        cancel_btn = ttk.Button(buttons_frame, text="Cancel", command=on_cancel)
+        cancel_btn.pack(side="right", padx=5)
+        
+        ok_btn = ttk.Button(buttons_frame, text="OK", command=on_ok)
+        ok_btn.pack(side="right", padx=5)
+        
+        # Wait for dialog to close
+        self.root.wait_window(dialog)
+        
+        return result
+        
     def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
         """Import clip with time range to DaVinci Resolve"""
         selected_editor = self.editor_var.get()
