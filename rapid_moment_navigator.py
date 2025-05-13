@@ -39,7 +39,7 @@ class ClickableTimecode(Label):
 
 class ClickableImport(Label):
     """A clickable label widget for import buttons"""
-    def __init__(self, parent, text, result, callback, **kwargs):
+    def __init__(self, parent, text, result, callback, tooltip=None, **kwargs):
         super().__init__(parent, text=text, cursor="hand2", fg="blue", **kwargs)
         self.result = result
         self.callback = callback
@@ -47,9 +47,58 @@ class ClickableImport(Label):
         # Add underline
         self.config(font=("TkDefaultFont", 10, "underline"))
         
+        # Add tooltip functionality
+        self.tooltip_text = tooltip
+        if tooltip:
+            self.bind("<Enter>", self._on_enter)
+            self.bind("<Leave>", self._on_leave)
+            self.tooltip = None
+            self.tooltip_timer = None
+        
     def _on_click(self, event):
         """Handle click event"""
         self.callback(self.result)
+        
+    def _on_enter(self, event):
+        """Start timer to show tooltip when mouse enters the widget"""
+        if self.tooltip_text:
+            # Cancel any existing timer
+            self._cancel_timer()
+            # Start a new timer - 1000ms = 1 second
+            self.tooltip_timer = self.after(1000, self._show_tooltip)
+    
+    def _show_tooltip(self):
+        """Display the tooltip after delay"""
+        x, y, _, _ = self.bbox("insert")
+        x += self.winfo_rootx() + 25
+        y += self.winfo_rooty() + 25
+        
+        # Create a toplevel window
+        self.tooltip = tk.Toplevel(self)
+        self.tooltip.wm_overrideredirect(True)
+        self.tooltip.wm_geometry(f"+{x}+{y}")
+        
+        # Create tooltip content
+        frame = tk.Frame(self.tooltip, background="#ffffe0", borderwidth=1, relief="solid")
+        frame.pack(ipadx=3, ipady=2)
+        
+        label = tk.Label(frame, text=self.tooltip_text, justify="left",
+                      background="#ffffe0", fg="#000000", 
+                      wraplength=250, font=("TkDefaultFont", 9))
+        label.pack()
+    
+    def _on_leave(self, event):
+        """Hide tooltip and cancel timer when mouse leaves the widget"""
+        self._cancel_timer()
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
+            
+    def _cancel_timer(self):
+        """Cancel any pending tooltip timer"""
+        if self.tooltip_timer:
+            self.after_cancel(self.tooltip_timer)
+            self.tooltip_timer = None
 
 class RapidMomentNavigator:
     def __init__(self, root, debug=False):
@@ -718,7 +767,8 @@ class RapidMomentNavigator:
                     import_buttons_frame, 
                     "Import Media", 
                     result, 
-                    self._handle_import_media_click
+                    self._handle_import_media_click,
+                    tooltip="Import the entire video file to the DaVinci Resolve timeline"
                 )
                 import_media_btn.pack(side="left", padx=5)
                 
@@ -727,7 +777,8 @@ class RapidMomentNavigator:
                     import_buttons_frame, 
                     "Import Clip", 
                     result, 
-                    self._handle_import_clip_click
+                    self._handle_import_clip_click,
+                    tooltip="Import only the time range from this subtitle entry to the DaVinci Resolve timeline"
                 )
                 import_clip_btn.pack(side="left", padx=5)
             
