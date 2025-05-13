@@ -11,6 +11,9 @@ import argparse
 import json
 import logging
 import time
+import traceback
+import multiprocessing
+import tempfile
 
 # Constants
 PREFS_FILENAME = "rapid_navigator_prefs.json"
@@ -56,6 +59,12 @@ class RapidMomentNavigator:
         
         # Debug mode setting
         self.debug = debug
+        
+        # Initialize debug window to None
+        self.debug_window = None
+        
+        # Setup exception handling for Tkinter
+        self.setup_exception_handler()
         
         # Store the script directory for relative path operations
         self.script_dir = os.path.abspath(os.path.dirname(__file__))
@@ -181,6 +190,67 @@ class RapidMomentNavigator:
         
         # Debug print
         self.debug_print(f"Application initialized with {len(self.show_name_to_path_map)} shows")
+        
+        # Initialize safe mode flag for editors
+        self.resolve_in_safe_mode = False
+    
+    def setup_exception_handler(self):
+        """Setup global exception handler to catch and display errors"""
+        # Store the original exception handler
+        self.original_exception_handler = sys.excepthook
+        
+        # Create a new exception handler
+        def exception_handler(exc_type, exc_value, exc_traceback):
+            # Format the exception and traceback
+            error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+            
+            # Log the error
+            self.debug_print(f"UNCAUGHT EXCEPTION: {error_msg}")
+            
+            # Show in GUI
+            self.show_error_in_gui("Application Error", 
+                                  f"An unexpected error occurred:\n\n{str(exc_value)}\n\nSee debug window for details.")
+            
+            # Show in debug window
+            self.ensure_debug_window()
+            if self.debug_window:
+                self.debug_window.insert_text(error_msg)
+            
+            # Call the original handler
+            self.original_exception_handler(exc_type, exc_value, exc_traceback)
+        
+        # Set our custom exception handler
+        sys.excepthook = exception_handler
+    
+    def ensure_debug_window(self):
+        """Create debug window if it doesn't exist"""
+        try:
+            if not hasattr(self, 'debug_window') or self.debug_window is None or not self.debug_window.winfo_exists():
+                self.debug_window = DebugWindow(self.root, self.debug)
+        except Exception as e:
+            print(f"Error creating debug window: {e}", file=sys.stderr)
+    
+    def show_error_in_gui(self, title, message):
+        """Display an error message in the GUI"""
+        # Update status bar
+        first_line = message.split('\n')[0]
+        self.status_var.set(f"Error: {first_line}")
+        
+        # Show error dialog (in a separate thread to avoid blocking)
+        threading.Thread(target=lambda: messagebox.showerror(title, message)).start()
+
+    def debug_print(self, message):
+        """Print debug messages and add to debug window if available"""
+        if self.debug:
+            print(f"DEBUG: {message}", flush=True)
+            
+            # Only try to use the debug window if it's properly initialized
+            try:
+                if hasattr(self, 'debug_window') and self.debug_window is not None and self.debug_window.winfo_exists():
+                    self.debug_window.insert_text(f"DEBUG: {message}\n")
+            except Exception:
+                # Silently ignore any errors with the debug window
+                pass
     
     def _configure_scroll_region(self, event):
         """Configure the scroll region of the canvas"""
@@ -193,11 +263,6 @@ class RapidMomentNavigator:
     def _on_mousewheel(self, event):
         """Handle mousewheel scrolling"""
         self.results_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-    
-    def debug_print(self, message):
-        """Print debug messages if debug mode is enabled"""
-        if self.debug:
-            print(f"DEBUG: {message}", flush=True)
     
     def update_show_dropdown(self):
         """Update the show dropdown with current show names"""
@@ -810,62 +875,27 @@ class RapidMomentNavigator:
 
     def _on_editor_changed(self, event):
         """Handle editor dropdown change"""
-        selected_editor = self.editor_var.get()
-        self.debug_print(f"Editor changed to: {selected_editor}")
-        
-        # Update preferences
-        self.preferences["selected_editor"] = selected_editor
-        self.save_preferences()
-        
-        # Load appropriate editor API
-        success = True
-        if selected_editor == "DaVinci Resolve":
-            success = self._init_davinci_resolve_api()
-        # Add future editors here with their own initialization methods
-        # elif selected_editor == "Some Other Editor":
-        #     success = self._init_other_editor_api()
-        
-        # Update UI to show/hide import buttons
-        self._update_import_buttons_visibility()
-        
-        # Update status
-        if selected_editor != "None" and success:
-            self.status_var.set(f"{selected_editor} integration enabled")
-    
-    def _init_davinci_resolve_api(self):
-        """Initialize the DaVinci Resolve API"""
         try:
-            # Set Resolve environment variables if not set
-            if not os.getenv("RESOLVE_SCRIPT_API"):
-                os.environ["RESOLVE_SCRIPT_API"] = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting"
-            if not os.getenv("RESOLVE_SCRIPT_LIB"):
-                os.environ["RESOLVE_SCRIPT_LIB"] = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
-
-            # Add Resolve scripting module path
-            resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
-            if resolve_script_path not in sys.path and os.path.exists(resolve_script_path):
-                sys.path.append(resolve_script_path)
-                self.debug_print(f"Added {resolve_script_path} to Python path")
+            selected_editor = self.editor_var.get()
+            self.debug_print(f"Editor changed to: {selected_editor}")
+            
+            # Update preferences
+            self.preferences["selected_editor"] = selected_editor
+            self.save_preferences()
+            
+            # Just update the UI and status - no API loading here
+            self._update_import_buttons_visibility()
+            
+            # Update status
+            if selected_editor == "None":
+                self.status_var.set("Editor integration disabled")
             else:
-                self.debug_print(f"Resolve script path does not exist: {resolve_script_path}")
-
-            # Import DaVinci Resolve Script
-            try:
-                global dvr_script
-                import DaVinciResolveScript as dvr_script
-                self.debug_print("Successfully imported DaVinciResolveScript")
-                return True
-            except ImportError as e:
-                error_msg = f"Failed to import DaVinciResolveScript: {str(e)}"
-                self.debug_print(error_msg)
-                self.status_var.set(f"Error: {error_msg}")
-                return False
-                
+                self.status_var.set(f"{selected_editor} selected. API will be initialized when needed.")
+            
         except Exception as e:
-            error_msg = f"Error initializing DaVinci Resolve API: {str(e)}"
+            error_msg = f"Error changing editor: {str(e)}"
             self.debug_print(error_msg)
             self.status_var.set(f"Error: {error_msg}")
-            return False
 
     def _update_import_buttons_visibility(self):
         """Update visibility of import buttons based on selected editor"""
@@ -929,17 +959,125 @@ class RapidMomentNavigator:
         self.debug_print(f"TODO: Implement importing {video_file} to DaVinci Resolve")
         # Future implementation will go here
     
+    def _init_davinci_resolve_api(self):
+        """Initialize the DaVinci Resolve API"""
+        try:
+            self.debug_print("Initializing DaVinci Resolve API...")
+            
+            # Set Resolve environment variables if not set
+            if not os.getenv("RESOLVE_SCRIPT_API"):
+                resolve_api_path = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting"
+                os.environ["RESOLVE_SCRIPT_API"] = resolve_api_path
+                self.debug_print(f"Set RESOLVE_SCRIPT_API to {resolve_api_path}")
+            
+            if not os.getenv("RESOLVE_SCRIPT_LIB"):
+                resolve_lib_path = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
+                os.environ["RESOLVE_SCRIPT_LIB"] = resolve_lib_path
+                self.debug_print(f"Set RESOLVE_SCRIPT_LIB to {resolve_lib_path}")
+
+            # Add Resolve scripting module path
+            resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
+            self.debug_print(f"Checking if script path exists: {resolve_script_path}")
+            
+            if not os.path.exists(resolve_script_path):
+                error_msg = f"Resolve script path does not exist: {resolve_script_path}"
+                self.debug_print(error_msg)
+                self.status_var.set(f"Error: {error_msg}")
+                return False
+                
+            if resolve_script_path not in sys.path:
+                sys.path.append(resolve_script_path)
+                self.debug_print(f"Added {resolve_script_path} to Python path")
+            
+            # List all files in the modules directory
+            try:
+                module_files = os.listdir(resolve_script_path)
+                self.debug_print(f"Files in module directory: {module_files}")
+            except Exception as e:
+                self.debug_print(f"Error listing module directory: {e}")
+            
+            # Simple direct import approach
+            try:
+                global dvr_script
+                self.debug_print("Attempting to import DaVinciResolveScript...")
+                import DaVinciResolveScript as dvr_script
+                self.debug_print("Successfully imported DaVinciResolveScript")
+                return True
+            except ImportError as e:
+                error_msg = f"Failed to import DaVinciResolveScript: {str(e)}"
+                self.debug_print(error_msg)
+                return False
+                
+        except Exception as e:
+            error_msg = f"Error initializing DaVinci Resolve API: {str(e)}"
+            self.debug_print(error_msg)
+            return False
+            
     def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
         """Import clip with time range to DaVinci Resolve"""
+        selected_editor = self.editor_var.get()
+        if selected_editor != "DaVinci Resolve":
+            self.debug_print(f"Wrong editor selected: {selected_editor}")
+            self.status_var.set("Please select DaVinci Resolve as the editor first")
+            return
+            
         try:
-            # Check if dvr_script is available in the global namespace
-            global dvr_script
-            if 'dvr_script' not in globals() or dvr_script is None:
-                # Try to initialize if not loaded yet
-                if not self._init_davinci_resolve_api():
-                    self.status_var.set("Error: DaVinci Resolve API not available")
+            # If we haven't initialized yet or previously failed, initialize now
+            if not hasattr(self, 'resolve_in_safe_mode') or not hasattr(self, 'resolve_initialized'):
+                self.resolve_in_safe_mode = False
+                self.resolve_initialized = False
+            
+            # Don't attempt to use the API if we're in safe mode
+            if self.resolve_in_safe_mode:
+                self.debug_print("Resolve is in safe mode - import functionality disabled")
+                self.status_var.set("Cannot import: DaVinci Resolve integration is in safe mode")
+                self.show_error_in_gui("DaVinci Resolve Safe Mode", 
+                                     "The integration is running in safe mode due to initialization errors.\n\n"
+                                     "Import functionality is disabled to prevent crashes.\n\n"
+                                     "Please check that DaVinci Resolve is properly installed and running.")
+                return
+            
+            # Check if API is initialized, if not initialize it now
+            if not self.resolve_initialized:
+                self.status_var.set("Testing DaVinci Resolve API safety...")
+                self.debug_print("Initializing DaVinci Resolve API on first use...")
+                
+                # First, test in subprocess for safety
+                try:
+                    subprocess_test_result = self._test_resolve_import_in_subprocess()
+                    if not subprocess_test_result:
+                        self.resolve_in_safe_mode = True
+                        self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
+                        self.show_error_in_gui("DaVinci Resolve Error",
+                                            "The DaVinci Resolve API failed the safety test.\n\n"
+                                            "Import functionality has been disabled for safety.\n\n"
+                                            "This usually happens if there is an incompatibility between the\n"
+                                            "Python version and the DaVinci Resolve API.")
+                        return
+                        
+                    self.debug_print("Safety test passed, attempting actual initialization")
+                    success = self._init_davinci_resolve_api()
+                    
+                    if success:
+                        self.resolve_initialized = True
+                        self.status_var.set("DaVinci Resolve API initialized")
+                    else:
+                        self.resolve_in_safe_mode = True
+                        self.status_var.set("Failed to initialize DaVinci Resolve API")
+                        self.show_error_in_gui("DaVinci Resolve Error",
+                                            "Failed to initialize DaVinci Resolve API.\n\n"
+                                            "Please ensure DaVinci Resolve is installed correctly and running.")
+                        return
+                        
+                except Exception as init_error:
+                    self.resolve_in_safe_mode = True
+                    error_msg = f"Error initializing DaVinci Resolve API: {str(init_error)}"
+                    self.debug_print(error_msg)
+                    self.status_var.set(f"Error: {error_msg}")
+                    self.show_error_in_gui("DaVinci Resolve Error",
+                                         f"Error initializing DaVinci Resolve API:\n\n{str(init_error)}")
                     return
-        
+            
             # Get absolute path to the video file
             abs_video_path = self.get_absolute_path(video_file)
             
@@ -960,6 +1098,77 @@ class RapidMomentNavigator:
             error_msg = f"Error importing clip to DaVinci Resolve: {str(e)}"
             self.debug_print(error_msg)
             self.status_var.set(f"Error: {error_msg}")
+            self.show_error_in_gui("DaVinci Resolve Error", f"Error importing clip:\n\n{str(e)}")
+            
+            # Enable safe mode to prevent further crashes
+            self.resolve_in_safe_mode = True
+
+    def _test_resolve_import_in_subprocess(self):
+        """Test importing DaVinciResolveScript in a separate process for safety"""
+        self.debug_print("Testing DaVinci Resolve import in a separate process...")
+        
+        # Create a temporary Python file with the import test
+        with tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w') as f:
+            test_script = f.name
+            
+            # Write a script that attempts the import and exits with code 0 if successful
+            f.write(f'''
+import os
+import sys
+
+# Set required environment variables
+os.environ["RESOLVE_SCRIPT_API"] = r"{os.environ.get('RESOLVE_SCRIPT_API')}"
+os.environ["RESOLVE_SCRIPT_LIB"] = r"{os.environ.get('RESOLVE_SCRIPT_LIB')}"
+
+# Add module path to sys.path
+resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
+if os.path.exists(resolve_script_path) and resolve_script_path not in sys.path:
+    sys.path.append(resolve_script_path)
+    print(f"Added {{resolve_script_path}} to Python path")
+
+# Try to import the module
+try:
+    import DaVinciResolveScript
+    print("Successfully imported DaVinciResolveScript in test process")
+    sys.exit(0)  # Success
+except Exception as e:
+    print(f"Error importing DaVinciResolveScript in test process: {{e}}")
+    sys.exit(1)  # Failure
+''')
+        
+        try:
+            # Run the test script in a separate process
+            self.debug_print(f"Running import test script: {test_script}")
+            result = subprocess.run(
+                [sys.executable, test_script],
+                capture_output=True, 
+                text=True,
+                timeout=10  # Set a timeout to avoid hanging
+            )
+            
+            # Check the result
+            if result.returncode == 0:
+                self.debug_print("Import test succeeded in subprocess")
+                self.debug_print(f"Subprocess stdout: {result.stdout}")
+                return True
+            else:
+                self.debug_print(f"Import test failed in subprocess with exit code {result.returncode}")
+                self.debug_print(f"Subprocess stderr: {result.stderr}")
+                self.debug_print(f"Subprocess stdout: {result.stdout}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            self.debug_print("Import test timed out - this suggests the import would hang or crash")
+            return False
+        except Exception as e:
+            self.debug_print(f"Error running import test: {e}")
+            return False
+        finally:
+            # Clean up the temporary file
+            try:
+                os.unlink(test_script)
+            except:
+                pass
 
     def import_clip_to_timeline(self, clip_path, start_tc=None, end_tc=None, start_frame=None, end_frame=None):
         """
@@ -1438,6 +1647,86 @@ class RapidMomentNavigator:
         else:
             self.status_var.set("Directory not found in preferences")
 
+class DebugWindow:
+    """A debug window to display errors and debug information"""
+    def __init__(self, parent, auto_show=False):
+        self.parent = parent
+        self.window = tk.Toplevel(parent)
+        self.window.title("Debug Console")
+        self.window.geometry("800x400")
+        
+        # Create a frame for the text area and scrollbars
+        frame = ttk.Frame(self.window)
+        frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Create text area with scrollbars
+        self.text_area = scrolledtext.ScrolledText(frame, wrap=tk.WORD, font=("Consolas", 10))
+        self.text_area.pack(fill="both", expand=True)
+        
+        # Create a frame for buttons
+        button_frame = ttk.Frame(self.window)
+        button_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Add clear button
+        clear_btn = ttk.Button(button_frame, text="Clear", command=self.clear_text)
+        clear_btn.pack(side="left", padx=5)
+        
+        # Add close button
+        close_btn = ttk.Button(button_frame, text="Close", command=self.window.withdraw)
+        close_btn.pack(side="right", padx=5)
+        
+        # Add save button
+        save_btn = ttk.Button(button_frame, text="Save Log", command=self.save_log)
+        save_btn.pack(side="right", padx=5)
+        
+        # If auto_show is False, hide the window initially
+        if not auto_show:
+            self.window.withdraw()
+            
+        # Add help text
+        self.insert_text("Debug Console - Errors and detailed messages will appear here.\n")
+        self.insert_text("If you encounter problems, please save this log and include it in any bug reports.\n\n")
+    
+    def winfo_exists(self):
+        """Check if window still exists"""
+        try:
+            return self.window.winfo_exists()
+        except:
+            return False
+    
+    def insert_text(self, text):
+        """Insert text into the debug window"""
+        try:
+            self.text_area.insert(tk.END, text)
+            self.text_area.see(tk.END)  # Auto-scroll to the end
+            
+            # Make the window visible if it's hidden
+            if not self.window.winfo_viewable():
+                self.window.deiconify()
+        except:
+            pass  # Silently fail if window is closed
+    
+    def clear_text(self):
+        """Clear all text from the window"""
+        try:
+            self.text_area.delete(1.0, tk.END)
+        except:
+            pass
+    
+    def save_log(self):
+        """Save the log contents to a file"""
+        try:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                title="Save Debug Log"
+            )
+            if filename:
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(self.text_area.get(1.0, tk.END))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save log: {e}")
+
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Rapid Moment Navigator - Search subtitles and navigate to moments in videos")
@@ -1449,9 +1738,46 @@ if __name__ == "__main__":
         print(f"DEBUG: Current directory: {os.path.abspath('.')}")
         print(f"DEBUG: Script directory: {os.path.dirname(os.path.abspath(__file__))}")
     
+    # Create the main window
     root = tk.Tk()
-    app = RapidMomentNavigator(root, debug=args.debug)
-    # Force debug output to be flushed immediately if debug is enabled
-    if args.debug:
-        sys.stdout.flush()
-    root.mainloop() 
+    
+    try:
+        # Initialize and run the application
+        app = RapidMomentNavigator(root, debug=args.debug)
+        
+        # Force debug output to be flushed immediately if debug is enabled
+        if args.debug:
+            sys.stdout.flush()
+            
+        # Add debug menu toggle to main window
+        def toggle_debug_window():
+            try:
+                app.ensure_debug_window()
+                if app.debug_window and app.debug_window.window.winfo_viewable():
+                    app.debug_window.window.withdraw()
+                else:
+                    app.debug_window.window.deiconify()
+            except Exception as e:
+                print(f"Error toggling debug window: {e}", file=sys.stderr)
+                messagebox.showerror("Error", f"Could not open debug window: {e}")
+                
+        # Add Debug menu
+        try:
+            menu_bar = tk.Menu(root)
+            debug_menu = tk.Menu(menu_bar, tearoff=0)
+            debug_menu.add_command(label="Show Debug Window", command=toggle_debug_window)
+            menu_bar.add_cascade(label="Debug", menu=debug_menu)
+            root.config(menu=menu_bar)
+        except Exception as e:
+            print(f"Error creating debug menu: {e}", file=sys.stderr)
+        
+        # Start the main loop
+        root.mainloop()
+        
+    except Exception as e:
+        # Handle any uncaught exceptions during initialization
+        print(f"CRITICAL ERROR: {e}", file=sys.stderr)
+        traceback.print_exc()
+        messagebox.showerror("Critical Error", 
+                            f"The application encountered a critical error and cannot start:\n\n{str(e)}")
+        sys.exit(1) 
