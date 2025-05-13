@@ -162,4 +162,5 @@ return
 ## Future Improvements
 
 - Verify support for other video players and formats in Windows, Mac, and Linux
+   - If possible, add support for marking a Plex video at a timecode to view a moment on another device connected to the Plex server
 - Add some support to import clips based on displayed transcript results at the timecode of the result

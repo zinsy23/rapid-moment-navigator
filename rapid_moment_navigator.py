@@ -9,6 +9,8 @@ from pathlib import Path
 import sys
 import argparse
 import json
+import logging
+import time
 
 # Constants
 PREFS_FILENAME = "rapid_navigator_prefs.json"
@@ -815,9 +817,56 @@ class RapidMomentNavigator:
         self.preferences["selected_editor"] = selected_editor
         self.save_preferences()
         
+        # Load appropriate editor API
+        success = True
+        if selected_editor == "DaVinci Resolve":
+            success = self._init_davinci_resolve_api()
+        # Add future editors here with their own initialization methods
+        # elif selected_editor == "Some Other Editor":
+        #     success = self._init_other_editor_api()
+        
         # Update UI to show/hide import buttons
         self._update_import_buttons_visibility()
+        
+        # Update status
+        if selected_editor != "None" and success:
+            self.status_var.set(f"{selected_editor} integration enabled")
     
+    def _init_davinci_resolve_api(self):
+        """Initialize the DaVinci Resolve API"""
+        try:
+            # Set Resolve environment variables if not set
+            if not os.getenv("RESOLVE_SCRIPT_API"):
+                os.environ["RESOLVE_SCRIPT_API"] = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting"
+            if not os.getenv("RESOLVE_SCRIPT_LIB"):
+                os.environ["RESOLVE_SCRIPT_LIB"] = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
+
+            # Add Resolve scripting module path
+            resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
+            if resolve_script_path not in sys.path and os.path.exists(resolve_script_path):
+                sys.path.append(resolve_script_path)
+                self.debug_print(f"Added {resolve_script_path} to Python path")
+            else:
+                self.debug_print(f"Resolve script path does not exist: {resolve_script_path}")
+
+            # Import DaVinci Resolve Script
+            try:
+                global dvr_script
+                import DaVinciResolveScript as dvr_script
+                self.debug_print("Successfully imported DaVinciResolveScript")
+                return True
+            except ImportError as e:
+                error_msg = f"Failed to import DaVinciResolveScript: {str(e)}"
+                self.debug_print(error_msg)
+                self.status_var.set(f"Error: {error_msg}")
+                return False
+                
+        except Exception as e:
+            error_msg = f"Error initializing DaVinci Resolve API: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
+            return False
+
     def _update_import_buttons_visibility(self):
         """Update visibility of import buttons based on selected editor"""
         selected_editor = self.editor_var.get()
@@ -882,9 +931,198 @@ class RapidMomentNavigator:
     
     def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
         """Import clip with time range to DaVinci Resolve"""
-        # This is a placeholder for future implementation
-        self.debug_print(f"TODO: Implement importing {video_file} from {start_time} to {end_time} to DaVinci Resolve")
-        # Future implementation will go here
+        try:
+            # Check if dvr_script is available in the global namespace
+            global dvr_script
+            if 'dvr_script' not in globals() or dvr_script is None:
+                # Try to initialize if not loaded yet
+                if not self._init_davinci_resolve_api():
+                    self.status_var.set("Error: DaVinci Resolve API not available")
+                    return
+        
+            # Get absolute path to the video file
+            abs_video_path = self.get_absolute_path(video_file)
+            
+            # Call the timeline import function
+            success = self.import_clip_to_timeline(
+                abs_video_path, 
+                start_tc=start_time, 
+                end_tc=end_time
+            )
+            
+            if success:
+                self.debug_print(f"Successfully imported clip to DaVinci Resolve timeline")
+                self.status_var.set("Clip successfully imported to DaVinci Resolve timeline")
+            else:
+                self.debug_print("Failed to import clip to DaVinci Resolve timeline")
+                self.status_var.set("Failed to import clip to DaVinci Resolve timeline")
+        except Exception as e:
+            error_msg = f"Error importing clip to DaVinci Resolve: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
+
+    def import_clip_to_timeline(self, clip_path, start_tc=None, end_tc=None, start_frame=None, end_frame=None):
+        """
+        Import a clip to the current timeline with specified in/out points
+        
+        Args:
+            clip_path (str): Path to the clip to import
+            start_tc (str, optional): Start timecode in HH:MM:SS format
+            end_tc (str, optional): End timecode in HH:MM:SS format
+            start_frame (int, optional): Start frame (alternative to start_tc)
+            end_frame (int, optional): End frame (alternative to end_frame)
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.debug_print(f"Importing clip: {clip_path}")
+            
+            # Convert timecodes to frames if provided
+            if start_tc:
+                start_frame = self.timecode_to_frames(start_tc)
+                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame}")
+            
+            if end_tc:
+                end_frame = self.timecode_to_frames(end_tc)
+                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame}")
+            
+            # Get Resolve
+            resolve = dvr_script.scriptapp("Resolve")
+            if not resolve:
+                self.debug_print("Failed to get Resolve object")
+                return False
+            
+            # Get project manager
+            project_manager = resolve.GetProjectManager()
+            if not project_manager:
+                self.debug_print("Failed to get project manager")
+                return False
+            
+            # Get current project
+            project = project_manager.GetCurrentProject()
+            if not project:
+                self.debug_print("No project is currently open")
+                return False
+            
+            self.debug_print(f"Current project: {project.GetName()}")
+            
+            # Make sure we're on the Edit page
+            current_page = resolve.GetCurrentPage()
+            if current_page != "edit":
+                resolve.OpenPage("edit")
+                time.sleep(0.5)
+            
+            # Get media pool
+            media_pool = project.GetMediaPool()
+            if not media_pool:
+                self.debug_print("Failed to get media pool")
+                return False
+            
+            # Get current timeline
+            timeline = project.GetCurrentTimeline()
+            if not timeline:
+                self.debug_print("No timeline is currently open")
+                return False
+            
+            self.debug_print(f"Current timeline: {timeline.GetName()}")
+            
+            # Normalize path
+            abs_path = os.path.abspath(clip_path)
+            if not os.path.exists(abs_path):
+                self.debug_print(f"File not found: {abs_path}")
+                return False
+            
+            # Import media
+            imported_media = media_pool.ImportMedia([abs_path])
+            if not imported_media or len(imported_media) == 0:
+                self.debug_print("Failed to import media")
+                return False
+            
+            media_item = imported_media[0]
+            self.debug_print(f"Successfully imported: {media_item.GetName()}")
+            
+            # Create clip info dictionary with explicit frame ranges
+            clip_info = {
+                "mediaPoolItem": media_item
+            }
+            
+            # Add in/out points if specified
+            if start_frame is not None:
+                clip_info["startFrame"] = start_frame
+            
+            if end_frame is not None:
+                clip_info["endFrame"] = end_frame
+            
+            self.debug_print(f"Appending clip with time range {start_frame if start_frame is not None else 0} to {end_frame if end_frame is not None else 'end'}")
+            
+            # Append to timeline with clip info dictionary
+            appended_items = media_pool.AppendToTimeline([clip_info])
+            
+            if appended_items and len(appended_items) > 0:
+                self.debug_print(f"Successfully appended clip to timeline with specified time range")
+                return True
+            else:
+                # Fallback to just appending the media item if the clip info approach fails
+                self.debug_print("Failed to append clip with time range, trying without time range...")
+                appended_items = media_pool.AppendToTimeline([media_item])
+                
+                if appended_items and len(appended_items) > 0:
+                    self.debug_print("Successfully appended clip to timeline (without time range)")
+                    return True
+                
+            self.debug_print("Failed to append clip to timeline")
+            return False
+                
+        except Exception as e:
+            self.debug_print(f"Error importing clip: {e}")
+            return False
+        
+    def timecode_to_frames(self, timecode, fps=24):
+        """
+        Convert HH:MM:SS or HH:MM:SS:FF timecode to frames
+        
+        Args:
+            timecode (str): Timecode in HH:MM:SS, HH:MM:SS.MS or HH:MM:SS:FF format
+            fps (float): Frames per second (default: 24)
+        
+        Returns:
+            int: Frame number
+        """
+        try:
+            # Check if we have a DaVinci Resolve style timecode with HH:MM:SS:FF
+            if len(timecode.split(':')) == 4:
+                hours, minutes, seconds, frames = map(int, timecode.split(':'))
+                total_frames = (hours * 3600 + minutes * 60 + seconds) * fps + frames
+                return int(total_frames)
+            
+            # Handle HH:MM:SS or HH:MM:SS.MS format
+            if '.' in timecode:
+                time_parts, ms_part = timecode.split('.')
+                ms = int(ms_part) if ms_part else 0
+            else:
+                time_parts = timecode
+                ms = 0
+            
+            # Split time parts
+            parts = time_parts.split(':')
+            if len(parts) == 3:  # HH:MM:SS
+                hours, minutes, seconds = map(int, parts)
+            elif len(parts) == 2:  # MM:SS
+                hours = 0
+                minutes, seconds = map(int, parts)
+            else:
+                self.debug_print(f"Invalid timecode format: {timecode}")
+                return 0
+            
+            # Calculate total seconds
+            total_seconds = hours * 3600 + minutes * 60 + seconds + ms/1000
+            
+            # Convert to frames
+            return int(total_seconds * fps)
+        except Exception as e:
+            self.debug_print(f"Invalid timecode format: {timecode}")
+            return 0
     
     def load_preferences(self):
         """Load preferences from file or create default preferences if file doesn't exist"""
