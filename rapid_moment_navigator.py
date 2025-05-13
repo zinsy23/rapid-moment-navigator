@@ -39,7 +39,7 @@ class ClickableTimecode(Label):
 
 class ClickableImport(Label):
     """A clickable label widget for import buttons"""
-    def __init__(self, parent, text, result, callback, **kwargs):
+    def __init__(self, parent, text, result, callback, tooltip=None, **kwargs):
         super().__init__(parent, text=text, cursor="hand2", fg="blue", **kwargs)
         self.result = result
         self.callback = callback
@@ -47,9 +47,58 @@ class ClickableImport(Label):
         # Add underline
         self.config(font=("TkDefaultFont", 10, "underline"))
         
+        # Add tooltip functionality
+        self.tooltip_text = tooltip
+        if tooltip:
+            self.bind("<Enter>", self._on_enter)
+            self.bind("<Leave>", self._on_leave)
+            self.tooltip = None
+            self.tooltip_timer = None
+        
     def _on_click(self, event):
         """Handle click event"""
         self.callback(self.result)
+        
+    def _on_enter(self, event):
+        """Start timer to show tooltip when mouse enters the widget"""
+        if self.tooltip_text:
+            # Cancel any existing timer
+            self._cancel_timer()
+            # Start a new timer - 1000ms = 1 second
+            self.tooltip_timer = self.after(1000, self._show_tooltip)
+    
+    def _show_tooltip(self):
+        """Display the tooltip after delay"""
+        x, y, _, _ = self.bbox("insert")
+        x += self.winfo_rootx() + 25
+        y += self.winfo_rooty() + 25
+        
+        # Create a toplevel window
+        self.tooltip = tk.Toplevel(self)
+        self.tooltip.wm_overrideredirect(True)
+        self.tooltip.wm_geometry(f"+{x}+{y}")
+        
+        # Create tooltip content
+        frame = tk.Frame(self.tooltip, background="#ffffe0", borderwidth=1, relief="solid")
+        frame.pack(ipadx=3, ipady=2)
+        
+        label = tk.Label(frame, text=self.tooltip_text, justify="left",
+                      background="#ffffe0", fg="#000000", 
+                      wraplength=250, font=("TkDefaultFont", 9))
+        label.pack()
+    
+    def _on_leave(self, event):
+        """Hide tooltip and cancel timer when mouse leaves the widget"""
+        self._cancel_timer()
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
+            
+    def _cancel_timer(self):
+        """Cancel any pending tooltip timer"""
+        if self.tooltip_timer:
+            self.after_cancel(self.tooltip_timer)
+            self.tooltip_timer = None
 
 class RapidMomentNavigator:
     def __init__(self, root, debug=False):
@@ -710,26 +759,29 @@ class RapidMomentNavigator:
             # Store reference to the import buttons frame for later visibility updates
             result_frame.import_buttons_frame = import_buttons_frame
             
+            # Always create the import buttons, but only show the frame if editor is selected
             if show_import_buttons:
                 import_buttons_frame.pack(side="right", padx=5, anchor="ne")
-                
-                # Add Import Media button
-                import_media_btn = ClickableImport(
-                    import_buttons_frame, 
-                    "Import Media", 
-                    result, 
-                    self._handle_import_media_click
-                )
-                import_media_btn.pack(side="left", padx=5)
-                
-                # Add Import Clip button
-                import_clip_btn = ClickableImport(
-                    import_buttons_frame, 
-                    "Import Clip", 
-                    result, 
-                    self._handle_import_clip_click
-                )
-                import_clip_btn.pack(side="left", padx=5)
+            
+            # Add Import Media button (always create, will be visible only if frame is visible)
+            import_media_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Media", 
+                result, 
+                self._handle_import_media_click,
+                tooltip="Import the entire video file to the DaVinci Resolve timeline"
+            )
+            import_media_btn.pack(side="left", padx=5)
+            
+            # Add Import Clip button (always create, will be visible only if frame is visible)
+            import_clip_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Clip", 
+                result, 
+                self._handle_import_clip_click,
+                tooltip="Import only the time range from this subtitle entry to the DaVinci Resolve timeline"
+            )
+            import_clip_btn.pack(side="left", padx=5)
             
             # Create content frame (with timecode and text) that fills the remaining space
             content_frame = ttk.Frame(result_frame)
@@ -902,13 +954,19 @@ class RapidMomentNavigator:
         selected_editor = self.editor_var.get()
         show_import_buttons = selected_editor != "None"
         
-        # Loop through all frames and update import buttons visibility
+        # Loop through all result frames and update import buttons visibility
         for widget in self.results_container.winfo_children():
+            # Check if this is a result frame with import_buttons_frame attribute
             if isinstance(widget, ttk.Frame) and hasattr(widget, "import_buttons_frame"):
+                # Get the import buttons frame
+                import_buttons_frame = widget.import_buttons_frame
+                
                 if show_import_buttons:
-                    widget.import_buttons_frame.pack(side="right", padx=5)
+                    # Show the buttons frame
+                    import_buttons_frame.pack(side="right", padx=5, anchor="ne")
                 else:
-                    widget.import_buttons_frame.pack_forget()
+                    # Hide the buttons frame
+                    import_buttons_frame.pack_forget()
         
         # Update the canvas scroll region
         self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
@@ -955,72 +1013,12 @@ class RapidMomentNavigator:
     
     def _import_media_to_davinci_resolve(self, video_file):
         """Import full media file to DaVinci Resolve"""
-        # This is a placeholder for future implementation
-        self.debug_print(f"TODO: Implement importing {video_file} to DaVinci Resolve")
-        # Future implementation will go here
-    
-    def _init_davinci_resolve_api(self):
-        """Initialize the DaVinci Resolve API"""
-        try:
-            self.debug_print("Initializing DaVinci Resolve API...")
-            
-            # Set Resolve environment variables if not set
-            if not os.getenv("RESOLVE_SCRIPT_API"):
-                resolve_api_path = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting"
-                os.environ["RESOLVE_SCRIPT_API"] = resolve_api_path
-                self.debug_print(f"Set RESOLVE_SCRIPT_API to {resolve_api_path}")
-            
-            if not os.getenv("RESOLVE_SCRIPT_LIB"):
-                resolve_lib_path = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
-                os.environ["RESOLVE_SCRIPT_LIB"] = resolve_lib_path
-                self.debug_print(f"Set RESOLVE_SCRIPT_LIB to {resolve_lib_path}")
-
-            # Add Resolve scripting module path
-            resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
-            self.debug_print(f"Checking if script path exists: {resolve_script_path}")
-            
-            if not os.path.exists(resolve_script_path):
-                error_msg = f"Resolve script path does not exist: {resolve_script_path}"
-                self.debug_print(error_msg)
-                self.status_var.set(f"Error: {error_msg}")
-                return False
-                
-            if resolve_script_path not in sys.path:
-                sys.path.append(resolve_script_path)
-                self.debug_print(f"Added {resolve_script_path} to Python path")
-            
-            # List all files in the modules directory
-            try:
-                module_files = os.listdir(resolve_script_path)
-                self.debug_print(f"Files in module directory: {module_files}")
-            except Exception as e:
-                self.debug_print(f"Error listing module directory: {e}")
-            
-            # Simple direct import approach
-            try:
-                global dvr_script
-                self.debug_print("Attempting to import DaVinciResolveScript...")
-                import DaVinciResolveScript as dvr_script
-                self.debug_print("Successfully imported DaVinciResolveScript")
-                return True
-            except ImportError as e:
-                error_msg = f"Failed to import DaVinciResolveScript: {str(e)}"
-                self.debug_print(error_msg)
-                return False
-                
-        except Exception as e:
-            error_msg = f"Error initializing DaVinci Resolve API: {str(e)}"
-            self.debug_print(error_msg)
-            return False
-            
-    def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
-        """Import clip with time range to DaVinci Resolve"""
         selected_editor = self.editor_var.get()
         if selected_editor != "DaVinci Resolve":
             self.debug_print(f"Wrong editor selected: {selected_editor}")
             self.status_var.set("Please select DaVinci Resolve as the editor first")
             return
-            
+        
         try:
             # If we haven't initialized yet or previously failed, initialize now
             if not hasattr(self, 'resolve_in_safe_mode') or not hasattr(self, 'resolve_initialized'):
@@ -1081,24 +1079,20 @@ class RapidMomentNavigator:
             # Get absolute path to the video file
             abs_video_path = self.get_absolute_path(video_file)
             
-            # Call the timeline import function
-            success = self.import_clip_to_timeline(
-                abs_video_path, 
-                start_tc=start_time, 
-                end_tc=end_time
-            )
+            # Call the timeline import function without time range parameters
+            success = self.import_clip_to_timeline(abs_video_path)
             
             if success:
-                self.debug_print(f"Successfully imported clip to DaVinci Resolve timeline")
-                self.status_var.set("Clip successfully imported to DaVinci Resolve timeline")
+                self.debug_print(f"Successfully imported media to DaVinci Resolve timeline")
+                self.status_var.set("Media successfully imported to DaVinci Resolve timeline")
             else:
-                self.debug_print("Failed to import clip to DaVinci Resolve timeline")
-                self.status_var.set("Failed to import clip to DaVinci Resolve timeline")
+                self.debug_print("Failed to import media to DaVinci Resolve timeline")
+                self.status_var.set("Failed to import media to DaVinci Resolve timeline")
         except Exception as e:
-            error_msg = f"Error importing clip to DaVinci Resolve: {str(e)}"
+            error_msg = f"Error importing media to DaVinci Resolve: {str(e)}"
             self.debug_print(error_msg)
             self.status_var.set(f"Error: {error_msg}")
-            self.show_error_in_gui("DaVinci Resolve Error", f"Error importing clip:\n\n{str(e)}")
+            self.show_error_in_gui("DaVinci Resolve Error", f"Error importing media:\n\n{str(e)}")
             
             # Enable safe mode to prevent further crashes
             self.resolve_in_safe_mode = True
@@ -1646,6 +1640,150 @@ except Exception as e:
             self.status_var.set(f"Removed directory: {selected_dir}. Found {len(self.show_name_to_path_map)} shows")
         else:
             self.status_var.set("Directory not found in preferences")
+
+    def _init_davinci_resolve_api(self):
+        """Initialize the DaVinci Resolve API"""
+        try:
+            self.debug_print("Initializing DaVinci Resolve API...")
+            
+            # Set Resolve environment variables if not set
+            if not os.getenv("RESOLVE_SCRIPT_API"):
+                resolve_api_path = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting"
+                os.environ["RESOLVE_SCRIPT_API"] = resolve_api_path
+                self.debug_print(f"Set RESOLVE_SCRIPT_API to {resolve_api_path}")
+            
+            if not os.getenv("RESOLVE_SCRIPT_LIB"):
+                resolve_lib_path = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
+                os.environ["RESOLVE_SCRIPT_LIB"] = resolve_lib_path
+                self.debug_print(f"Set RESOLVE_SCRIPT_LIB to {resolve_lib_path}")
+
+            # Add Resolve scripting module path
+            resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
+            self.debug_print(f"Checking if script path exists: {resolve_script_path}")
+            
+            if not os.path.exists(resolve_script_path):
+                error_msg = f"Resolve script path does not exist: {resolve_script_path}"
+                self.debug_print(error_msg)
+                self.status_var.set(f"Error: {error_msg}")
+                return False
+                
+            if resolve_script_path not in sys.path:
+                sys.path.append(resolve_script_path)
+                self.debug_print(f"Added {resolve_script_path} to Python path")
+            
+            # List all files in the modules directory
+            try:
+                module_files = os.listdir(resolve_script_path)
+                self.debug_print(f"Files in module directory: {module_files}")
+            except Exception as e:
+                self.debug_print(f"Error listing module directory: {e}")
+            
+            # Simple direct import approach
+            try:
+                global dvr_script
+                self.debug_print("Attempting to import DaVinciResolveScript...")
+                import DaVinciResolveScript as dvr_script
+                self.debug_print("Successfully imported DaVinciResolveScript")
+                return True
+            except ImportError as e:
+                error_msg = f"Failed to import DaVinciResolveScript: {str(e)}"
+                self.debug_print(error_msg)
+                return False
+                
+        except Exception as e:
+            error_msg = f"Error initializing DaVinci Resolve API: {str(e)}"
+            self.debug_print(error_msg)
+            return False
+            
+    def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
+        """Import clip with time range to DaVinci Resolve"""
+        selected_editor = self.editor_var.get()
+        if selected_editor != "DaVinci Resolve":
+            self.debug_print(f"Wrong editor selected: {selected_editor}")
+            self.status_var.set("Please select DaVinci Resolve as the editor first")
+            return
+            
+        try:
+            # If we haven't initialized yet or previously failed, initialize now
+            if not hasattr(self, 'resolve_in_safe_mode') or not hasattr(self, 'resolve_initialized'):
+                self.resolve_in_safe_mode = False
+                self.resolve_initialized = False
+            
+            # Don't attempt to use the API if we're in safe mode
+            if self.resolve_in_safe_mode:
+                self.debug_print("Resolve is in safe mode - import functionality disabled")
+                self.status_var.set("Cannot import: DaVinci Resolve integration is in safe mode")
+                self.show_error_in_gui("DaVinci Resolve Safe Mode", 
+                                     "The integration is running in safe mode due to initialization errors.\n\n"
+                                     "Import functionality is disabled to prevent crashes.\n\n"
+                                     "Please check that DaVinci Resolve is properly installed and running.")
+                return
+            
+            # Check if API is initialized, if not initialize it now
+            if not self.resolve_initialized:
+                self.status_var.set("Testing DaVinci Resolve API safety...")
+                self.debug_print("Initializing DaVinci Resolve API on first use...")
+                
+                # First, test in subprocess for safety
+                try:
+                    subprocess_test_result = self._test_resolve_import_in_subprocess()
+                    if not subprocess_test_result:
+                        self.resolve_in_safe_mode = True
+                        self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
+                        self.show_error_in_gui("DaVinci Resolve Error",
+                                            "The DaVinci Resolve API failed the safety test.\n\n"
+                                            "Import functionality has been disabled for safety.\n\n"
+                                            "This usually happens if there is an incompatibility between the\n"
+                                            "Python version and the DaVinci Resolve API.")
+                        return
+                        
+                    self.debug_print("Safety test passed, attempting actual initialization")
+                    success = self._init_davinci_resolve_api()
+                    
+                    if success:
+                        self.resolve_initialized = True
+                        self.status_var.set("DaVinci Resolve API initialized")
+                    else:
+                        self.resolve_in_safe_mode = True
+                        self.status_var.set("Failed to initialize DaVinci Resolve API")
+                        self.show_error_in_gui("DaVinci Resolve Error",
+                                            "Failed to initialize DaVinci Resolve API.\n\n"
+                                            "Please ensure DaVinci Resolve is installed correctly and running.")
+                        return
+                        
+                except Exception as init_error:
+                    self.resolve_in_safe_mode = True
+                    error_msg = f"Error initializing DaVinci Resolve API: {str(init_error)}"
+                    self.debug_print(error_msg)
+                    self.status_var.set(f"Error: {error_msg}")
+                    self.show_error_in_gui("DaVinci Resolve Error",
+                                         f"Error initializing DaVinci Resolve API:\n\n{str(init_error)}")
+                    return
+            
+            # Get absolute path to the video file
+            abs_video_path = self.get_absolute_path(video_file)
+            
+            # Call the timeline import function
+            success = self.import_clip_to_timeline(
+                abs_video_path, 
+                start_tc=start_time, 
+                end_tc=end_time
+            )
+            
+            if success:
+                self.debug_print(f"Successfully imported clip to DaVinci Resolve timeline")
+                self.status_var.set("Clip successfully imported to DaVinci Resolve timeline")
+            else:
+                self.debug_print("Failed to import clip to DaVinci Resolve timeline")
+                self.status_var.set("Failed to import clip to DaVinci Resolve timeline")
+        except Exception as e:
+            error_msg = f"Error importing clip to DaVinci Resolve: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
+            self.show_error_in_gui("DaVinci Resolve Error", f"Error importing clip:\n\n{str(e)}")
+            
+            # Enable safe mode to prevent further crashes
+            self.resolve_in_safe_mode = True
 
 class DebugWindow:
     """A debug window to display errors and debug information"""
