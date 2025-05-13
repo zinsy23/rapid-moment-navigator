@@ -759,28 +759,29 @@ class RapidMomentNavigator:
             # Store reference to the import buttons frame for later visibility updates
             result_frame.import_buttons_frame = import_buttons_frame
             
+            # Always create the import buttons, but only show the frame if editor is selected
             if show_import_buttons:
                 import_buttons_frame.pack(side="right", padx=5, anchor="ne")
-                
-                # Add Import Media button
-                import_media_btn = ClickableImport(
-                    import_buttons_frame, 
-                    "Import Media", 
-                    result, 
-                    self._handle_import_media_click,
-                    tooltip="Import the entire video file to the DaVinci Resolve timeline"
-                )
-                import_media_btn.pack(side="left", padx=5)
-                
-                # Add Import Clip button
-                import_clip_btn = ClickableImport(
-                    import_buttons_frame, 
-                    "Import Clip", 
-                    result, 
-                    self._handle_import_clip_click,
-                    tooltip="Import only the time range from this subtitle entry to the DaVinci Resolve timeline"
-                )
-                import_clip_btn.pack(side="left", padx=5)
+            
+            # Add Import Media button (always create, will be visible only if frame is visible)
+            import_media_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Media", 
+                result, 
+                self._handle_import_media_click,
+                tooltip="Import the entire video file to the DaVinci Resolve timeline"
+            )
+            import_media_btn.pack(side="left", padx=5)
+            
+            # Add Import Clip button (always create, will be visible only if frame is visible)
+            import_clip_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Clip", 
+                result, 
+                self._handle_import_clip_click,
+                tooltip="Import only the time range from this subtitle entry to the DaVinci Resolve timeline"
+            )
+            import_clip_btn.pack(side="left", padx=5)
             
             # Create content frame (with timecode and text) that fills the remaining space
             content_frame = ttk.Frame(result_frame)
@@ -953,13 +954,19 @@ class RapidMomentNavigator:
         selected_editor = self.editor_var.get()
         show_import_buttons = selected_editor != "None"
         
-        # Loop through all frames and update import buttons visibility
+        # Loop through all result frames and update import buttons visibility
         for widget in self.results_container.winfo_children():
+            # Check if this is a result frame with import_buttons_frame attribute
             if isinstance(widget, ttk.Frame) and hasattr(widget, "import_buttons_frame"):
+                # Get the import buttons frame
+                import_buttons_frame = widget.import_buttons_frame
+                
                 if show_import_buttons:
-                    widget.import_buttons_frame.pack(side="right", padx=5)
+                    # Show the buttons frame
+                    import_buttons_frame.pack(side="right", padx=5, anchor="ne")
                 else:
-                    widget.import_buttons_frame.pack_forget()
+                    # Hide the buttons frame
+                    import_buttons_frame.pack_forget()
         
         # Update the canvas scroll region
         self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
