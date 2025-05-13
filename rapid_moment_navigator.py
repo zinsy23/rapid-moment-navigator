@@ -12,12 +12,6 @@ import json
 import logging
 import time
 
-# For DaVinci Resolve integration
-try:
-    import DaVinciResolveScript as dvr_script
-except ImportError:
-    dvr_script = None
-
 # Constants
 PREFS_FILENAME = "rapid_navigator_prefs.json"
 DEFAULT_PREFS = {
@@ -823,9 +817,56 @@ class RapidMomentNavigator:
         self.preferences["selected_editor"] = selected_editor
         self.save_preferences()
         
+        # Load appropriate editor API
+        success = True
+        if selected_editor == "DaVinci Resolve":
+            success = self._init_davinci_resolve_api()
+        # Add future editors here with their own initialization methods
+        # elif selected_editor == "Some Other Editor":
+        #     success = self._init_other_editor_api()
+        
         # Update UI to show/hide import buttons
         self._update_import_buttons_visibility()
+        
+        # Update status
+        if selected_editor != "None" and success:
+            self.status_var.set(f"{selected_editor} integration enabled")
     
+    def _init_davinci_resolve_api(self):
+        """Initialize the DaVinci Resolve API"""
+        try:
+            # Set Resolve environment variables if not set
+            if not os.getenv("RESOLVE_SCRIPT_API"):
+                os.environ["RESOLVE_SCRIPT_API"] = r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting"
+            if not os.getenv("RESOLVE_SCRIPT_LIB"):
+                os.environ["RESOLVE_SCRIPT_LIB"] = r"C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll"
+
+            # Add Resolve scripting module path
+            resolve_script_path = os.path.join(os.environ.get('RESOLVE_SCRIPT_API', ''), 'Modules')
+            if resolve_script_path not in sys.path and os.path.exists(resolve_script_path):
+                sys.path.append(resolve_script_path)
+                self.debug_print(f"Added {resolve_script_path} to Python path")
+            else:
+                self.debug_print(f"Resolve script path does not exist: {resolve_script_path}")
+
+            # Import DaVinci Resolve Script
+            try:
+                global dvr_script
+                import DaVinciResolveScript as dvr_script
+                self.debug_print("Successfully imported DaVinciResolveScript")
+                return True
+            except ImportError as e:
+                error_msg = f"Failed to import DaVinciResolveScript: {str(e)}"
+                self.debug_print(error_msg)
+                self.status_var.set(f"Error: {error_msg}")
+                return False
+                
+        except Exception as e:
+            error_msg = f"Error initializing DaVinci Resolve API: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
+            return False
+
     def _update_import_buttons_visibility(self):
         """Update visibility of import buttons based on selected editor"""
         selected_editor = self.editor_var.get()
@@ -890,27 +931,35 @@ class RapidMomentNavigator:
     
     def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
         """Import clip with time range to DaVinci Resolve"""
-        if dvr_script is None:
-            self.debug_print("DaVinciResolveScript module not found")
-            self.status_var.set("Error: DaVinciResolveScript module not found")
-            return
+        try:
+            # Check if dvr_script is available in the global namespace
+            global dvr_script
+            if 'dvr_script' not in globals() or dvr_script is None:
+                # Try to initialize if not loaded yet
+                if not self._init_davinci_resolve_api():
+                    self.status_var.set("Error: DaVinci Resolve API not available")
+                    return
         
-        # Get absolute path to the video file
-        abs_video_path = self.get_absolute_path(video_file)
-        
-        # Call the timeline import function
-        success = self.import_clip_to_timeline(
-            abs_video_path, 
-            start_tc=start_time, 
-            end_tc=end_time
-        )
-        
-        if success:
-            self.debug_print(f"Successfully imported clip to DaVinci Resolve timeline")
-            self.status_var.set("Clip successfully imported to DaVinci Resolve timeline")
-        else:
-            self.debug_print("Failed to import clip to DaVinci Resolve timeline")
-            self.status_var.set("Failed to import clip to DaVinci Resolve timeline")
+            # Get absolute path to the video file
+            abs_video_path = self.get_absolute_path(video_file)
+            
+            # Call the timeline import function
+            success = self.import_clip_to_timeline(
+                abs_video_path, 
+                start_tc=start_time, 
+                end_tc=end_time
+            )
+            
+            if success:
+                self.debug_print(f"Successfully imported clip to DaVinci Resolve timeline")
+                self.status_var.set("Clip successfully imported to DaVinci Resolve timeline")
+            else:
+                self.debug_print("Failed to import clip to DaVinci Resolve timeline")
+                self.status_var.set("Failed to import clip to DaVinci Resolve timeline")
+        except Exception as e:
+            error_msg = f"Error importing clip to DaVinci Resolve: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
 
     def import_clip_to_timeline(self, clip_path, start_tc=None, end_tc=None, start_frame=None, end_frame=None):
         """
