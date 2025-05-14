@@ -21,7 +21,9 @@ RESOLVE_PATHS_FILENAME = "resolve_paths.json"
 DEFAULT_PREFS = {
     "directories": [],
     "exclude_current_dir": False,
-    "selected_editor": "None"
+    "selected_editor": "None",
+    "min_duration_enabled": True,  # Changed from False to True
+    "min_duration_seconds": 10.0
 }
 
 def find_module_locations(base_path):
@@ -1291,21 +1293,24 @@ class RapidMomentNavigator:
                 # Use cached framerate
                 fps = video_info["fps"]
             
+            # Apply minimum duration if enabled
+            adjusted_start, adjusted_end = self._apply_minimum_duration(start_time, display_end_time, fps)
+            
             # Calculate duration in frames to verify timing
-            start_frame = self.timecode_to_frames(start_time, fps)
-            end_frame = self.timecode_to_frames(end_time, fps)
+            start_frame = self.timecode_to_frames(adjusted_start, fps)
+            end_frame = self.timecode_to_frames(adjusted_end, fps)
             duration_frames = end_frame - start_frame
             duration_secs = duration_frames / fps
             
-            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {start_time}-{display_end_time} with editor {selected_editor}, FPS: {fps}")
+            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {adjusted_start}-{adjusted_end} with editor {selected_editor}, FPS: {fps}")
             self.debug_print(f"Frame calculation: {start_frame} to {end_frame} ({duration_frames} frames, {duration_secs:.2f} seconds)")
             
             # Call the appropriate import function based on selected editor
             if selected_editor == "DaVinci Resolve":
-                self._import_clip_to_davinci_resolve(video_file, start_time, end_time, fps)
+                self._import_clip_to_davinci_resolve(video_file, adjusted_start, adjusted_end, fps)
             # Add more editors as needed
             
-            self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {start_time}-{display_end_time} to {selected_editor}")
+            self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {adjusted_start}-{adjusted_end} to {selected_editor}")
         else:
             self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
             self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
@@ -2585,6 +2590,272 @@ sys.exit(1)
             # Enable safe mode to prevent further crashes
             self.resolve_in_safe_mode = True
 
+    def _apply_minimum_duration(self, start_time, end_time, fps):
+        """
+        Apply minimum duration to a clip by extending it if needed
+        
+        Args:
+            start_time (str): Start timecode in HH:MM:SS format
+            end_time (str): End timecode in HH:MM:SS format
+            fps (float): Frames per second
+            
+        Returns:
+            tuple: (adjusted_start_time, adjusted_end_time) as strings
+        """
+        if not self.preferences.get("min_duration_enabled", True):  # Changed default to True
+            return start_time, end_time
+            
+        min_seconds = self.preferences.get("min_duration_seconds", 10.0)
+        
+        # Convert times to seconds for easier math
+        start_seconds = self._timecode_to_seconds(start_time)
+        end_seconds = self._timecode_to_seconds(end_time)
+        
+        # Calculate current duration
+        current_duration = end_seconds - start_seconds
+        
+        # If already meeting minimum, return unchanged
+        if current_duration >= min_seconds:
+            return start_time, end_time
+        
+        # Calculate how much time to add
+        additional_time_needed = min_seconds - current_duration
+        
+        # Distribute the additional time evenly on both sides
+        time_to_add_each_side = additional_time_needed / 2.0
+        
+        # Adjust start and end times
+        new_start_seconds = max(0, start_seconds - time_to_add_each_side)
+        new_end_seconds = end_seconds + time_to_add_each_side
+        
+        # If we couldn't add enough at the start (because we hit 0), add more to the end
+        if new_start_seconds > 0 and start_seconds - time_to_add_each_side < 0:
+            shortfall = abs(start_seconds - time_to_add_each_side)
+            new_end_seconds += shortfall
+            self.debug_print(f"Hit start boundary, adding extra {shortfall:.1f}s to end")
+        
+        # Convert back to timecodes
+        new_start_time = self._seconds_to_timecode(new_start_seconds)
+        new_end_time = self._seconds_to_timecode(new_end_seconds)
+        
+        self.debug_print(f"Applied minimum duration: {start_time}-{end_time} ({current_duration:.1f}s) → {new_start_time}-{new_end_time} ({min_seconds:.1f}s)")
+        
+        return new_start_time, new_end_time
+
+    def _timecode_to_seconds(self, timecode):
+        """Convert HH:MM:SS or HH:MM:SS.MS timecode to seconds"""
+        try:
+            # Handle milliseconds which could be comma or period separated
+            if '.' in timecode:
+                time_parts, ms_part = timecode.split('.')
+                ms = int(ms_part) if ms_part else 0
+            elif ',' in timecode:
+                time_parts, ms_part = timecode.split(',')
+                ms = int(ms_part) if ms_part else 0
+            else:
+                time_parts = timecode
+                ms = 0
+            
+            # Split time parts
+            parts = time_parts.split(':')
+            if len(parts) == 3:  # HH:MM:SS
+                hours, minutes, seconds = map(int, parts)
+            elif len(parts) == 2:  # MM:SS
+                hours = 0
+                minutes, seconds = map(int, parts)
+            else:
+                return 0
+            
+            # Calculate total seconds
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            if ms > 0:
+                total_seconds += ms / 1000.0
+                
+            return total_seconds
+        except Exception:
+            return 0
+
+    def _seconds_to_timecode(self, total_seconds):
+        """Convert seconds to HH:MM:SS format"""
+        try:
+            # Ensure non-negative
+            total_seconds = max(0, total_seconds)
+            
+            # Calculate hours, minutes, seconds
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            seconds = int(total_seconds % 60)
+            
+            # Format as HH:MM:SS
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        except Exception:
+            return "00:00:00"
+
+    # Add a method to show the settings dialog
+    def _show_settings_dialog(self):
+        """Show a dialog with minimum duration settings"""
+        settings_dialog = tk.Toplevel(self.root)
+        settings_dialog.title("Minimum Import Duration")
+        settings_dialog.geometry("400x250")
+        settings_dialog.transient(self.root)
+        settings_dialog.grab_set()
+        
+        # Make dialog modal
+        settings_dialog.focus_set()
+        
+        # Create main frame with padding
+        main_frame = ttk.Frame(settings_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title label
+        ttk.Label(main_frame, text="Minimum Clip Duration Settings", 
+                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Enable checkbox
+        self.min_duration_var = tk.BooleanVar(value=self.preferences.get("min_duration_enabled", True))
+        min_duration_cb = ttk.Checkbutton(
+            main_frame, 
+            text="Enable minimum duration for imported clips", 
+            variable=self.min_duration_var
+        )
+        min_duration_cb.pack(anchor="w", pady=5)
+        
+        # Duration input frame
+        duration_input_frame = ttk.Frame(main_frame)
+        duration_input_frame.pack(fill="x", pady=5)
+        
+        ttk.Label(duration_input_frame, text="Minimum duration:").pack(side="left")
+        
+        self.min_duration_seconds_var = tk.StringVar(value=str(self.preferences.get("min_duration_seconds", 10.0)))
+        min_duration_entry = ttk.Entry(
+            duration_input_frame, 
+            textvariable=self.min_duration_seconds_var,
+            width=5
+        )
+        min_duration_entry.pack(side="left", padx=5)
+        
+        ttk.Label(duration_input_frame, text="seconds").pack(side="left")
+        
+        # Description label
+        description_frame = ttk.LabelFrame(main_frame, text="Description", padding=10)
+        description_frame.pack(fill="x", pady=10, expand=True)
+        
+        description_text = ("Clips shorter than the minimum duration will be extended equally on both sides when imported.\n\n"
+                           "If a clip cannot be extended to the full minimum duration due to reaching the start or end of "
+                           "the source media, it will be extended as much as possible.")
+        
+        ttk.Label(description_frame, text=description_text, wraplength=350, justify="left").pack(fill="both")
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(fill="x", padx=15, pady=15)
+        
+        # Cancel button
+        cancel_btn = ttk.Button(
+            buttons_frame, 
+            text="Cancel", 
+            command=settings_dialog.destroy
+        )
+        cancel_btn.pack(side="right", padx=5)
+        
+        # Apply button
+        apply_btn = ttk.Button(
+            buttons_frame, 
+            text="Apply", 
+            command=lambda: self._apply_settings(settings_dialog)
+        )
+        apply_btn.pack(side="right", padx=5)
+        
+        # Center the dialog on the main window
+        settings_dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() / 2) - (settings_dialog.winfo_width() / 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (settings_dialog.winfo_height() / 2)
+        settings_dialog.geometry(f"+{int(x)}+{int(y)}")
+
+    # Add a method to apply the settings
+    def _apply_settings(self, dialog):
+        """Apply settings from the dialog"""
+        try:
+            # Get the minimum duration settings
+            enabled = self.min_duration_var.get()
+            
+            # Parse and validate seconds value
+            seconds_str = self.min_duration_seconds_var.get()
+            try:
+                seconds = float(seconds_str)
+                if seconds < 0:
+                    seconds = 0.0
+                    self.min_duration_seconds_var.set("0.0")
+                elif seconds > 60:
+                    seconds = 60.0
+                    self.min_duration_seconds_var.set("60.0")
+            except ValueError:
+                # If not a valid float, reset to default
+                seconds = 10.0
+                self.min_duration_seconds_var.set("10.0")
+            
+            # Update preferences
+            self.preferences["min_duration_enabled"] = enabled
+            self.preferences["min_duration_seconds"] = seconds
+            self.save_preferences()
+            
+            self.debug_print(f"Minimum duration settings updated - enabled: {enabled}, seconds: {seconds}")
+            
+            # Close the dialog
+            dialog.destroy()
+            
+            # Update status
+            self.status_var.set("Settings updated successfully")
+        except Exception as e:
+            self.debug_print(f"Error updating settings: {e}")
+            self.status_var.set(f"Error updating settings: {e}")
+
+    # Add a new method for general settings
+    def _show_general_settings_dialog(self):
+        """Show a dialog with general application settings"""
+        settings_dialog = tk.Toplevel(self.root)
+        settings_dialog.title("General Settings")
+        settings_dialog.geometry("400x300")
+        settings_dialog.transient(self.root)
+        settings_dialog.grab_set()
+        
+        # Make dialog modal
+        settings_dialog.focus_set()
+        
+        # Create main frame with padding
+        main_frame = ttk.Frame(settings_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title label
+        ttk.Label(main_frame, text="General Application Settings", 
+                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Placeholder for future general settings
+        placeholder_frame = ttk.LabelFrame(main_frame, text="Application Settings", padding=10)
+        placeholder_frame.pack(fill="both", expand=True, pady=10)
+        
+        ttk.Label(placeholder_frame, 
+                 text="General application settings will be added in future updates.",
+                 wraplength=350, justify="center").pack(pady=20)
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(fill="x", padx=15, pady=15)
+        
+        # Close button
+        close_btn = ttk.Button(
+            buttons_frame, 
+            text="Close", 
+            command=settings_dialog.destroy
+        )
+        close_btn.pack(side="right", padx=5)
+        
+        # Center the dialog on the main window
+        settings_dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() / 2) - (settings_dialog.winfo_width() / 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (settings_dialog.winfo_height() / 2)
+        settings_dialog.geometry(f"+{int(x)}+{int(y)}")
+
 class DebugWindow:
     """A debug window to display errors and debug information"""
     def __init__(self, parent, auto_show=False):
@@ -2687,27 +2958,26 @@ if __name__ == "__main__":
         if args.debug:
             sys.stdout.flush()
             
-        # Add debug menu toggle to main window
-        def toggle_debug_window():
-            try:
-                app.ensure_debug_window()
-                if app.debug_window and app.debug_window.window.winfo_viewable():
-                    app.debug_window.window.withdraw()
-                else:
-                    app.debug_window.window.deiconify()
-            except Exception as e:
-                print(f"Error toggling debug window: {e}", file=sys.stderr)
-                messagebox.showerror("Error", f"Could not open debug window: {e}")
-                
+        # Create menu bar
+        menu_bar = tk.Menu(root)
+        
+        # Add Settings menu with separate items
+        settings_menu = tk.Menu(menu_bar, tearoff=0)
+        settings_menu.add_command(label="Minimum Import Duration...", 
+                                 command=app._show_settings_dialog)
+        settings_menu.add_command(label="General Settings...", 
+                                 command=app._show_general_settings_dialog)
+        menu_bar.add_cascade(label="Settings", menu=settings_menu)
+            
         # Add Debug menu
-        try:
-            menu_bar = tk.Menu(root)
-            debug_menu = tk.Menu(menu_bar, tearoff=0)
-            debug_menu.add_command(label="Show Debug Window", command=toggle_debug_window)
-            menu_bar.add_cascade(label="Debug", menu=debug_menu)
-            root.config(menu=menu_bar)
-        except Exception as e:
-            print(f"Error creating debug menu: {e}", file=sys.stderr)
+        debug_menu = tk.Menu(menu_bar, tearoff=0)
+        debug_menu.add_command(label="Show Debug Window", 
+                              command=lambda: app.ensure_debug_window() or 
+                                             (app.debug_window and app.debug_window.window.deiconify()))
+        menu_bar.add_cascade(label="Debug", menu=debug_menu)
+        
+        # Apply menu bar to root window
+        root.config(menu=menu_bar)
         
         # Start the main loop
         root.mainloop()
@@ -2717,5 +2987,5 @@ if __name__ == "__main__":
         print(f"CRITICAL ERROR: {e}", file=sys.stderr)
         traceback.print_exc()
         messagebox.showerror("Critical Error", 
-                            f"The application encountered a critical error and cannot start:\n\n{str(e)}")
+                           f"The application encountered a critical error and cannot start:\n\n{str(e)}")
         sys.exit(1) 
