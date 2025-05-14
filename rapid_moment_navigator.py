@@ -21,7 +21,9 @@ RESOLVE_PATHS_FILENAME = "resolve_paths.json"
 DEFAULT_PREFS = {
     "directories": [],
     "exclude_current_dir": False,
-    "selected_editor": "None"
+    "selected_editor": "None",
+    "min_duration_enabled": True,  # Changed from False to True
+    "min_duration_seconds": 10.0
 }
 
 def find_module_locations(base_path):
@@ -568,7 +570,11 @@ class RapidMomentNavigator:
                     video_name = os.path.splitext(video_basename)[0]
                     
                     if subtitle_name == video_name:
-                        self.subtitle_to_video_map[subtitle_file] = video_file
+                        # Store only the path - framerate will be detected when needed
+                        self.subtitle_to_video_map[subtitle_file] = {
+                            "path": video_file,
+                            "fps": None  # Initialize as None, will detect when needed
+                        }
                         self.debug_print(f"Mapping - exact match: {subtitle_basename} -> {video_basename}")
                         matched = True
                         break
@@ -587,13 +593,230 @@ class RapidMomentNavigator:
                         if (clean_subtitle_name == clean_video_name or
                             clean_subtitle_name in clean_video_name or
                             clean_video_name in clean_subtitle_name):
-                            self.subtitle_to_video_map[subtitle_file] = video_file
+                            
+                            # Store only the path - framerate will be detected when needed
+                            self.subtitle_to_video_map[subtitle_file] = {
+                                "path": video_file,
+                                "fps": None  # Initialize as None, will detect when needed
+                            }
                             self.debug_print(f"Mapping - partial match: {subtitle_basename} -> {video_basename}")
                             matched = True
                             break
         
         self.debug_print(f"Mapping - completed. Mapped {len(self.subtitle_to_video_map)} subtitle files to videos")
         self.status_var.set(f"Ready. Mapped {len(self.subtitle_to_video_map)} subtitle files to videos.")
+    
+    def detect_video_framerate(self, video_path):
+        """
+        Detect the framerate of a video file using FFprobe.
+        
+        Args:
+            video_path (str): Path to the video file
+            
+        Returns:
+            float: Framerate of the video (defaults to 24.0 if detection fails)
+        """
+        try:
+            # Get absolute path to the video file
+            abs_video_path = self.get_absolute_path(video_path)
+            
+            # Check if ffprobe is available
+            try:
+                # First try ffprobe directly
+                cmd = ["ffprobe", "-version"]
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                ffprobe_cmd = "ffprobe"
+            except (subprocess.SubprocessError, FileNotFoundError):
+                # If not available directly, try looking for it in common locations
+                ffprobe_locations = [
+                    r"C:\Program Files\FFmpeg\bin\ffprobe.exe",
+                    r"C:\Program Files (x86)\FFmpeg\bin\ffprobe.exe",
+                    os.path.join(self.script_dir, "ffprobe.exe")
+                ]
+                
+                ffprobe_found = False
+                for location in ffprobe_locations:
+                    if os.path.exists(location):
+                        ffprobe_cmd = location
+                        ffprobe_found = True
+                        break
+                    
+                if not ffprobe_found:
+                    self.debug_print("FFprobe not found, using default framerate")
+                    return 24.0
+            
+            # Construct the FFprobe command
+            cmd = [
+                ffprobe_cmd,
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                abs_video_path
+            ]
+            
+            # Run the command
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            
+            if result.returncode != 0:
+                self.debug_print(f"FFprobe error: {result.stderr}")
+                return 24.0
+                
+            # Parse the output (usually in the form "num/den")
+            fps_str = result.stdout.strip()
+            
+            if '/' in fps_str:
+                num, den = map(int, fps_str.split('/'))
+                fps = num / den if den != 0 else 24.0
+            else:
+                try:
+                    fps = float(fps_str)
+                except ValueError:
+                    fps = 24.0
+                    
+            # Validate the framerate (ensure it's reasonable)
+            if fps < 1 or fps > 300:
+                self.debug_print(f"Invalid framerate detected ({fps}), using default")
+                return 24.0
+                
+            self.debug_print(f"Detected framerate for {os.path.basename(video_path)}: {fps} fps")
+            return float(fps)
+        
+        except Exception as e:
+            self.debug_print(f"Error detecting framerate: {str(e)}")
+            return 24.0  # Default fallback framerate
+    
+    def detect_video_framerate_from_resolve(self, video_path):
+        """
+        Detect the framerate of a video file using the DaVinci Resolve API.
+        
+        Args:
+            video_path (str): Path to the video file
+            
+        Returns:
+            float: Framerate of the video (defaults to 24.0 if detection fails)
+        """
+        try:
+            # Check if Resolve API is initialized
+            if not hasattr(self, 'resolve_initialized') or not self.resolve_initialized:
+                self.debug_print("Resolve API not initialized, using fallback method")
+                return self.detect_video_framerate(video_path)
+            
+            # Get absolute path to the video file
+            abs_video_path = self.get_absolute_path(video_path)
+            
+            # Get Resolve
+            resolve = dvr_script.scriptapp("Resolve")
+            if not resolve:
+                self.debug_print("Failed to get Resolve object")
+                return self.detect_video_framerate(video_path)
+            
+            # Get project manager
+            project_manager = resolve.GetProjectManager()
+            if not project_manager:
+                self.debug_print("Failed to get project manager")
+                return self.detect_video_framerate(video_path)
+            
+            # Get current project
+            project = project_manager.GetCurrentProject()
+            if not project:
+                self.debug_print("No project is currently open")
+                return self.detect_video_framerate(video_path)
+            
+            # Get media pool
+            media_pool = project.GetMediaPool()
+            if not media_pool:
+                self.debug_print("Failed to get media pool")
+                return self.detect_video_framerate(video_path)
+                
+            # Import the media file temporarily to get its properties
+            current_folder = media_pool.GetCurrentFolder()
+            temp_folder = None
+            
+            try:
+                # Create a temporary folder in the media pool to avoid cluttering the main pool
+                root_folder = media_pool.GetRootFolder()
+                folder_list = root_folder.GetSubFolderList()
+                
+                # Check if we already have a temp folder
+                temp_folder_name = "_RapidNavigator_Temp"
+                temp_folder = None
+                
+                for folder in folder_list:
+                    if folder.GetName() == temp_folder_name:
+                        temp_folder = folder
+                        break
+                
+                # Create temp folder if it doesn't exist
+                if not temp_folder:
+                    temp_folder = media_pool.AddSubFolder(root_folder, temp_folder_name)
+                
+                # Set the temp folder as the current folder
+                media_pool.SetCurrentFolder(temp_folder)
+                
+                # Import the media
+                imported_media = media_pool.ImportMedia([abs_video_path])
+                
+                if not imported_media or len(imported_media) == 0:
+                    self.debug_print("Failed to import media for framerate detection")
+                    return self.detect_video_framerate(video_path)
+                
+                media_item = imported_media[0]
+                
+                # Get the frame rate from clip properties
+                try:
+                    # Try to get the frame rate property directly
+                    fps_str = media_item.GetClipProperty("FPS")
+                    
+                    if not fps_str:
+                        # If direct property failed, try getting properties snapshot
+                        all_props = media_item.GetClipProperty()
+                        fps_str = all_props.get("FPS", "")
+                        
+                    if fps_str:
+                        # Parse the FPS string
+                        try:
+                            fps = float(fps_str)
+                            self.debug_print(f"Detected framerate from Resolve API: {fps} fps")
+                            
+                            # Validate the framerate (ensure it's reasonable)
+                            if 1 <= fps <= 300:
+                                return fps
+                        except ValueError:
+                            self.debug_print(f"Could not parse Resolve FPS value: {fps_str}")
+                except Exception as e:
+                    self.debug_print(f"Error getting clip properties from Resolve: {str(e)}")
+                    
+                # If we've reached here, try to use the timeline frame rate
+                try:
+                    timeline_fps_str = project.GetSetting("timelineFrameRate")
+                    if timeline_fps_str:
+                        # Parse the timeline FPS string (might be in format like "29.97 DF")
+                        timeline_fps_str = timeline_fps_str.split()[0]  # Remove "DF" if present
+                        fps = float(timeline_fps_str)
+                        self.debug_print(f"Using timeline framerate from Resolve: {fps} fps")
+                        return fps
+                except Exception as e:
+                    self.debug_print(f"Error getting timeline frame rate from Resolve: {str(e)}")
+                    
+                # Fallback to FFprobe method
+                return self.detect_video_framerate(video_path)
+                
+            finally:
+                # Restore the original media pool folder
+                if current_folder:
+                    media_pool.SetCurrentFolder(current_folder)
+                    
+                # Delete imported media item if it exists
+                if 'media_item' in locals() and media_item:
+                    try:
+                        media_pool.DeleteClips([media_item])
+                    except:
+                        self.debug_print("Couldn't clean up temporary media item")
+                        
+        except Exception as e:
+            self.debug_print(f"Error detecting framerate from Resolve: {str(e)}")
+            return self.detect_video_framerate(video_path)
     
     def _clean_filename(self, filename):
         """Clean a filename to improve matching chances"""
@@ -838,7 +1061,8 @@ class RapidMomentNavigator:
         self.debug_print(f"Handling click for subtitle file: {subtitle_file}")
         
         if subtitle_file in self.subtitle_to_video_map:
-            video_file = self.subtitle_to_video_map[subtitle_file]
+            video_info = self.subtitle_to_video_map[subtitle_file]
+            video_file = video_info["path"]
             self.debug_print(f"Found matching video file: {video_file}")
             self.play_video(video_file, result['mpc_start_time'])
             self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['mpc_start_time']}")
@@ -1001,7 +1225,19 @@ class RapidMomentNavigator:
         subtitle_file = result['file']
         
         if subtitle_file in self.subtitle_to_video_map:
-            video_file = self.subtitle_to_video_map[subtitle_file]
+            video_info = self.subtitle_to_video_map[subtitle_file]
+            video_file = video_info["path"]
+            
+            # We don't need framerate for full media import, but update it if needed
+            if video_info["fps"] is None and selected_editor == "DaVinci Resolve":
+                try:
+                    if hasattr(self, 'resolve_initialized') and self.resolve_initialized:
+                        fps = self.detect_video_framerate_from_resolve(video_file)
+                        video_info["fps"] = fps
+                except Exception:
+                    # Silently ignore framerate detection errors for full media import
+                    pass
+                
             self.debug_print(f"Import Media clicked for {os.path.basename(video_file)} with editor {selected_editor}")
             
             # Call the appropriate import function based on selected editor
@@ -1018,19 +1254,63 @@ class RapidMomentNavigator:
         """Handle click on Import Clip button"""
         selected_editor = self.editor_var.get()
         subtitle_file = result['file']
+        
+        # Improve timecode handling for better accuracy
         start_time = result['mpc_start_time']
-        end_time = result['end_time'].replace(',', '.').split('.')[0]  # Convert to MPC format
+        
+        # Parse end time properly - keep milliseconds for more accurate calculations
+        end_time = result['end_time']
+        if ',' in end_time:
+            # Convert comma to period for consistent processing
+            end_time = end_time.replace(',', '.')
+        
+        # Ensure proper formatting for Resolve (no milliseconds in the string)
+        display_end_time = end_time.split('.')[0]
+        
+        self.debug_print(f"Original timecodes: {start_time} to {end_time}")
         
         if subtitle_file in self.subtitle_to_video_map:
-            video_file = self.subtitle_to_video_map[subtitle_file]
-            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {start_time}-{end_time} with editor {selected_editor}")
+            video_info = self.subtitle_to_video_map[subtitle_file]
+            video_file = video_info["path"]
+            
+            # Check if we need to detect framerate
+            if video_info["fps"] is None:
+                # Detect framerate now - use Resolve API if available
+                try:
+                    if self.editor_var.get() == "DaVinci Resolve" and hasattr(self, 'resolve_initialized') and self.resolve_initialized:
+                        fps = self.detect_video_framerate_from_resolve(video_file)
+                    else:
+                        fps = self.detect_video_framerate(video_file)
+                    
+                    # Store the detected framerate for future use
+                    video_info["fps"] = fps
+                    
+                except Exception as e:
+                    self.debug_print(f"Error detecting framerate for {os.path.basename(video_file)}: {str(e)}")
+                    fps = 24.0  # Default fallback
+                    video_info["fps"] = fps
+            else:
+                # Use cached framerate
+                fps = video_info["fps"]
+            
+            # Apply minimum duration if enabled
+            adjusted_start, adjusted_end = self._apply_minimum_duration(start_time, display_end_time, fps)
+            
+            # Calculate duration in frames to verify timing
+            start_frame = self.timecode_to_frames(adjusted_start, fps)
+            end_frame = self.timecode_to_frames(adjusted_end, fps)
+            duration_frames = end_frame - start_frame
+            duration_secs = duration_frames / fps
+            
+            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {adjusted_start}-{adjusted_end} with editor {selected_editor}, FPS: {fps}")
+            self.debug_print(f"Frame calculation: {start_frame} to {end_frame} ({duration_frames} frames, {duration_secs:.2f} seconds)")
             
             # Call the appropriate import function based on selected editor
             if selected_editor == "DaVinci Resolve":
-                self._import_clip_to_davinci_resolve(video_file, start_time, end_time)
+                self._import_clip_to_davinci_resolve(video_file, adjusted_start, adjusted_end, fps)
             # Add more editors as needed
             
-            self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {start_time}-{end_time} to {selected_editor}")
+            self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {adjusted_start}-{adjusted_end} to {selected_editor}")
         else:
             self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
             self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
@@ -1267,7 +1547,7 @@ sys.exit(1)
             except:
                 pass
 
-    def import_clip_to_timeline(self, clip_path, start_tc=None, end_tc=None, start_frame=None, end_frame=None):
+    def import_clip_to_timeline(self, clip_path, start_tc=None, end_tc=None, start_frame=None, end_frame=None, fps=24.0):
         """
         Import a clip to the current timeline with specified in/out points
         
@@ -1277,21 +1557,28 @@ sys.exit(1)
             end_tc (str, optional): End timecode in HH:MM:SS format
             start_frame (int, optional): Start frame (alternative to start_tc)
             end_frame (int, optional): End frame (alternative to end_frame)
+            fps (float, optional): Frames per second of the clip (default: 24.0)
         
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            self.debug_print(f"Importing clip: {clip_path}")
+            self.debug_print(f"Importing clip: {clip_path} with FPS: {fps}")
             
             # Convert timecodes to frames if provided
             if start_tc:
-                start_frame = self.timecode_to_frames(start_tc)
-                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame}")
+                start_frame = self.timecode_to_frames(start_tc, fps)
+                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame} at {fps} fps")
             
             if end_tc:
-                end_frame = self.timecode_to_frames(end_tc)
-                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame}")
+                end_frame = self.timecode_to_frames(end_tc, fps)
+                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame} at {fps} fps")
+            
+            # Calculate and log the duration for verification
+            if start_frame is not None and end_frame is not None:
+                duration_frames = end_frame - start_frame
+                duration_seconds = duration_frames / fps
+                self.debug_print(f"Clip duration: {duration_frames} frames ({duration_seconds:.2f} seconds)")
             
             # Get Resolve
             resolve = dvr_script.scriptapp("Resolve")
@@ -1310,6 +1597,22 @@ sys.exit(1)
             if not project:
                 self.debug_print("No project is currently open")
                 return False
+            
+            # Get current project framerate
+            try:
+                project_fps_str = project.GetSetting("timelineFrameRate")
+                if project_fps_str:
+                    # Remove "DF" if present
+                    if ' ' in project_fps_str:
+                        project_fps_str = project_fps_str.split()[0]
+                    project_fps = float(project_fps_str)
+                    self.debug_print(f"Project timeline framerate: {project_fps} fps")
+                    
+                    # Log warning if project and clip framerates don't match
+                    if abs(project_fps - fps) > 0.01:  # Allow for small floating-point differences
+                        self.debug_print(f"WARNING: Project framerate ({project_fps}) does not match clip framerate ({fps})")
+            except Exception as e:
+                self.debug_print(f"Could not get project framerate: {e}")
             
             self.debug_print(f"Current project: {project.GetName()}")
             
@@ -1348,6 +1651,22 @@ sys.exit(1)
             media_item = imported_media[0]
             self.debug_print(f"Successfully imported: {media_item.GetName()}")
             
+            # Get actual media properties for verification
+            try:
+                media_fps = media_item.GetClipProperty("FPS")
+                if media_fps:
+                    self.debug_print(f"Imported media actual FPS: {media_fps}")
+                    
+                    # If the detected FPS is significantly different from the imported media's FPS
+                    try:
+                        media_fps_float = float(media_fps)
+                        if abs(media_fps_float - fps) > 0.5:  # If difference is more than 0.5 fps
+                            self.debug_print(f"WARNING: Detected FPS ({fps}) differs from media's actual FPS ({media_fps_float})")
+                    except ValueError:
+                        pass
+            except Exception as e:
+                self.debug_print(f"Could not get media FPS: {e}")
+            
             # Create clip info dictionary with explicit frame ranges
             clip_info = {
                 "mediaPoolItem": media_item
@@ -1367,6 +1686,20 @@ sys.exit(1)
             
             if appended_items and len(appended_items) > 0:
                 self.debug_print(f"Successfully appended clip to timeline with specified time range")
+                
+                # Get the appended timeline item for verification
+                try:
+                    timeline_item = appended_items[0]
+                    start = timeline_item.GetStart()
+                    self.debug_print(f"Timeline item start frame: {start}")
+                    
+                    # Get the left and right offset capabilities
+                    left_offset = timeline_item.GetLeftOffset()
+                    right_offset = timeline_item.GetRightOffset()
+                    self.debug_print(f"Item can be extended: {left_offset} frames left, {right_offset} frames right")
+                except Exception as e:
+                    self.debug_print(f"Could not get timeline item details: {e}")
+                    
                 return True
             else:
                 # Fallback to just appending the media item if the clip info approach fails
@@ -1384,31 +1717,37 @@ sys.exit(1)
             self.debug_print(f"Error importing clip: {e}")
             return False
         
-    def timecode_to_frames(self, timecode, fps=24):
+    def timecode_to_frames(self, timecode, fps=24.0):
         """
-        Convert HH:MM:SS or HH:MM:SS:FF timecode to frames
+        Convert HH:MM:SS or HH:MM:SS:FF or HH:MM:SS,MMM timecode to frames
+        with improved millisecond handling and offset compensation
         
         Args:
-            timecode (str): Timecode in HH:MM:SS, HH:MM:SS.MS or HH:MM:SS:FF format
-            fps (float): Frames per second (default: 24)
+            timecode (str): Timecode in HH:MM:SS, HH:MM:SS.MS, HH:MM:SS,MS or HH:MM:SS:FF format
+            fps (float): Frames per second (default: 24.0)
         
         Returns:
             int: Frame number
         """
         try:
+            self.debug_print(f"Converting timecode {timecode} using {fps} fps")
+            
             # Check if we have a DaVinci Resolve style timecode with HH:MM:SS:FF
             if len(timecode.split(':')) == 4:
                 hours, minutes, seconds, frames = map(int, timecode.split(':'))
                 total_frames = (hours * 3600 + minutes * 60 + seconds) * fps + frames
                 return int(total_frames)
             
-            # Handle HH:MM:SS or HH:MM:SS.MS format
+            # Handle milliseconds which could be comma or period separated
+            ms = 0
             if '.' in timecode:
                 time_parts, ms_part = timecode.split('.')
                 ms = int(ms_part) if ms_part else 0
+            elif ',' in timecode:
+                time_parts, ms_part = timecode.split(',')
+                ms = int(ms_part) if ms_part else 0
             else:
                 time_parts = timecode
-                ms = 0
             
             # Split time parts
             parts = time_parts.split(':')
@@ -1421,13 +1760,51 @@ sys.exit(1)
                 self.debug_print(f"Invalid timecode format: {timecode}")
                 return 0
             
-            # Calculate total seconds
-            total_seconds = hours * 3600 + minutes * 60 + seconds + ms/1000
+            # Calculate total seconds with proper millisecond handling
+            if ms > 0:
+                if ms < 100:  # If ms is less than 100, assume it's already in frames rather than milliseconds
+                    frame_portion = ms
+                else:  # Convert milliseconds to frames
+                    frame_portion = (ms / 1000.0) * fps
+            else:
+                frame_portion = 0
+                
+            # Calculate total frames
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            total_frames = (total_seconds * fps) + frame_portion
             
-            # Convert to frames
-            return int(total_seconds * fps)
+            # Apply frame offset compensation for better sync
+            # Resolve tends to need a slight offset for accurate positioning
+            offset_frames = self._get_timecode_offset(fps)
+            compensated_frames = int(total_frames) + offset_frames
+            
+            self.debug_print(f"Calculated frame position: {int(total_frames)} → {compensated_frames} (with offset {offset_frames})")
+            return max(0, compensated_frames)  # Ensure non-negative frame number
         except Exception as e:
-            self.debug_print(f"Invalid timecode format: {timecode}")
+            self.debug_print(f"Invalid timecode format: {timecode} - Error: {e}")
+            return 0
+
+    def _get_timecode_offset(self, fps):
+        """
+        Get the appropriate frame offset compensation based on framerate
+        
+        Args:
+            fps (float): Framerate of the video
+            
+        Returns:
+            int: Frame offset to apply
+        """
+        # These offsets are for fine-tuning the frame calculations
+        # Different framerates may need different offsets for perfect accuracy
+        if fps >= 59 and fps <= 60:    # 59.94/60 fps
+            return 0
+        elif fps >= 29 and fps <= 30:  # 29.97/30 fps
+            return 0  
+        elif fps >= 23 and fps <= 24:  # 23.976/24 fps
+            return 0
+        elif fps >= 25 and fps <= 25.1: # 25 fps (PAL)
+            return 0
+        else:
             return 0
     
     def load_preferences(self):
@@ -2122,7 +2499,7 @@ sys.exit(1)
         
         return result
         
-    def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
+    def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time, fps=24.0):
         """Import clip with time range to DaVinci Resolve"""
         selected_editor = self.editor_var.get()
         if selected_editor != "DaVinci Resolve":
@@ -2190,11 +2567,12 @@ sys.exit(1)
             # Get absolute path to the video file
             abs_video_path = self.get_absolute_path(video_file)
             
-            # Call the timeline import function
+            # Call the timeline import function with the detected framerate
             success = self.import_clip_to_timeline(
                 abs_video_path, 
                 start_tc=start_time, 
-                end_tc=end_time
+                end_tc=end_time, 
+                fps=fps
             )
             
             if success:
@@ -2211,6 +2589,272 @@ sys.exit(1)
             
             # Enable safe mode to prevent further crashes
             self.resolve_in_safe_mode = True
+
+    def _apply_minimum_duration(self, start_time, end_time, fps):
+        """
+        Apply minimum duration to a clip by extending it if needed
+        
+        Args:
+            start_time (str): Start timecode in HH:MM:SS format
+            end_time (str): End timecode in HH:MM:SS format
+            fps (float): Frames per second
+            
+        Returns:
+            tuple: (adjusted_start_time, adjusted_end_time) as strings
+        """
+        if not self.preferences.get("min_duration_enabled", True):  # Changed default to True
+            return start_time, end_time
+            
+        min_seconds = self.preferences.get("min_duration_seconds", 10.0)
+        
+        # Convert times to seconds for easier math
+        start_seconds = self._timecode_to_seconds(start_time)
+        end_seconds = self._timecode_to_seconds(end_time)
+        
+        # Calculate current duration
+        current_duration = end_seconds - start_seconds
+        
+        # If already meeting minimum, return unchanged
+        if current_duration >= min_seconds:
+            return start_time, end_time
+        
+        # Calculate how much time to add
+        additional_time_needed = min_seconds - current_duration
+        
+        # Distribute the additional time evenly on both sides
+        time_to_add_each_side = additional_time_needed / 2.0
+        
+        # Adjust start and end times
+        new_start_seconds = max(0, start_seconds - time_to_add_each_side)
+        new_end_seconds = end_seconds + time_to_add_each_side
+        
+        # If we couldn't add enough at the start (because we hit 0), add more to the end
+        if new_start_seconds > 0 and start_seconds - time_to_add_each_side < 0:
+            shortfall = abs(start_seconds - time_to_add_each_side)
+            new_end_seconds += shortfall
+            self.debug_print(f"Hit start boundary, adding extra {shortfall:.1f}s to end")
+        
+        # Convert back to timecodes
+        new_start_time = self._seconds_to_timecode(new_start_seconds)
+        new_end_time = self._seconds_to_timecode(new_end_seconds)
+        
+        self.debug_print(f"Applied minimum duration: {start_time}-{end_time} ({current_duration:.1f}s) → {new_start_time}-{new_end_time} ({min_seconds:.1f}s)")
+        
+        return new_start_time, new_end_time
+
+    def _timecode_to_seconds(self, timecode):
+        """Convert HH:MM:SS or HH:MM:SS.MS timecode to seconds"""
+        try:
+            # Handle milliseconds which could be comma or period separated
+            if '.' in timecode:
+                time_parts, ms_part = timecode.split('.')
+                ms = int(ms_part) if ms_part else 0
+            elif ',' in timecode:
+                time_parts, ms_part = timecode.split(',')
+                ms = int(ms_part) if ms_part else 0
+            else:
+                time_parts = timecode
+                ms = 0
+            
+            # Split time parts
+            parts = time_parts.split(':')
+            if len(parts) == 3:  # HH:MM:SS
+                hours, minutes, seconds = map(int, parts)
+            elif len(parts) == 2:  # MM:SS
+                hours = 0
+                minutes, seconds = map(int, parts)
+            else:
+                return 0
+            
+            # Calculate total seconds
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            if ms > 0:
+                total_seconds += ms / 1000.0
+                
+            return total_seconds
+        except Exception:
+            return 0
+
+    def _seconds_to_timecode(self, total_seconds):
+        """Convert seconds to HH:MM:SS format"""
+        try:
+            # Ensure non-negative
+            total_seconds = max(0, total_seconds)
+            
+            # Calculate hours, minutes, seconds
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            seconds = int(total_seconds % 60)
+            
+            # Format as HH:MM:SS
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        except Exception:
+            return "00:00:00"
+
+    # Add a method to show the settings dialog
+    def _show_settings_dialog(self):
+        """Show a dialog with minimum duration settings"""
+        settings_dialog = tk.Toplevel(self.root)
+        settings_dialog.title("Minimum Import Duration")
+        settings_dialog.geometry("400x250")
+        settings_dialog.transient(self.root)
+        settings_dialog.grab_set()
+        
+        # Make dialog modal
+        settings_dialog.focus_set()
+        
+        # Create main frame with padding
+        main_frame = ttk.Frame(settings_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title label
+        ttk.Label(main_frame, text="Minimum Clip Duration Settings", 
+                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Enable checkbox
+        self.min_duration_var = tk.BooleanVar(value=self.preferences.get("min_duration_enabled", True))
+        min_duration_cb = ttk.Checkbutton(
+            main_frame, 
+            text="Enable minimum duration for imported clips", 
+            variable=self.min_duration_var
+        )
+        min_duration_cb.pack(anchor="w", pady=5)
+        
+        # Duration input frame
+        duration_input_frame = ttk.Frame(main_frame)
+        duration_input_frame.pack(fill="x", pady=5)
+        
+        ttk.Label(duration_input_frame, text="Minimum duration:").pack(side="left")
+        
+        self.min_duration_seconds_var = tk.StringVar(value=str(self.preferences.get("min_duration_seconds", 10.0)))
+        min_duration_entry = ttk.Entry(
+            duration_input_frame, 
+            textvariable=self.min_duration_seconds_var,
+            width=5
+        )
+        min_duration_entry.pack(side="left", padx=5)
+        
+        ttk.Label(duration_input_frame, text="seconds").pack(side="left")
+        
+        # Description label
+        description_frame = ttk.LabelFrame(main_frame, text="Description", padding=10)
+        description_frame.pack(fill="x", pady=10, expand=True)
+        
+        description_text = ("Clips shorter than the minimum duration will be extended equally on both sides when imported.\n\n"
+                           "If a clip cannot be extended to the full minimum duration due to reaching the start or end of "
+                           "the source media, it will be extended as much as possible.")
+        
+        ttk.Label(description_frame, text=description_text, wraplength=350, justify="left").pack(fill="both")
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(fill="x", padx=15, pady=15)
+        
+        # Cancel button
+        cancel_btn = ttk.Button(
+            buttons_frame, 
+            text="Cancel", 
+            command=settings_dialog.destroy
+        )
+        cancel_btn.pack(side="right", padx=5)
+        
+        # Apply button
+        apply_btn = ttk.Button(
+            buttons_frame, 
+            text="Apply", 
+            command=lambda: self._apply_settings(settings_dialog)
+        )
+        apply_btn.pack(side="right", padx=5)
+        
+        # Center the dialog on the main window
+        settings_dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() / 2) - (settings_dialog.winfo_width() / 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (settings_dialog.winfo_height() / 2)
+        settings_dialog.geometry(f"+{int(x)}+{int(y)}")
+
+    # Add a method to apply the settings
+    def _apply_settings(self, dialog):
+        """Apply settings from the dialog"""
+        try:
+            # Get the minimum duration settings
+            enabled = self.min_duration_var.get()
+            
+            # Parse and validate seconds value
+            seconds_str = self.min_duration_seconds_var.get()
+            try:
+                seconds = float(seconds_str)
+                if seconds < 0:
+                    seconds = 0.0
+                    self.min_duration_seconds_var.set("0.0")
+                elif seconds > 60:
+                    seconds = 60.0
+                    self.min_duration_seconds_var.set("60.0")
+            except ValueError:
+                # If not a valid float, reset to default
+                seconds = 10.0
+                self.min_duration_seconds_var.set("10.0")
+            
+            # Update preferences
+            self.preferences["min_duration_enabled"] = enabled
+            self.preferences["min_duration_seconds"] = seconds
+            self.save_preferences()
+            
+            self.debug_print(f"Minimum duration settings updated - enabled: {enabled}, seconds: {seconds}")
+            
+            # Close the dialog
+            dialog.destroy()
+            
+            # Update status
+            self.status_var.set("Settings updated successfully")
+        except Exception as e:
+            self.debug_print(f"Error updating settings: {e}")
+            self.status_var.set(f"Error updating settings: {e}")
+
+    # Add a new method for general settings
+    def _show_general_settings_dialog(self):
+        """Show a dialog with general application settings"""
+        settings_dialog = tk.Toplevel(self.root)
+        settings_dialog.title("General Settings")
+        settings_dialog.geometry("400x300")
+        settings_dialog.transient(self.root)
+        settings_dialog.grab_set()
+        
+        # Make dialog modal
+        settings_dialog.focus_set()
+        
+        # Create main frame with padding
+        main_frame = ttk.Frame(settings_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title label
+        ttk.Label(main_frame, text="General Application Settings", 
+                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Placeholder for future general settings
+        placeholder_frame = ttk.LabelFrame(main_frame, text="Application Settings", padding=10)
+        placeholder_frame.pack(fill="both", expand=True, pady=10)
+        
+        ttk.Label(placeholder_frame, 
+                 text="General application settings will be added in future updates.",
+                 wraplength=350, justify="center").pack(pady=20)
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(fill="x", padx=15, pady=15)
+        
+        # Close button
+        close_btn = ttk.Button(
+            buttons_frame, 
+            text="Close", 
+            command=settings_dialog.destroy
+        )
+        close_btn.pack(side="right", padx=5)
+        
+        # Center the dialog on the main window
+        settings_dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() / 2) - (settings_dialog.winfo_width() / 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (settings_dialog.winfo_height() / 2)
+        settings_dialog.geometry(f"+{int(x)}+{int(y)}")
 
 class DebugWindow:
     """A debug window to display errors and debug information"""
@@ -2314,27 +2958,26 @@ if __name__ == "__main__":
         if args.debug:
             sys.stdout.flush()
             
-        # Add debug menu toggle to main window
-        def toggle_debug_window():
-            try:
-                app.ensure_debug_window()
-                if app.debug_window and app.debug_window.window.winfo_viewable():
-                    app.debug_window.window.withdraw()
-                else:
-                    app.debug_window.window.deiconify()
-            except Exception as e:
-                print(f"Error toggling debug window: {e}", file=sys.stderr)
-                messagebox.showerror("Error", f"Could not open debug window: {e}")
-                
+        # Create menu bar
+        menu_bar = tk.Menu(root)
+        
+        # Add Settings menu with separate items
+        settings_menu = tk.Menu(menu_bar, tearoff=0)
+        settings_menu.add_command(label="Minimum Import Duration...", 
+                                 command=app._show_settings_dialog)
+        settings_menu.add_command(label="General Settings...", 
+                                 command=app._show_general_settings_dialog)
+        menu_bar.add_cascade(label="Settings", menu=settings_menu)
+            
         # Add Debug menu
-        try:
-            menu_bar = tk.Menu(root)
-            debug_menu = tk.Menu(menu_bar, tearoff=0)
-            debug_menu.add_command(label="Show Debug Window", command=toggle_debug_window)
-            menu_bar.add_cascade(label="Debug", menu=debug_menu)
-            root.config(menu=menu_bar)
-        except Exception as e:
-            print(f"Error creating debug menu: {e}", file=sys.stderr)
+        debug_menu = tk.Menu(menu_bar, tearoff=0)
+        debug_menu.add_command(label="Show Debug Window", 
+                              command=lambda: app.ensure_debug_window() or 
+                                             (app.debug_window and app.debug_window.window.deiconify()))
+        menu_bar.add_cascade(label="Debug", menu=debug_menu)
+        
+        # Apply menu bar to root window
+        root.config(menu=menu_bar)
         
         # Start the main loop
         root.mainloop()
@@ -2344,5 +2987,5 @@ if __name__ == "__main__":
         print(f"CRITICAL ERROR: {e}", file=sys.stderr)
         traceback.print_exc()
         messagebox.showerror("Critical Error", 
-                            f"The application encountered a critical error and cannot start:\n\n{str(e)}")
+                           f"The application encountered a critical error and cannot start:\n\n{str(e)}")
         sys.exit(1) 
