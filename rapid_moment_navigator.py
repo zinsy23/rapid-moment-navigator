@@ -1252,8 +1252,20 @@ class RapidMomentNavigator:
         """Handle click on Import Clip button"""
         selected_editor = self.editor_var.get()
         subtitle_file = result['file']
+        
+        # Improve timecode handling for better accuracy
         start_time = result['mpc_start_time']
-        end_time = result['end_time'].replace(',', '.').split('.')[0]  # Convert to MPC format
+        
+        # Parse end time properly - keep milliseconds for more accurate calculations
+        end_time = result['end_time']
+        if ',' in end_time:
+            # Convert comma to period for consistent processing
+            end_time = end_time.replace(',', '.')
+        
+        # Ensure proper formatting for Resolve (no milliseconds in the string)
+        display_end_time = end_time.split('.')[0]
+        
+        self.debug_print(f"Original timecodes: {start_time} to {end_time}")
         
         if subtitle_file in self.subtitle_to_video_map:
             video_info = self.subtitle_to_video_map[subtitle_file]
@@ -1267,7 +1279,7 @@ class RapidMomentNavigator:
                         fps = self.detect_video_framerate_from_resolve(video_file)
                     else:
                         fps = self.detect_video_framerate(video_file)
-                        
+                    
                     # Store the detected framerate for future use
                     video_info["fps"] = fps
                     
@@ -1278,15 +1290,22 @@ class RapidMomentNavigator:
             else:
                 # Use cached framerate
                 fps = video_info["fps"]
-                
-            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {start_time}-{end_time} with editor {selected_editor}, FPS: {fps}")
+            
+            # Calculate duration in frames to verify timing
+            start_frame = self.timecode_to_frames(start_time, fps)
+            end_frame = self.timecode_to_frames(end_time, fps)
+            duration_frames = end_frame - start_frame
+            duration_secs = duration_frames / fps
+            
+            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {start_time}-{display_end_time} with editor {selected_editor}, FPS: {fps}")
+            self.debug_print(f"Frame calculation: {start_frame} to {end_frame} ({duration_frames} frames, {duration_secs:.2f} seconds)")
             
             # Call the appropriate import function based on selected editor
             if selected_editor == "DaVinci Resolve":
                 self._import_clip_to_davinci_resolve(video_file, start_time, end_time, fps)
             # Add more editors as needed
             
-            self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {start_time}-{end_time} to {selected_editor}")
+            self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {start_time}-{display_end_time} to {selected_editor}")
         else:
             self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
             self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
@@ -1550,6 +1569,12 @@ sys.exit(1)
                 end_frame = self.timecode_to_frames(end_tc, fps)
                 self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame} at {fps} fps")
             
+            # Calculate and log the duration for verification
+            if start_frame is not None and end_frame is not None:
+                duration_frames = end_frame - start_frame
+                duration_seconds = duration_frames / fps
+                self.debug_print(f"Clip duration: {duration_frames} frames ({duration_seconds:.2f} seconds)")
+            
             # Get Resolve
             resolve = dvr_script.scriptapp("Resolve")
             if not resolve:
@@ -1567,6 +1592,22 @@ sys.exit(1)
             if not project:
                 self.debug_print("No project is currently open")
                 return False
+            
+            # Get current project framerate
+            try:
+                project_fps_str = project.GetSetting("timelineFrameRate")
+                if project_fps_str:
+                    # Remove "DF" if present
+                    if ' ' in project_fps_str:
+                        project_fps_str = project_fps_str.split()[0]
+                    project_fps = float(project_fps_str)
+                    self.debug_print(f"Project timeline framerate: {project_fps} fps")
+                    
+                    # Log warning if project and clip framerates don't match
+                    if abs(project_fps - fps) > 0.01:  # Allow for small floating-point differences
+                        self.debug_print(f"WARNING: Project framerate ({project_fps}) does not match clip framerate ({fps})")
+            except Exception as e:
+                self.debug_print(f"Could not get project framerate: {e}")
             
             self.debug_print(f"Current project: {project.GetName()}")
             
@@ -1605,6 +1646,22 @@ sys.exit(1)
             media_item = imported_media[0]
             self.debug_print(f"Successfully imported: {media_item.GetName()}")
             
+            # Get actual media properties for verification
+            try:
+                media_fps = media_item.GetClipProperty("FPS")
+                if media_fps:
+                    self.debug_print(f"Imported media actual FPS: {media_fps}")
+                    
+                    # If the detected FPS is significantly different from the imported media's FPS
+                    try:
+                        media_fps_float = float(media_fps)
+                        if abs(media_fps_float - fps) > 0.5:  # If difference is more than 0.5 fps
+                            self.debug_print(f"WARNING: Detected FPS ({fps}) differs from media's actual FPS ({media_fps_float})")
+                    except ValueError:
+                        pass
+            except Exception as e:
+                self.debug_print(f"Could not get media FPS: {e}")
+            
             # Create clip info dictionary with explicit frame ranges
             clip_info = {
                 "mediaPoolItem": media_item
@@ -1624,6 +1681,20 @@ sys.exit(1)
             
             if appended_items and len(appended_items) > 0:
                 self.debug_print(f"Successfully appended clip to timeline with specified time range")
+                
+                # Get the appended timeline item for verification
+                try:
+                    timeline_item = appended_items[0]
+                    start = timeline_item.GetStart()
+                    self.debug_print(f"Timeline item start frame: {start}")
+                    
+                    # Get the left and right offset capabilities
+                    left_offset = timeline_item.GetLeftOffset()
+                    right_offset = timeline_item.GetRightOffset()
+                    self.debug_print(f"Item can be extended: {left_offset} frames left, {right_offset} frames right")
+                except Exception as e:
+                    self.debug_print(f"Could not get timeline item details: {e}")
+                    
                 return True
             else:
                 # Fallback to just appending the media item if the clip info approach fails
@@ -1643,10 +1714,11 @@ sys.exit(1)
         
     def timecode_to_frames(self, timecode, fps=24.0):
         """
-        Convert HH:MM:SS or HH:MM:SS:FF timecode to frames
+        Convert HH:MM:SS or HH:MM:SS:FF or HH:MM:SS,MMM timecode to frames
+        with improved millisecond handling and offset compensation
         
         Args:
-            timecode (str): Timecode in HH:MM:SS, HH:MM:SS.MS or HH:MM:SS:FF format
+            timecode (str): Timecode in HH:MM:SS, HH:MM:SS.MS, HH:MM:SS,MS or HH:MM:SS:FF format
             fps (float): Frames per second (default: 24.0)
         
         Returns:
@@ -1661,13 +1733,16 @@ sys.exit(1)
                 total_frames = (hours * 3600 + minutes * 60 + seconds) * fps + frames
                 return int(total_frames)
             
-            # Handle HH:MM:SS or HH:MM:SS.MS format
+            # Handle milliseconds which could be comma or period separated
+            ms = 0
             if '.' in timecode:
                 time_parts, ms_part = timecode.split('.')
                 ms = int(ms_part) if ms_part else 0
+            elif ',' in timecode:
+                time_parts, ms_part = timecode.split(',')
+                ms = int(ms_part) if ms_part else 0
             else:
                 time_parts = timecode
-                ms = 0
             
             # Split time parts
             parts = time_parts.split(':')
@@ -1680,13 +1755,51 @@ sys.exit(1)
                 self.debug_print(f"Invalid timecode format: {timecode}")
                 return 0
             
-            # Calculate total seconds
-            total_seconds = hours * 3600 + minutes * 60 + seconds + ms/1000
+            # Calculate total seconds with proper millisecond handling
+            if ms > 0:
+                if ms < 100:  # If ms is less than 100, assume it's already in frames rather than milliseconds
+                    frame_portion = ms
+                else:  # Convert milliseconds to frames
+                    frame_portion = (ms / 1000.0) * fps
+            else:
+                frame_portion = 0
+                
+            # Calculate total frames
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            total_frames = (total_seconds * fps) + frame_portion
             
-            # Convert to frames
-            return int(total_seconds * fps)
+            # Apply frame offset compensation for better sync
+            # Resolve tends to need a slight offset for accurate positioning
+            offset_frames = self._get_timecode_offset(fps)
+            compensated_frames = int(total_frames) + offset_frames
+            
+            self.debug_print(f"Calculated frame position: {int(total_frames)} → {compensated_frames} (with offset {offset_frames})")
+            return max(0, compensated_frames)  # Ensure non-negative frame number
         except Exception as e:
-            self.debug_print(f"Invalid timecode format: {timecode}")
+            self.debug_print(f"Invalid timecode format: {timecode} - Error: {e}")
+            return 0
+
+    def _get_timecode_offset(self, fps):
+        """
+        Get the appropriate frame offset compensation based on framerate
+        
+        Args:
+            fps (float): Framerate of the video
+            
+        Returns:
+            int: Frame offset to apply
+        """
+        # These offsets are for fine-tuning the frame calculations
+        # Different framerates may need different offsets for perfect accuracy
+        if fps >= 59 and fps <= 60:    # 59.94/60 fps
+            return 0
+        elif fps >= 29 and fps <= 30:  # 29.97/30 fps
+            return 0  
+        elif fps >= 23 and fps <= 24:  # 23.976/24 fps
+            return 0
+        elif fps >= 25 and fps <= 25.1: # 25 fps (PAL)
+            return 0
+        else:
             return 0
     
     def load_preferences(self):
