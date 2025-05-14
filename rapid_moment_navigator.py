@@ -130,7 +130,17 @@ class RapidMomentNavigator:
     def __init__(self, root, debug=False):
         self.root = root
         self.root.title("Rapid Moment Navigator")
-        self.root.geometry("800x600")
+        
+        # Calculate the centered position for the main window
+        window_width = 800
+        window_height = 600
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        
+        # Set both size and position in one geometry call
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
         # Debug mode setting
         self.debug = debug
@@ -257,17 +267,139 @@ class RapidMomentNavigator:
         
         # Initialize the application
         self.debug_print("Initializing shows and mapping...")
-        self.load_shows()
+        shows_paths = self.load_shows()
         self.map_subtitles_to_videos()
         
         # Store the search results for later reference
         self.search_results = []
         
-        # Debug print
-        self.debug_print(f"Application initialized with {len(self.show_name_to_path_map)} shows")
+        # Update status based on whether shows were found
+        if len(self.show_name_to_path_map) > 0:
+            self.debug_print(f"Application initialized with {len(self.show_name_to_path_map)} shows")
+            self.status_var.set(f"Ready. Found {len(self.show_name_to_path_map)} shows with {len(self.subtitle_to_video_map)} mapped videos.")
+        else:
+            self.debug_print("No shows found during initialization")
+            self.status_var.set("No media found. Please add directories containing subtitle files and videos.")
         
         # Initialize safe mode flag for editors
         self.resolve_in_safe_mode = False
+        
+        # Track if guidance dialog is currently showing
+        self.guidance_dialog_showing = False
+        
+        # Store the need to show guidance dialog
+        self.needs_guidance_dialog = len(self.show_name_to_path_map) == 0
+        
+        # Wait for window to stabilize before showing guidance dialog
+        # This helps prevent the "jump" effect where the window moves after initial rendering
+        if self.needs_guidance_dialog:
+            self.root.after(300, self._delayed_show_guidance)
+    
+    def position_window(self, window, x=None, y=None, parent=None, offset_x=0, offset_y=0):
+        """
+        Position a window at specific coordinates or centered, with optional offsets
+        
+        Args:
+            window: The window to position
+            x, y: Specific coordinates (if None, will center)
+            parent: Parent window to center relative to (if provided)
+            offset_x, offset_y: Additional offsets to apply
+            
+        Returns:
+            The positioned window
+        """
+        # Force the window to update and process all pending events
+        window.update()
+        
+        # Ensure window size is updated before calculating positions
+        window.update_idletasks()
+        
+        # Get window dimensions
+        window_width = window.winfo_width()
+        window_height = window.winfo_height()
+        
+        # If window size is still 1x1, it's not properly initialized yet
+        # This can happen with newly created windows
+        if window_width <= 1 or window_height <= 1:
+            self.debug_print(f"Window size not initialized yet: {window_width}x{window_height}, forcing geometry")
+            # Try to force the window to its requested size
+            if hasattr(window, '_w') and window._w == '.':  # Main window
+                # For main window, use the initial geometry we set
+                window.geometry("800x600")
+                window_width = 800
+                window_height = 600
+            window.update_idletasks()
+            window_width = window.winfo_width()
+            window_height = window.winfo_height()
+            self.debug_print(f"After forcing geometry: {window_width}x{window_height}")
+        
+        # Store original values for debugging
+        orig_x, orig_y = x, y
+        
+        # Calculate X position independently
+        if x is None:
+            if parent is None:
+                # Center on screen horizontally
+                screen_width = window.winfo_screenwidth()
+                # x = (screen_width // 2) - (window_width // 2)
+                x = (screen_width - window_width) // 2
+                self.debug_print(f"Calculated X center: {x} = ({screen_width} - {window_width}) // 2")
+            else:
+                # Center relative to parent horizontally
+                parent_x = parent.winfo_x()
+                parent_width = parent.winfo_width()
+                x = parent_x + (parent_width - window_width) // 2
+                self.debug_print(f"Calculated X center relative to parent: {x}")
+        
+        # Calculate Y position independently
+        if y is None:
+            if parent is None:
+                # Center on screen vertically
+                screen_height = window.winfo_screenheight()
+                # y = (screen_height // 2) - (window_height // 2)
+                y = (screen_height - window_height) // 2
+                self.debug_print(f"Calculated Y center: {y} = ({screen_height} - {window_height}) // 2")
+            else:
+                # Center relative to parent vertically
+                parent_y = parent.winfo_y()
+                parent_height = parent.winfo_height()
+                y = parent_y + (parent_height - window_height) // 2
+                self.debug_print(f"Calculated Y center relative to parent: {y}")
+        
+        # Apply offsets
+        x += offset_x
+        y += offset_y
+        
+        # Ensure coordinates are not negative
+        x = max(0, x)
+        y = max(0, y)
+        
+        # Log screen dimensions if we calculated either position
+        if orig_x is None or orig_y is None:
+            if parent is None:
+                screen_width = window.winfo_screenwidth()
+                screen_height = window.winfo_screenheight()
+                self.debug_print(f"Screen dimensions: {screen_width}x{screen_height}")
+        
+        # Set window position
+        window.geometry(f"+{x}+{y}")
+        self.debug_print(f"Positioned window at ({x},{y}) with size {window_width}x{window_height}")
+        
+        # Force window to update again to ensure position takes effect
+        window.update_idletasks()
+        
+        # Verify final position
+        actual_x = window.winfo_x()
+        actual_y = window.winfo_y()
+        if actual_x != x or actual_y != y:
+            self.debug_print(f"Warning: Window position changed by window manager: ({x},{y}) → ({actual_x},{actual_y})")
+        
+        return window
+    
+    def center_window(self, window, parent=None):
+        """Center a window on screen or relative to parent window"""
+        # Use the positioning method with centered coordinates
+        return self.position_window(window, x=None, y=None, parent=parent)
     
     def setup_exception_handler(self):
         """Setup global exception handler to catch and display errors"""
@@ -302,6 +434,7 @@ class RapidMomentNavigator:
         try:
             if not hasattr(self, 'debug_window') or self.debug_window is None or not self.debug_window.winfo_exists():
                 self.debug_window = DebugWindow(self.root, self.debug)
+                self.debug_print("Debug window created")
         except Exception as e:
             print(f"Error creating debug window: {e}", file=sys.stderr)
     
@@ -439,14 +572,12 @@ class RapidMomentNavigator:
         
         self.debug_print(f"Load shows - custom search directories ({len(search_dirs)}): {search_dirs}")
         
-        # If no directories and no shows from current directory, force include current directory
+        # If no directories and no shows from current directory, mark for showing guidance dialog
         if not shows_paths and not search_dirs:
-            self.debug_print(f"Load shows - no shows or directories found, adding current directory")
-            self.preferences["exclude_current_dir"] = False
-            self.save_preferences()
-            
-            # Re-run the method to include current directory
-            return self.load_shows()
+            self.debug_print(f"Load shows - no shows or directories found, showing guidance")
+            # Set flag to show guidance dialog after main window is positioned
+            self.needs_guidance_dialog = True
+            return []
         
         # Process each custom directory as a complete show
         for directory in search_dirs:
@@ -504,6 +635,12 @@ class RapidMomentNavigator:
         self.update_show_dropdown()
         
         return shows_paths
+    
+    def _show_no_shows_guidance(self):
+        """Show guidance dialog when no shows are found"""
+        # This method is deprecated and replaced by _delayed_show_guidance
+        # We'll call the new method instead
+        self._delayed_show_guidance()
     
     def map_subtitles_to_videos(self):
         """Map subtitle files to their corresponding video files"""
@@ -1873,19 +2010,31 @@ sys.exit(1)
             if directory != current_dir:
                 self.dir_listbox.insert(tk.END, directory)
                 
-        # If the listbox is empty, force add current directory and update preferences
+        # If the listbox is empty, we don't force add current directory anymore
+        # This prevents recursive load_shows() calls when no valid shows exist
         if self.dir_listbox.size() == 0:
-            self.dir_listbox.insert(tk.END, current_dir + " (Current)")
-            self.preferences["exclude_current_dir"] = False
-            self.save_preferences()
-            self.debug_print("No directories left, re-added current directory")
+            self.debug_print("No directories in listbox, but not forcing current directory")
     
     def add_directory(self):
         """Open file dialog to add directories to preferences"""
+        # Get main window position and size
+        root_x = self.root.winfo_x()
+        root_y = self.root.winfo_y()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        
+        # Calculate centered position for the dialog relative to main window
+        dialog_width = 525
+        dialog_height = 400
+        x = root_x + (root_width - dialog_width) // 2
+        y = root_y + (root_height - dialog_height) // 2
+        
         # Add a button to select multiple directories
         root = tk.Toplevel(self.root)
         root.title("Add Media Directories")
-        root.geometry("500x400")
+        root.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+        root.transient(self.root)
+        root.grab_set()
         
         # Create frame to hold the listbox and buttons
         frame = ttk.Frame(root)
@@ -1921,6 +2070,13 @@ sys.exit(1)
             if new_dir and new_dir not in [listbox.get(i) for i in range(listbox.size())]:
                 listbox.insert(tk.END, new_dir)
         
+        # Function to add current directory
+        def add_current_dir():
+            current_dir = self.get_current_directory()
+            if current_dir not in [listbox.get(i) for i in range(listbox.size())]:
+                listbox.insert(tk.END, current_dir)
+                self.debug_print(f"Added current directory: {current_dir}")
+        
         # Function to remove selected directories from the listbox
         def remove_selected():
             selected = list(listbox.curselection())
@@ -1945,21 +2101,10 @@ sys.exit(1)
             # Track if we've made any changes
             changes_made = False
             
-            # Add new directories if not already in preferences
-            added_count = 0
-            for new_dir in new_dirs:
-                # Skip current directory since it's handled separately
-                if new_dir == current_dir:
-                    continue
-                    
-                # Check if this is a new directory to add
-                if new_dir not in existing_dirs:
-                    self.debug_print(f"Directory dialog - adding new directory: {new_dir}")
-                    if "directories" not in self.preferences:
-                        self.preferences["directories"] = []
-                    self.preferences["directories"].append(new_dir)
-                    added_count += 1
-                    changes_made = True
+            # Check if the list of directories has changed
+            if set(new_dirs) != set(existing_dirs):
+                changes_made = True
+                self.preferences["directories"] = new_dirs
             
             # Save and update if changes were made
             if changes_made:
@@ -1974,16 +2119,30 @@ sys.exit(1)
                 # Reload shows and remap files
                 self.debug_print("Directory dialog - reloading shows after directory changes")
                 shows_paths = self.load_shows()
-                self.debug_print(f"Directory dialog - loaded shows: {len(shows_paths)}, names: {list(self.show_name_to_path_map.keys())}")
-                self.map_subtitles_to_videos()
                 
-                # Force the dropdown to update with the new values
-                self.debug_print(f"Directory dialog - updating dropdown with {len(self.show_name_to_path_map)} shows")
-                self.update_show_dropdown()
-                
-                self.status_var.set(f"Added {added_count} directories. Found {len(self.show_name_to_path_map)} shows")
+                # Check if we loaded any shows
+                if len(self.show_name_to_path_map) > 0:
+                    self.debug_print(f"Directory dialog - loaded shows: {len(shows_paths)}, names: {list(self.show_name_to_path_map.keys())}")
+                    self.map_subtitles_to_videos()
+                    
+                    # Force the dropdown to update with the new values
+                    self.debug_print(f"Directory dialog - updating dropdown with {len(self.show_name_to_path_map)} shows")
+                    self.update_show_dropdown()
+                    
+                    self.status_var.set(f"Added {len(new_dirs) - len(existing_dirs)} directories. Found {len(self.show_name_to_path_map)} shows")
+                else:
+                    self.debug_print("Directory dialog - no shows found after adding directories")
+                    self.status_var.set("No shows found in selected directories. Please ensure they contain subtitle files.")
+                    
+                    # If we still don't have shows after selecting directories, show guidance again
+                    if len(self.show_name_to_path_map) == 0:
+                        self.root.after(500, self._delayed_show_guidance)
             else:
                 self.status_var.set("No changes made to media directories")
+                
+                # If no changes were made and we still have no shows, show guidance again
+                if len(self.show_name_to_path_map) == 0:
+                    self.root.after(500, self._delayed_show_guidance)
             
             # Close the dialog
             root.destroy()
@@ -1995,6 +2154,10 @@ sys.exit(1)
         # Buttons
         select_btn = ttk.Button(button_frame, text="Add Directory", command=select_dir)
         select_btn.pack(side="left", padx=5)
+        
+        # Add button for current directory
+        current_dir_btn = ttk.Button(button_frame, text="Add Current Directory", command=add_current_dir)
+        current_dir_btn.pack(side="left", padx=5)
         
         # Function to add multiple directories at once using a directory selection dialog
         def select_multiple_dirs():
@@ -2046,11 +2209,21 @@ sys.exit(1)
         bottom_button_frame = ttk.Frame(frame)
         bottom_button_frame.pack(fill="x", pady=10)
         
-        cancel_btn = ttk.Button(bottom_button_frame, text="Cancel", command=root.destroy)
+        # Function to handle cancel button
+        def on_cancel():
+            root.destroy()
+            # Only show guidance dialog if no shows exist and not already showing
+            if len(self.show_name_to_path_map) == 0 and not self.guidance_dialog_showing:
+                self.root.after(500, self._delayed_show_guidance)
+        
+        cancel_btn = ttk.Button(bottom_button_frame, text="Cancel", command=on_cancel)
         cancel_btn.pack(side="right", padx=5)
         
         save_btn = ttk.Button(bottom_button_frame, text="Save and Close", command=save_and_close)
         save_btn.pack(side="right", padx=5)
+        
+        # Log the position for debugging
+        self.debug_print(f"Created directory dialog at position ({x},{y}) with size {dialog_width}x{dialog_height}")
         
         # Make the dialog modal
         root.transient(self.root)
@@ -2856,13 +3029,218 @@ sys.exit(1)
         y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (settings_dialog.winfo_height() / 2)
         settings_dialog.geometry(f"+{int(x)}+{int(y)}")
 
+    def _delayed_show_guidance(self):
+        """Show guidance dialog after initial rendering"""
+        # Check if guidance dialog is already showing
+        if hasattr(self, 'guidance_dialog_showing') and self.guidance_dialog_showing:
+            self.debug_print("Guidance dialog already showing, not creating another one")
+            return
+            
+        # Set flag to indicate dialog is showing
+        self.guidance_dialog_showing = True
+        
+        # Get main window position and size
+        root_x = self.root.winfo_x()
+        root_y = self.root.winfo_y()
+        root_width = self.root.winfo_width()
+        root_height = self.root.winfo_height()
+        
+        # Calculate centered position for the dialog relative to main window
+        dialog_width = 600
+        dialog_height = 575
+        x = root_x + (root_width - dialog_width) // 2
+        y = root_y + (root_height - dialog_height) // 2
+        
+        # Create the dialog window with position already set
+        guidance_dialog = tk.Toplevel(self.root)
+        guidance_dialog.title("Welcome to Rapid Moment Navigator")
+        guidance_dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+        guidance_dialog.transient(self.root)
+        guidance_dialog.grab_set()
+        
+        # Function to handle dialog close
+        def on_dialog_close():
+            self.guidance_dialog_showing = False
+            guidance_dialog.destroy()
+            
+        # Set the close protocol
+        guidance_dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
+        
+        # Create main frame with padding
+        main_frame = ttk.Frame(guidance_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title label
+        title_label = ttk.Label(main_frame, text="No Media Found!", font=("TkDefaultFont", 14, "bold"))
+        title_label.pack(anchor="center", pady=(0, 20))
+        
+        # Explanation text
+        explanation_text = (
+            "Rapid Moment Navigator needs to know where your media is located.\n\n"
+            "You need to add directories that contain subtitle (.SRT) files and their corresponding video files.\n\n"
+            "How it works:\n"
+            "1. The app will scan directories for subtitle files (.SRT) and video files with matching names\n"
+            "2. It can scan nested folder structures - media can be anywhere in the folder hierarchy\n"
+            "3. Video files should have the same base name as their subtitle files\n"
+            "4. You can add multiple media directories\n\n"
+            "You have two options:"
+        )
+        
+        explanation_label = ttk.Label(main_frame, text=explanation_text, wraplength=550, justify="left")
+        explanation_label.pack(pady=10, fill="x")
+        
+        # Options frame
+        options_frame = ttk.Frame(main_frame)
+        options_frame.pack(fill="both", expand=True, pady=10)
+        
+        # Option 1: Current directory
+        option1_frame = ttk.LabelFrame(options_frame, text="Option 1: Create show folders in current directory", padding=10)
+        option1_frame.pack(fill="x", pady=5)
+        
+        # Current directory text
+        current_dir_text = f"Current directory: {self.get_current_directory()}"
+        current_dir_label = ttk.Label(option1_frame, text=current_dir_text, wraplength=550)
+        current_dir_label.pack(anchor="w")
+        
+        # Instructions for Option 1
+        option1_instructions = ttk.Label(option1_frame, 
+                                       text="Create subfolders in this directory and add your media files + subtitles to them.",
+                                       wraplength=550)
+        option1_instructions.pack(anchor="w", pady=5)
+        
+        # Button frame for Option 1
+        option1_btn_frame = ttk.Frame(option1_frame)
+        option1_btn_frame.pack(anchor="w", pady=5)
+        
+        # Open current directory button
+        def open_current_dir():
+            try:
+                current_dir = self.get_current_directory()
+                if sys.platform.startswith('win'):
+                    os.startfile(current_dir)
+                elif sys.platform == 'darwin':  # macOS
+                    subprocess.Popen(['open', current_dir])
+                else:  # Linux
+                    subprocess.Popen(['xdg-open', current_dir])
+            except Exception as e:
+                self.debug_print(f"Error opening directory: {e}")
+                self.status_var.set(f"Error opening directory: {e}")
+        
+        open_dir_btn = ttk.Button(option1_btn_frame, text="Open Current Directory", command=open_current_dir)
+        open_dir_btn.pack(side="left", padx=5)
+        
+        # Refresh shows button
+        def refresh_current_dir():
+            self.debug_print("Refreshing shows from current directory")
+            
+            # Ensure current directory is included
+            if self.preferences.get("exclude_current_dir", False):
+                self.preferences["exclude_current_dir"] = False
+                self.save_preferences()
+                self.update_directory_listbox()
+            
+            # Clear existing show map and reload everything
+            self.show_name_to_path_map.clear()
+            
+            # Reload shows and remap files
+            shows_paths = self.load_shows()
+            
+            # Check if we found any shows
+            if len(self.show_name_to_path_map) > 0:
+                self.map_subtitles_to_videos()
+                self.update_show_dropdown()
+                self.status_var.set(f"Found {len(self.show_name_to_path_map)} shows with {len(self.subtitle_to_video_map)} mapped videos.")
+                on_dialog_close()  # Close the dialog if shows were found
+            else:
+                self.status_var.set("No shows found in current directory. Please create show folders with subtitle files.")
+        
+        refresh_btn = ttk.Button(option1_btn_frame, text="Refresh Shows", command=refresh_current_dir)
+        refresh_btn.pack(side="left", padx=5)
+        
+        # Option 2: Add existing directories
+        option2_frame = ttk.LabelFrame(options_frame, text="Option 2: Add existing media directories", padding=10)
+        option2_frame.pack(fill="x", pady=5)
+        
+        # Create a horizontal frame to hold both text and button side by side
+        option2_content_frame = ttk.Frame(option2_frame)
+        option2_content_frame.pack(fill="x", pady=5)
+        
+        # Instructions for Option 2 - now in the horizontal frame
+        option2_instructions = ttk.Label(option2_content_frame, 
+                                       text="Select directories that already contain media files and subtitles.",
+                                       wraplength=400)  # Reduced width to make room for button
+        option2_instructions.pack(side="left", anchor="w")
+        
+        # Function for Add Directory button
+        def call_add_directory():
+            on_dialog_close()  # Close the guidance dialog
+            self.root.after(100, self.add_directory)
+        
+        # Create Add Directory button directly in the horizontal frame
+        add_dir_btn = ttk.Button(option2_content_frame, text="Add Directory", command=call_add_directory)
+        add_dir_btn.pack(side="right", padx=10)
+        
+        # Bottom buttons frame
+        bottom_frame = ttk.Frame(main_frame)
+        bottom_frame.pack(fill="x", pady=15)
+        
+        # Help button
+        def show_help():
+            help_text = (
+                "Detailed Help:\n\n"
+                "Subtitle files (.SRT) should match the video file names.\n"
+                "Example:\n"
+                "- video_file.mp4 → video_file.srt\n\n"
+                "The app will try to match files even with slight differences in naming.\n"
+                "Each directory you add is treated as a separate 'show' in the dropdown menu.\n\n"
+                "When you add a directory, the entire folder structure is scanned for matching\n"
+                "subtitle and video files. Files can be in subdirectories.\n\n"
+                "After adding directories, use the search box to find specific dialog,\n"
+                "then click on the timecode to play the video at that exact moment."
+            )
+            messagebox.showinfo("How It Works", help_text)
+        
+        help_btn = ttk.Button(bottom_frame, text="Detailed Help", command=show_help)
+        help_btn.pack(side="left", padx=5)
+        
+        # Close button
+        close_btn = ttk.Button(bottom_frame, text="Close", command=on_dialog_close)
+        close_btn.pack(side="right", padx=5)
+        
+        # Ensure the dialog is visible and focused
+        guidance_dialog.lift()
+        guidance_dialog.focus_force()
+        
+        # Log the position for debugging
+        self.debug_print(f"Created guidance dialog at position ({x},{y}) with size {dialog_width}x{dialog_height}")
+        
+        # Force update the UI to ensure all elements are rendered
+        guidance_dialog.update()
+
 class DebugWindow:
     """A debug window to display errors and debug information"""
     def __init__(self, parent, auto_show=False):
         self.parent = parent
+        
+        # Get parent window position and size
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        
+        # Set debug window dimensions
+        debug_width = 800
+        debug_height = 425  # Increased from 400 to 425 to show all buttons
+        
+        # Calculate position (centered relative to parent)
+        x = parent_x + (parent_width - debug_width) // 2
+        y = parent_y + (parent_height - debug_height) // 2
+        
+        # Create the window with position already set
         self.window = tk.Toplevel(parent)
         self.window.title("Debug Console")
-        self.window.geometry("800x400")
+        self.window.geometry(f"{debug_width}x{debug_height}+{x}+{y}")
+        self.window.transient(parent)
         
         # Create a frame for the text area and scrollbars
         frame = ttk.Frame(self.window)
