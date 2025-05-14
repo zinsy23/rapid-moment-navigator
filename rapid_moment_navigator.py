@@ -495,6 +495,28 @@ class RapidMomentNavigator:
         shows_paths = []
         self.show_name_to_path_map.clear()  # Clear the mapping
         
+        # Get manually added directories from preferences
+        manual_dirs = list(self.preferences.get("directories", []))
+        self.debug_print(f"Load shows - manual directories from preferences: {manual_dirs}")
+        
+        # Create a set of all manual directories and their subdirectories to exclude from current dir scanning
+        manual_dirs_and_subdirs = set()
+        for dir_path in manual_dirs:
+            if os.path.exists(dir_path) and os.path.isdir(dir_path):
+                # Add the directory itself
+                manual_dirs_and_subdirs.add(os.path.normpath(dir_path))
+                
+                # Add all subdirectories
+                try:
+                    for dirpath, dirnames, _ in os.walk(dir_path):
+                        for dirname in dirnames:
+                            subdir = os.path.normpath(os.path.join(dirpath, dirname))
+                            manual_dirs_and_subdirs.add(subdir)
+                except Exception as e:
+                    self.debug_print(f"Load shows - error scanning subdirectories of {dir_path}: {e}")
+        
+        self.debug_print(f"Load shows - found {len(manual_dirs_and_subdirs)} directories to exclude from current dir scanning")
+        
         # Prepare search directories
         current_dir = self.get_current_directory()
         search_dirs = []
@@ -506,14 +528,32 @@ class RapidMomentNavigator:
             # Get all immediate subdirectories in the current directory
             try:
                 current_dir_subdirs = [os.path.join(current_dir, d) for d in os.listdir(current_dir) 
-                                     if os.path.isdir(os.path.join(current_dir, d)) 
-                                     and not d.startswith('.') 
-                                     and d not in ['.git']]
+                                    if os.path.isdir(os.path.join(current_dir, d)) 
+                                    and not d.startswith('.') 
+                                    and d not in ['.git']]
                 
                 self.debug_print(f"Load shows - found {len(current_dir_subdirs)} subdirectories in current directory")
                 
                 # For each subdirectory in current directory, check if it has subtitle files
                 for subdir in current_dir_subdirs:
+                    # Skip if this directory is in the manual_dirs_and_subdirs set
+                    normalized_subdir = os.path.normpath(subdir)
+                    if normalized_subdir in manual_dirs_and_subdirs:
+                        self.debug_print(f"Load shows - skipping {subdir} as it's already in manual directories")
+                        continue
+                    
+                    # Check if this is a parent directory of any manual directory
+                    is_parent_of_manual = False
+                    for manual_dir in manual_dirs:
+                        normalized_manual = os.path.normpath(manual_dir)
+                        if normalized_manual.startswith(normalized_subdir + os.sep):
+                            is_parent_of_manual = True
+                            self.debug_print(f"Load shows - skipping {subdir} as it's a parent of manual directory {manual_dir}")
+                            break
+                    
+                    if is_parent_of_manual:
+                        continue
+                    
                     # Check if this subdirectory has any SRT files (anywhere in its tree)
                     has_srt_files = False
                     
@@ -634,7 +674,7 @@ class RapidMomentNavigator:
         self.debug_print(f"Load shows - completed. Found {len(self.show_name_to_path_map)} shows from all sources.")
         self.update_show_dropdown()
         
-        return shows_paths
+        return shows_paths 
     
     def _show_no_shows_guidance(self):
         """Show guidance dialog when no shows are found"""
