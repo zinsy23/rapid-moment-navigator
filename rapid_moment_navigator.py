@@ -516,16 +516,6 @@ class RapidMomentNavigator:
         # Get all show paths from the name-to-path mapping
         show_paths = list(self.show_name_to_path_map.values())
         
-        # Check if Resolve is selected and initialized
-        use_resolve_api = (self.editor_var.get() == "DaVinci Resolve" and 
-                           hasattr(self, 'resolve_initialized') and 
-                           self.resolve_initialized)
-                           
-        if use_resolve_api:
-            self.debug_print("Using DaVinci Resolve API for framerate detection when mapping files")
-        else:
-            self.debug_print("Using FFprobe for framerate detection when mapping files")
-        
         for show_path in show_paths:
             show_name = os.path.basename(show_path)
             
@@ -578,22 +568,12 @@ class RapidMomentNavigator:
                     video_name = os.path.splitext(video_basename)[0]
                     
                     if subtitle_name == video_name:
-                        # Get video framerate if possible
-                        try:
-                            if use_resolve_api:
-                                fps = self.detect_video_framerate_from_resolve(video_file)
-                            else:
-                                fps = self.detect_video_framerate(video_file)
-                        except Exception as e:
-                            self.debug_print(f"Error detecting framerate for {video_basename}: {str(e)}")
-                            fps = 24.0  # Default fallback
-                        
-                        # Store video file and its framerate
+                        # Store only the path - framerate will be detected when needed
                         self.subtitle_to_video_map[subtitle_file] = {
                             "path": video_file,
-                            "fps": fps
+                            "fps": None  # Initialize as None, will detect when needed
                         }
-                        self.debug_print(f"Mapping - exact match: {subtitle_basename} -> {video_basename} (FPS: {fps})")
+                        self.debug_print(f"Mapping - exact match: {subtitle_basename} -> {video_basename}")
                         matched = True
                         break
                 
@@ -612,22 +592,12 @@ class RapidMomentNavigator:
                             clean_subtitle_name in clean_video_name or
                             clean_video_name in clean_subtitle_name):
                             
-                            # Get video framerate if possible
-                            try:
-                                if use_resolve_api:
-                                    fps = self.detect_video_framerate_from_resolve(video_file)
-                                else:
-                                    fps = self.detect_video_framerate(video_file)
-                            except Exception as e:
-                                self.debug_print(f"Error detecting framerate for {video_basename}: {str(e)}")
-                                fps = 24.0  # Default fallback
-                            
-                            # Store video file and its framerate
+                            # Store only the path - framerate will be detected when needed
                             self.subtitle_to_video_map[subtitle_file] = {
                                 "path": video_file,
-                                "fps": fps
+                                "fps": None  # Initialize as None, will detect when needed
                             }
-                            self.debug_print(f"Mapping - partial match: {subtitle_basename} -> {video_basename} (FPS: {fps})")
+                            self.debug_print(f"Mapping - partial match: {subtitle_basename} -> {video_basename}")
                             matched = True
                             break
         
@@ -1255,6 +1225,17 @@ class RapidMomentNavigator:
         if subtitle_file in self.subtitle_to_video_map:
             video_info = self.subtitle_to_video_map[subtitle_file]
             video_file = video_info["path"]
+            
+            # We don't need framerate for full media import, but update it if needed
+            if video_info["fps"] is None and selected_editor == "DaVinci Resolve":
+                try:
+                    if hasattr(self, 'resolve_initialized') and self.resolve_initialized:
+                        fps = self.detect_video_framerate_from_resolve(video_file)
+                        video_info["fps"] = fps
+                except Exception:
+                    # Silently ignore framerate detection errors for full media import
+                    pass
+                
             self.debug_print(f"Import Media clicked for {os.path.basename(video_file)} with editor {selected_editor}")
             
             # Call the appropriate import function based on selected editor
@@ -1277,7 +1258,27 @@ class RapidMomentNavigator:
         if subtitle_file in self.subtitle_to_video_map:
             video_info = self.subtitle_to_video_map[subtitle_file]
             video_file = video_info["path"]
-            fps = video_info["fps"]
+            
+            # Check if we need to detect framerate
+            if video_info["fps"] is None:
+                # Detect framerate now - use Resolve API if available
+                try:
+                    if self.editor_var.get() == "DaVinci Resolve" and hasattr(self, 'resolve_initialized') and self.resolve_initialized:
+                        fps = self.detect_video_framerate_from_resolve(video_file)
+                    else:
+                        fps = self.detect_video_framerate(video_file)
+                        
+                    # Store the detected framerate for future use
+                    video_info["fps"] = fps
+                    
+                except Exception as e:
+                    self.debug_print(f"Error detecting framerate for {os.path.basename(video_file)}: {str(e)}")
+                    fps = 24.0  # Default fallback
+                    video_info["fps"] = fps
+            else:
+                # Use cached framerate
+                fps = video_info["fps"]
+                
             self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {start_time}-{end_time} with editor {selected_editor}, FPS: {fps}")
             
             # Call the appropriate import function based on selected editor
