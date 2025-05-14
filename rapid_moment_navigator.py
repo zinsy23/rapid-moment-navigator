@@ -516,6 +516,16 @@ class RapidMomentNavigator:
         # Get all show paths from the name-to-path mapping
         show_paths = list(self.show_name_to_path_map.values())
         
+        # Check if Resolve is selected and initialized
+        use_resolve_api = (self.editor_var.get() == "DaVinci Resolve" and 
+                           hasattr(self, 'resolve_initialized') and 
+                           self.resolve_initialized)
+                           
+        if use_resolve_api:
+            self.debug_print("Using DaVinci Resolve API for framerate detection when mapping files")
+        else:
+            self.debug_print("Using FFprobe for framerate detection when mapping files")
+        
         for show_path in show_paths:
             show_name = os.path.basename(show_path)
             
@@ -568,8 +578,22 @@ class RapidMomentNavigator:
                     video_name = os.path.splitext(video_basename)[0]
                     
                     if subtitle_name == video_name:
-                        self.subtitle_to_video_map[subtitle_file] = video_file
-                        self.debug_print(f"Mapping - exact match: {subtitle_basename} -> {video_basename}")
+                        # Get video framerate if possible
+                        try:
+                            if use_resolve_api:
+                                fps = self.detect_video_framerate_from_resolve(video_file)
+                            else:
+                                fps = self.detect_video_framerate(video_file)
+                        except Exception as e:
+                            self.debug_print(f"Error detecting framerate for {video_basename}: {str(e)}")
+                            fps = 24.0  # Default fallback
+                        
+                        # Store video file and its framerate
+                        self.subtitle_to_video_map[subtitle_file] = {
+                            "path": video_file,
+                            "fps": fps
+                        }
+                        self.debug_print(f"Mapping - exact match: {subtitle_basename} -> {video_basename} (FPS: {fps})")
                         matched = True
                         break
                 
@@ -587,13 +611,240 @@ class RapidMomentNavigator:
                         if (clean_subtitle_name == clean_video_name or
                             clean_subtitle_name in clean_video_name or
                             clean_video_name in clean_subtitle_name):
-                            self.subtitle_to_video_map[subtitle_file] = video_file
-                            self.debug_print(f"Mapping - partial match: {subtitle_basename} -> {video_basename}")
+                            
+                            # Get video framerate if possible
+                            try:
+                                if use_resolve_api:
+                                    fps = self.detect_video_framerate_from_resolve(video_file)
+                                else:
+                                    fps = self.detect_video_framerate(video_file)
+                            except Exception as e:
+                                self.debug_print(f"Error detecting framerate for {video_basename}: {str(e)}")
+                                fps = 24.0  # Default fallback
+                            
+                            # Store video file and its framerate
+                            self.subtitle_to_video_map[subtitle_file] = {
+                                "path": video_file,
+                                "fps": fps
+                            }
+                            self.debug_print(f"Mapping - partial match: {subtitle_basename} -> {video_basename} (FPS: {fps})")
                             matched = True
                             break
         
         self.debug_print(f"Mapping - completed. Mapped {len(self.subtitle_to_video_map)} subtitle files to videos")
         self.status_var.set(f"Ready. Mapped {len(self.subtitle_to_video_map)} subtitle files to videos.")
+    
+    def detect_video_framerate(self, video_path):
+        """
+        Detect the framerate of a video file using FFprobe.
+        
+        Args:
+            video_path (str): Path to the video file
+            
+        Returns:
+            float: Framerate of the video (defaults to 24.0 if detection fails)
+        """
+        try:
+            # Get absolute path to the video file
+            abs_video_path = self.get_absolute_path(video_path)
+            
+            # Check if ffprobe is available
+            try:
+                # First try ffprobe directly
+                cmd = ["ffprobe", "-version"]
+                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                ffprobe_cmd = "ffprobe"
+            except (subprocess.SubprocessError, FileNotFoundError):
+                # If not available directly, try looking for it in common locations
+                ffprobe_locations = [
+                    r"C:\Program Files\FFmpeg\bin\ffprobe.exe",
+                    r"C:\Program Files (x86)\FFmpeg\bin\ffprobe.exe",
+                    os.path.join(self.script_dir, "ffprobe.exe")
+                ]
+                
+                ffprobe_found = False
+                for location in ffprobe_locations:
+                    if os.path.exists(location):
+                        ffprobe_cmd = location
+                        ffprobe_found = True
+                        break
+                    
+                if not ffprobe_found:
+                    self.debug_print("FFprobe not found, using default framerate")
+                    return 24.0
+            
+            # Construct the FFprobe command
+            cmd = [
+                ffprobe_cmd,
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                abs_video_path
+            ]
+            
+            # Run the command
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            
+            if result.returncode != 0:
+                self.debug_print(f"FFprobe error: {result.stderr}")
+                return 24.0
+                
+            # Parse the output (usually in the form "num/den")
+            fps_str = result.stdout.strip()
+            
+            if '/' in fps_str:
+                num, den = map(int, fps_str.split('/'))
+                fps = num / den if den != 0 else 24.0
+            else:
+                try:
+                    fps = float(fps_str)
+                except ValueError:
+                    fps = 24.0
+                    
+            # Validate the framerate (ensure it's reasonable)
+            if fps < 1 or fps > 300:
+                self.debug_print(f"Invalid framerate detected ({fps}), using default")
+                return 24.0
+                
+            self.debug_print(f"Detected framerate for {os.path.basename(video_path)}: {fps} fps")
+            return float(fps)
+        
+        except Exception as e:
+            self.debug_print(f"Error detecting framerate: {str(e)}")
+            return 24.0  # Default fallback framerate
+    
+    def detect_video_framerate_from_resolve(self, video_path):
+        """
+        Detect the framerate of a video file using the DaVinci Resolve API.
+        
+        Args:
+            video_path (str): Path to the video file
+            
+        Returns:
+            float: Framerate of the video (defaults to 24.0 if detection fails)
+        """
+        try:
+            # Check if Resolve API is initialized
+            if not hasattr(self, 'resolve_initialized') or not self.resolve_initialized:
+                self.debug_print("Resolve API not initialized, using fallback method")
+                return self.detect_video_framerate(video_path)
+            
+            # Get absolute path to the video file
+            abs_video_path = self.get_absolute_path(video_path)
+            
+            # Get Resolve
+            resolve = dvr_script.scriptapp("Resolve")
+            if not resolve:
+                self.debug_print("Failed to get Resolve object")
+                return self.detect_video_framerate(video_path)
+            
+            # Get project manager
+            project_manager = resolve.GetProjectManager()
+            if not project_manager:
+                self.debug_print("Failed to get project manager")
+                return self.detect_video_framerate(video_path)
+            
+            # Get current project
+            project = project_manager.GetCurrentProject()
+            if not project:
+                self.debug_print("No project is currently open")
+                return self.detect_video_framerate(video_path)
+            
+            # Get media pool
+            media_pool = project.GetMediaPool()
+            if not media_pool:
+                self.debug_print("Failed to get media pool")
+                return self.detect_video_framerate(video_path)
+                
+            # Import the media file temporarily to get its properties
+            current_folder = media_pool.GetCurrentFolder()
+            temp_folder = None
+            
+            try:
+                # Create a temporary folder in the media pool to avoid cluttering the main pool
+                root_folder = media_pool.GetRootFolder()
+                folder_list = root_folder.GetSubFolderList()
+                
+                # Check if we already have a temp folder
+                temp_folder_name = "_RapidNavigator_Temp"
+                temp_folder = None
+                
+                for folder in folder_list:
+                    if folder.GetName() == temp_folder_name:
+                        temp_folder = folder
+                        break
+                
+                # Create temp folder if it doesn't exist
+                if not temp_folder:
+                    temp_folder = media_pool.AddSubFolder(root_folder, temp_folder_name)
+                
+                # Set the temp folder as the current folder
+                media_pool.SetCurrentFolder(temp_folder)
+                
+                # Import the media
+                imported_media = media_pool.ImportMedia([abs_video_path])
+                
+                if not imported_media or len(imported_media) == 0:
+                    self.debug_print("Failed to import media for framerate detection")
+                    return self.detect_video_framerate(video_path)
+                
+                media_item = imported_media[0]
+                
+                # Get the frame rate from clip properties
+                try:
+                    # Try to get the frame rate property directly
+                    fps_str = media_item.GetClipProperty("FPS")
+                    
+                    if not fps_str:
+                        # If direct property failed, try getting properties snapshot
+                        all_props = media_item.GetClipProperty()
+                        fps_str = all_props.get("FPS", "")
+                        
+                    if fps_str:
+                        # Parse the FPS string
+                        try:
+                            fps = float(fps_str)
+                            self.debug_print(f"Detected framerate from Resolve API: {fps} fps")
+                            
+                            # Validate the framerate (ensure it's reasonable)
+                            if 1 <= fps <= 300:
+                                return fps
+                        except ValueError:
+                            self.debug_print(f"Could not parse Resolve FPS value: {fps_str}")
+                except Exception as e:
+                    self.debug_print(f"Error getting clip properties from Resolve: {str(e)}")
+                    
+                # If we've reached here, try to use the timeline frame rate
+                try:
+                    timeline_fps_str = project.GetSetting("timelineFrameRate")
+                    if timeline_fps_str:
+                        # Parse the timeline FPS string (might be in format like "29.97 DF")
+                        timeline_fps_str = timeline_fps_str.split()[0]  # Remove "DF" if present
+                        fps = float(timeline_fps_str)
+                        self.debug_print(f"Using timeline framerate from Resolve: {fps} fps")
+                        return fps
+                except Exception as e:
+                    self.debug_print(f"Error getting timeline frame rate from Resolve: {str(e)}")
+                    
+                # Fallback to FFprobe method
+                return self.detect_video_framerate(video_path)
+                
+            finally:
+                # Restore the original media pool folder
+                if current_folder:
+                    media_pool.SetCurrentFolder(current_folder)
+                    
+                # Delete imported media item if it exists
+                if 'media_item' in locals() and media_item:
+                    try:
+                        media_pool.DeleteClips([media_item])
+                    except:
+                        self.debug_print("Couldn't clean up temporary media item")
+                        
+        except Exception as e:
+            self.debug_print(f"Error detecting framerate from Resolve: {str(e)}")
+            return self.detect_video_framerate(video_path)
     
     def _clean_filename(self, filename):
         """Clean a filename to improve matching chances"""
@@ -838,7 +1089,8 @@ class RapidMomentNavigator:
         self.debug_print(f"Handling click for subtitle file: {subtitle_file}")
         
         if subtitle_file in self.subtitle_to_video_map:
-            video_file = self.subtitle_to_video_map[subtitle_file]
+            video_info = self.subtitle_to_video_map[subtitle_file]
+            video_file = video_info["path"]
             self.debug_print(f"Found matching video file: {video_file}")
             self.play_video(video_file, result['mpc_start_time'])
             self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['mpc_start_time']}")
@@ -1001,7 +1253,8 @@ class RapidMomentNavigator:
         subtitle_file = result['file']
         
         if subtitle_file in self.subtitle_to_video_map:
-            video_file = self.subtitle_to_video_map[subtitle_file]
+            video_info = self.subtitle_to_video_map[subtitle_file]
+            video_file = video_info["path"]
             self.debug_print(f"Import Media clicked for {os.path.basename(video_file)} with editor {selected_editor}")
             
             # Call the appropriate import function based on selected editor
@@ -1022,12 +1275,14 @@ class RapidMomentNavigator:
         end_time = result['end_time'].replace(',', '.').split('.')[0]  # Convert to MPC format
         
         if subtitle_file in self.subtitle_to_video_map:
-            video_file = self.subtitle_to_video_map[subtitle_file]
-            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {start_time}-{end_time} with editor {selected_editor}")
+            video_info = self.subtitle_to_video_map[subtitle_file]
+            video_file = video_info["path"]
+            fps = video_info["fps"]
+            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {start_time}-{end_time} with editor {selected_editor}, FPS: {fps}")
             
             # Call the appropriate import function based on selected editor
             if selected_editor == "DaVinci Resolve":
-                self._import_clip_to_davinci_resolve(video_file, start_time, end_time)
+                self._import_clip_to_davinci_resolve(video_file, start_time, end_time, fps)
             # Add more editors as needed
             
             self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {start_time}-{end_time} to {selected_editor}")
@@ -1267,7 +1522,7 @@ sys.exit(1)
             except:
                 pass
 
-    def import_clip_to_timeline(self, clip_path, start_tc=None, end_tc=None, start_frame=None, end_frame=None):
+    def import_clip_to_timeline(self, clip_path, start_tc=None, end_tc=None, start_frame=None, end_frame=None, fps=24.0):
         """
         Import a clip to the current timeline with specified in/out points
         
@@ -1277,21 +1532,22 @@ sys.exit(1)
             end_tc (str, optional): End timecode in HH:MM:SS format
             start_frame (int, optional): Start frame (alternative to start_tc)
             end_frame (int, optional): End frame (alternative to end_frame)
+            fps (float, optional): Frames per second of the clip (default: 24.0)
         
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            self.debug_print(f"Importing clip: {clip_path}")
+            self.debug_print(f"Importing clip: {clip_path} with FPS: {fps}")
             
             # Convert timecodes to frames if provided
             if start_tc:
-                start_frame = self.timecode_to_frames(start_tc)
-                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame}")
+                start_frame = self.timecode_to_frames(start_tc, fps)
+                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame} at {fps} fps")
             
             if end_tc:
-                end_frame = self.timecode_to_frames(end_tc)
-                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame}")
+                end_frame = self.timecode_to_frames(end_tc, fps)
+                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame} at {fps} fps")
             
             # Get Resolve
             resolve = dvr_script.scriptapp("Resolve")
@@ -1384,18 +1640,20 @@ sys.exit(1)
             self.debug_print(f"Error importing clip: {e}")
             return False
         
-    def timecode_to_frames(self, timecode, fps=24):
+    def timecode_to_frames(self, timecode, fps=24.0):
         """
         Convert HH:MM:SS or HH:MM:SS:FF timecode to frames
         
         Args:
             timecode (str): Timecode in HH:MM:SS, HH:MM:SS.MS or HH:MM:SS:FF format
-            fps (float): Frames per second (default: 24)
+            fps (float): Frames per second (default: 24.0)
         
         Returns:
             int: Frame number
         """
         try:
+            self.debug_print(f"Converting timecode {timecode} using {fps} fps")
+            
             # Check if we have a DaVinci Resolve style timecode with HH:MM:SS:FF
             if len(timecode.split(':')) == 4:
                 hours, minutes, seconds, frames = map(int, timecode.split(':'))
@@ -2122,7 +2380,7 @@ sys.exit(1)
         
         return result
         
-    def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time):
+    def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time, fps=24.0):
         """Import clip with time range to DaVinci Resolve"""
         selected_editor = self.editor_var.get()
         if selected_editor != "DaVinci Resolve":
@@ -2190,11 +2448,12 @@ sys.exit(1)
             # Get absolute path to the video file
             abs_video_path = self.get_absolute_path(video_file)
             
-            # Call the timeline import function
+            # Call the timeline import function with the detected framerate
             success = self.import_clip_to_timeline(
                 abs_video_path, 
                 start_tc=start_time, 
-                end_tc=end_time
+                end_tc=end_time, 
+                fps=fps
             )
             
             if success:
