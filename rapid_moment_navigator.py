@@ -49,6 +49,7 @@ def find_module_locations(base_path):
         "module_paths": module_paths  # Full paths to the module files
     }
 
+
 class ClickableTimecode(Label):
     """A clickable label widget for timecodes"""
     def __init__(self, parent, timecode, result, callback, **kwargs):
@@ -489,6 +490,45 @@ class RapidMomentNavigator:
         
         # Force immediate update
         self.root.update_idletasks()
+
+    def filter_nested_directories(self, directories):
+        """
+        Filter out nested directories if their parent directory is already in the list.
+        
+        Args:
+            directories (list): List of directory paths
+            
+        Returns:
+            list: Filtered list with no nested directories
+        """
+        if not directories:
+            return []
+            
+        # Normalize all paths first
+        normalized_dirs = [os.path.normpath(d) for d in directories]
+        
+        # Sort directories by path length (descending) to process most nested first
+        # This ensures we compare subdirectories against parent directories
+        sorted_dirs = sorted(normalized_dirs, key=len, reverse=True)
+        
+        # List to hold directories that aren't nested within others
+        filtered_dirs = []
+        
+        for dir_path in sorted_dirs:
+            # Check if this directory is contained within any directory we've already approved
+            is_nested = False
+            for approved_dir in filtered_dirs:
+                # Check if dir_path is a subdirectory of approved_dir
+                # dir_path starts with approved_dir followed by os separator
+                if dir_path.startswith(approved_dir + os.sep):
+                    is_nested = True
+                    break
+                    
+            # Add to filtered list if not nested
+            if not is_nested:
+                filtered_dirs.append(dir_path)
+        
+        return filtered_dirs
             
     def load_shows(self):
         """Load the available shows from the directory structure"""
@@ -499,9 +539,15 @@ class RapidMomentNavigator:
         manual_dirs = list(self.preferences.get("directories", []))
         self.debug_print(f"Load shows - manual directories from preferences: {manual_dirs}")
         
+        # Filter out nested directories from manually added directories
+        filtered_manual_dirs = self.filter_nested_directories(manual_dirs)  # Use self. to call the class method
+        if len(filtered_manual_dirs) != len(manual_dirs):
+            self.debug_print(f"Load shows - filtered {len(manual_dirs) - len(filtered_manual_dirs)} nested manually added directories")
+            self.debug_print(f"Load shows - using filtered manual directories: {filtered_manual_dirs}")
+        
         # Create a set of all manual directories and their subdirectories to exclude from current dir scanning
         manual_dirs_and_subdirs = set()
-        for dir_path in manual_dirs:
+        for dir_path in filtered_manual_dirs:
             if os.path.exists(dir_path) and os.path.isdir(dir_path):
                 # Add the directory itself
                 manual_dirs_and_subdirs.add(os.path.normpath(dir_path))
@@ -544,7 +590,7 @@ class RapidMomentNavigator:
                     
                     # Check if this is a parent directory of any manual directory
                     is_parent_of_manual = False
-                    for manual_dir in manual_dirs:
+                    for manual_dir in filtered_manual_dirs:
                         normalized_manual = os.path.normpath(manual_dir)
                         if normalized_manual.startswith(normalized_subdir + os.sep):
                             is_parent_of_manual = True
@@ -596,12 +642,8 @@ class RapidMomentNavigator:
         else:
             self.debug_print(f"Load shows - current directory is excluded: {current_dir}")
         
-        # Handle custom directories from preferences (each is a complete show)
-        custom_dirs = list(self.preferences.get("directories", []))
-        self.debug_print(f"Load shows - custom directories from preferences: {custom_dirs}")
-        
-        # Add custom directories (each directory is treated as a complete show)
-        for directory in custom_dirs:
+        # Add filtered custom directories (each directory is treated as a complete show)
+        for directory in filtered_manual_dirs:
             # Don't duplicate the current directory
             if directory != current_dir:
                 if os.path.exists(directory) and os.path.isdir(directory):
@@ -674,7 +716,7 @@ class RapidMomentNavigator:
         self.debug_print(f"Load shows - completed. Found {len(self.show_name_to_path_map)} shows from all sources.")
         self.update_show_dropdown()
         
-        return shows_paths 
+        return shows_paths
     
     def _show_no_shows_guidance(self):
         """Show guidance dialog when no shows are found"""
@@ -2054,6 +2096,38 @@ sys.exit(1)
         # This prevents recursive load_shows() calls when no valid shows exist
         if self.dir_listbox.size() == 0:
             self.debug_print("No directories in listbox, but not forcing current directory")
+
+    def add_directory_warning_logic(self, directory_to_add, existing_directories):
+        """
+        Check if a directory would be filtered due to intersection rules
+        
+        Args:
+            directory_to_add (str): Directory being considered for addition
+            existing_directories (list): Already added directories
+            
+        Returns:
+            tuple: (will_be_filtered, parent_dir) where parent_dir is the existing directory
+                that would cause directory_to_add to be filtered out, or None
+        """
+        normalized_new = os.path.normpath(directory_to_add)
+        
+        # Check if directory is a subdirectory of an existing directory
+        for existing in existing_directories:
+            normalized_existing = os.path.normpath(existing)
+            if normalized_new.startswith(normalized_existing + os.sep):
+                return True, existing
+        
+        # Check if directory is a parent of any existing directory
+        child_dirs = []
+        for existing in existing_directories:
+            normalized_existing = os.path.normpath(existing)
+            if normalized_existing.startswith(normalized_new + os.sep):
+                child_dirs.append(existing)
+        
+        if child_dirs:
+            return True, child_dirs
+        
+        return False, None 
     
     def add_directory(self):
         """Open file dialog to add directories to preferences"""
@@ -2065,11 +2139,11 @@ sys.exit(1)
         
         # Calculate centered position for the dialog relative to main window
         dialog_width = 525
-        dialog_height = 400
+        dialog_height = 450  # Increased height to accommodate the current directory status display
         x = root_x + (root_width - dialog_width) // 2
         y = root_y + (root_height - dialog_height) // 2
         
-        # Add a button to select multiple directories
+        # Create dialog window
         root = tk.Toplevel(self.root)
         root.title("Add Media Directories")
         root.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
@@ -2082,7 +2156,31 @@ sys.exit(1)
         
         # Instructions label
         ttk.Label(frame, text="Select one or more directories that contain your media:").pack(pady=5, anchor="w")
-        ttk.Label(frame, text="Note: You can remove the current directory if you have other directories added.").pack(pady=2, anchor="w")
+        
+        # Current directory status frame
+        current_dir_frame = ttk.LabelFrame(frame, text="Current Directory Status")
+        current_dir_frame.pack(fill="x", pady=5)
+        
+        # Current directory path display
+        current_dir = self.get_current_directory()
+        ttk.Label(current_dir_frame, text=f"Current directory: {current_dir}").pack(anchor="w", padx=5, pady=2)
+        
+        # Current directory inclusion status
+        self.current_dir_status_var = tk.StringVar()
+        self.current_dir_status_label = ttk.Label(current_dir_frame, textvariable=self.current_dir_status_var, font=("TkDefaultFont", 10))
+        self.current_dir_status_label.pack(anchor="w", padx=5, pady=2)
+        
+        # Function to update current directory status display
+        def update_current_dir_status():
+            if self.preferences.get("exclude_current_dir", False):
+                self.current_dir_status_var.set("❌ Current directory is EXCLUDED from automatic scanning")
+                self.current_dir_status_label.config(foreground="red")
+            else:
+                self.current_dir_status_var.set("✓ Current directory is INCLUDED in automatic scanning")
+                self.current_dir_status_label.config(foreground="green")
+        
+        # Initial update of status
+        update_current_dir_status()
         
         # Listbox to display selected directories
         listbox_frame = ttk.Frame(frame)
@@ -2107,21 +2205,83 @@ sys.exit(1)
                 initialdir=self.script_dir,
                 mustexist=True
             )
-            if new_dir and new_dir not in [listbox.get(i) for i in range(listbox.size())]:
-                listbox.insert(tk.END, new_dir)
+            
+            if new_dir:
+                # Get existing directories from the listbox
+                existing_dirs = [listbox.get(i) for i in range(listbox.size())]
+                
+                # Check if it's the current directory - if so, suggest using the toggle instead
+                if os.path.normpath(new_dir) == os.path.normpath(current_dir):
+                    message = ("This is your current working directory.\n\n"
+                            "Instead of adding it manually, please use the 'Toggle Current Directory' button "
+                            "to include/exclude it from automatic scanning.")
+                    messagebox.showinfo("Current Directory Selected", message)
+                    return
+                
+                # Check if the directory is already in the list
+                if new_dir in existing_dirs:
+                    self.debug_print(f"Directory already exists in list: {new_dir}")
+                    messagebox.showinfo("Directory Exists", "This directory is already in the list.")
+                    return
+                    
+                # Check if this directory would be filtered
+                will_be_filtered, reason = self.add_directory_warning_logic(new_dir, existing_dirs)
+                
+                if will_be_filtered:
+                    if isinstance(reason, list):
+                        # This is a parent directory of existing directory/directories
+                        child_dirs_str = "\n• ".join(reason)
+                        message = (f"The directory you selected is a parent of one or more existing directories:\n\n• {child_dirs_str}\n\n"
+                                f"If you add this directory, the existing directories will be filtered out since they're already covered by the parent.")
+                        add_anyway = messagebox.askyesno("Directory Conflict", message + "\n\nAdd parent directory anyway?")
+                        
+                        if add_anyway:
+                            # First remove the child directories
+                            for child in reason:
+                                for i in range(listbox.size()):
+                                    if listbox.get(i) == child:
+                                        listbox.delete(i)
+                                        self.debug_print(f"Removed child directory: {child}")
+                                        break
+                            
+                            # Now add the new directory
+                            listbox.insert(tk.END, new_dir)
+                            self.debug_print(f"Added parent directory: {new_dir}")
+                    else:
+                        # This is a subdirectory of an existing directory
+                        message = (f"The directory you selected is inside an existing directory:\n\n• {reason}\n\n"
+                                f"It will be filtered out during loading since its parent directory will already be scanned.")
+                        add_anyway = messagebox.askyesno("Directory Conflict", message + "\n\nAdd subdirectory anyway?")
+                        
+                        if add_anyway:
+                            listbox.insert(tk.END, new_dir)
+                            self.debug_print(f"Added subdirectory despite warning: {new_dir}")
+                else:
+                    # No conflicts, add normally
+                    listbox.insert(tk.END, new_dir)
+                    self.debug_print(f"Added directory without conflicts: {new_dir}")
         
-        # Function to add current directory
-        def add_current_dir():
-            current_dir = self.get_current_directory()
-            if current_dir not in [listbox.get(i) for i in range(listbox.size())]:
-                listbox.insert(tk.END, current_dir)
-                self.debug_print(f"Added current directory: {current_dir}")
+        # Function to toggle current directory inclusion
+        def toggle_current_dir():
+            # Toggle the exclude_current_dir preference
+            current_exclude = self.preferences.get("exclude_current_dir", False)
+            self.preferences["exclude_current_dir"] = not current_exclude
+            
+            # Update the status display
+            update_current_dir_status()
+            
+            # Log the change
+            if current_exclude:
+                self.debug_print("Current directory inclusion enabled")
+            else:
+                self.debug_print("Current directory inclusion disabled")
         
         # Function to remove selected directories from the listbox
         def remove_selected():
             selected = list(listbox.curselection())
             selected.reverse()  # Reverse to delete from bottom to top
             for i in selected:
+                self.debug_print(f"Removed directory: {listbox.get(i)}")
                 listbox.delete(i)
         
         # Function to save and close
@@ -2147,7 +2307,7 @@ sys.exit(1)
                 self.preferences["directories"] = new_dirs
             
             # Save and update if changes were made
-            if changes_made:
+            if changes_made or self.preferences.get("exclude_current_dir", False) != self.original_exclude_current_dir:
                 self.save_preferences()
                 self.debug_print(f"Directory dialog - saved preferences: {self.preferences}")
                 self.update_directory_listbox()
@@ -2187,17 +2347,16 @@ sys.exit(1)
             # Close the dialog
             root.destroy()
         
+        # Store original exclude_current_dir value to detect changes
+        self.original_exclude_current_dir = self.preferences.get("exclude_current_dir", False)
+        
         # Button frame
         button_frame = ttk.Frame(frame)
         button_frame.pack(fill="x", pady=10)
         
-        # Buttons
+        # Buttons - REORDERED as requested
         select_btn = ttk.Button(button_frame, text="Add Directory", command=select_dir)
         select_btn.pack(side="left", padx=5)
-        
-        # Add button for current directory
-        current_dir_btn = ttk.Button(button_frame, text="Add Current Directory", command=add_current_dir)
-        current_dir_btn.pack(side="left", padx=5)
         
         # Function to add multiple directories at once using a directory selection dialog
         def select_multiple_dirs():
@@ -2225,12 +2384,61 @@ sys.exit(1)
                 if not new_dir:  # User clicked Cancel
                     break
                     
-                added_dirs.append(new_dir)
+                # Check if it's the current directory
+                if os.path.normpath(new_dir) == os.path.normpath(current_dir):
+                    message = ("This is your current working directory.\n\n"
+                            "Instead of adding it manually, please use the 'Toggle Current Directory' button "
+                            "to include/exclude it from automatic scanning.")
+                    messagebox.showinfo("Current Directory Selected", message)
+                    continue
+                    
+                # Check if the directory is already in the list
+                existing_dirs = [listbox.get(i) for i in range(listbox.size())]
+                if new_dir in existing_dirs:
+                    self.debug_print(f"Directory already exists in list: {new_dir}")
+                    messagebox.showinfo("Directory Exists", "This directory is already in the list.")
+                    continue
+                    
+                # Check if this directory would be filtered
+                will_be_filtered, reason = self.add_directory_warning_logic(new_dir, existing_dirs)
                 
-                # Add to listbox if not already there
-                if new_dir not in [listbox.get(i) for i in range(listbox.size())]:
+                if will_be_filtered:
+                    if isinstance(reason, list):
+                        # This is a parent directory of existing directory/directories
+                        child_dirs_str = "\n• ".join(reason)
+                        message = (f"The directory you selected is a parent of one or more existing directories:\n\n• {child_dirs_str}\n\n"
+                                f"If you add this directory, the existing directories will be filtered out since they're already covered by the parent.")
+                        add_anyway = messagebox.askyesno("Directory Conflict", message + "\n\nAdd parent directory anyway?")
+                        
+                        if add_anyway:
+                            # First remove the child directories
+                            for child in reason:
+                                for i in range(listbox.size()):
+                                    if listbox.get(i) == child:
+                                        listbox.delete(i)
+                                        self.debug_print(f"Removed child directory: {child}")
+                                        break
+                            
+                            # Now add the new directory
+                            listbox.insert(tk.END, new_dir)
+                            added_dirs.append(new_dir)
+                            self.debug_print(f"Added parent directory: {new_dir}")
+                    else:
+                        # This is a subdirectory of an existing directory
+                        message = (f"The directory you selected is inside an existing directory:\n\n• {reason}\n\n"
+                                f"It will be filtered out during loading since its parent directory will already be scanned.")
+                        add_anyway = messagebox.askyesno("Directory Conflict", message + "\n\nAdd subdirectory anyway?")
+                        
+                        if add_anyway:
+                            listbox.insert(tk.END, new_dir)
+                            added_dirs.append(new_dir)
+                            self.debug_print(f"Added subdirectory despite warning: {new_dir}")
+                else:
+                    # No conflicts, add normally
                     listbox.insert(tk.END, new_dir)
-            
+                    added_dirs.append(new_dir)
+                    self.debug_print(f"Added directory without conflicts: {new_dir}")
+                    
             # Show the dialog again
             root.deiconify()
             
@@ -2238,9 +2446,13 @@ sys.exit(1)
             if added_dirs:
                 self.debug_print(f"Added {len(added_dirs)} directories through multiple selection")
         
-        # Add button for multiple directory selection
+        # Add button for multiple directory selection - REORDERED
         multi_select_btn = ttk.Button(button_frame, text="Add Multiple Directories", command=select_multiple_dirs)
         multi_select_btn.pack(side="left", padx=5)
+        
+        # Add button for toggling current directory - REORDERED and RENAMED
+        current_dir_btn = ttk.Button(button_frame, text="Toggle Current Directory", command=toggle_current_dir)
+        current_dir_btn.pack(side="left", padx=5)
         
         remove_btn = ttk.Button(button_frame, text="Remove Selected", command=remove_selected)
         remove_btn.pack(side="left", padx=5)
@@ -2271,7 +2483,7 @@ sys.exit(1)
         self.root.wait_window(root)
     
     def remove_directory(self):
-        """Remove selected directory from preferences"""
+        """Remove selected directory from preferences or toggle current directory inclusion"""
         selected_indices = self.dir_listbox.curselection()
         
         if not selected_indices:
@@ -2287,34 +2499,30 @@ sys.exit(1)
         # Check if it's the "Current" directory
         is_current = "(Current)" in selected_dir
         
-        # Count total non-current directories
-        custom_dirs_count = len(self.preferences.get("directories", []))
-        if current_dir in self.preferences.get("directories", []):
-            custom_dirs_count -= 1  # Don't count current dir if it's in the list
-            
-        self.debug_print(f"Remove directory - is current: {is_current}, custom dirs count: {custom_dirs_count}")
-            
-        # Only allow removing current directory if we have other directories
+        # Handle removal of current directory by toggling the exclude_current_dir preference
         if is_current:
-            if custom_dirs_count == 0:
-                self.status_var.set("Cannot remove current directory when it's the only one")
-                return
-            else:
-                # Mark current directory as excluded in preferences
-                self.preferences["exclude_current_dir"] = True
-                self.save_preferences()
-                self.update_directory_listbox()
-                
-                # Clear existing show map and reload everything
-                self.show_name_to_path_map.clear()
-                
-                # Reload shows and remap files
-                shows_paths = self.load_shows()
-                self.map_subtitles_to_videos()
-                
-                self.status_var.set(f"Current directory excluded. Found {len(self.show_name_to_path_map)} shows")
-                return
+            # Toggle the exclude_current_dir preference
+            self.preferences["exclude_current_dir"] = True
+            self.save_preferences()
+            self.update_directory_listbox()
             
+            # Clear existing show map and reload everything
+            self.show_name_to_path_map.clear()
+            
+            # Reload shows and remap files
+            shows_paths = self.load_shows()
+            self.map_subtitles_to_videos()
+            
+            # Update status message
+            if len(self.show_name_to_path_map) > 0:
+                self.status_var.set(f"Current directory excluded. Found {len(self.show_name_to_path_map)} shows")
+            else:
+                self.status_var.set("Current directory excluded. No shows found.")
+                # If no shows are found, show the guidance dialog
+                self.root.after(500, self._delayed_show_guidance)
+                
+            return
+                
         # Handle removal of non-current directory
         if selected_dir in self.preferences.get("directories", []):
             self.preferences["directories"].remove(selected_dir)
@@ -2330,7 +2538,13 @@ sys.exit(1)
             shows_paths = self.load_shows()
             self.map_subtitles_to_videos()
             
-            self.status_var.set(f"Removed directory: {selected_dir}. Found {len(self.show_name_to_path_map)} shows")
+            # Update status and show guidance if needed
+            if len(self.show_name_to_path_map) > 0:
+                self.status_var.set(f"Removed directory: {selected_dir}. Found {len(self.show_name_to_path_map)} shows")
+            else:
+                self.status_var.set(f"Removed directory: {selected_dir}. No shows found.")
+                # If no shows are found, show the guidance dialog
+                self.root.after(500, self._delayed_show_guidance)
         else:
             self.status_var.set("Directory not found in preferences")
 
