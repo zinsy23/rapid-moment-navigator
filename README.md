@@ -162,5 +162,20 @@ return
 ## Future Improvements
 
 - Verify support for other video players and formats in Windows, Mac, and Linux
+   - Provide a moment offset mechanism since keywords likely take the user to the middle of a moment and the user generally rewinds to go to the beginning of the moment
    - If possible, add support for marking a Plex video at a timecode to view a moment on another device connected to the Plex server
-- Add some support to import clips based on displayed transcript results at the timecode of the result
+   - Allow users to add a custom media player based on criteria, like a path or a shell command, or utilizing an API to connect to the media player
+- Add a smarter search mechanism so keyword matches don't have to be exact, like a hyphen vs space, or a space vs no space, etc.
+- Better duplicate file handling, particularly where corresponding file matches are inaccurate.
+- Integrate editor subtitle generation to index videos for searching around various directory structures and automatically figure out what's not indexed.
+   - Or if something is poorly/not properly indexed, can be marked in the interface to re-index that automatically.
+- Add support to control the GUI via command line arguments, which would be useful for automation and even using Python-based voice assistants to control the application, like Neon AI or OVOS.
+- Make it easier to import specific moments in editors not from keywords when a file and rough timecode is known.
+- Add support for importing media player favorites/bookmarks into editors
+- Add bookmark mechanism for use with this software
+- Allow the user to modify the timecode range of search results
+   - Improve the scroll bar behavior when new results are rendered
+- Add the ability to open specific moments remotely on other computers (via SSH or network sockets on multiple computers, depending on their capabilities)
+- Add AI capabilities for finding moments in shows, assuming efficient tokenization can be done with good support of models
+   - The AI could also mostly automate creating compilations based on criteria (i. e. moments in Silicon Valley where Gavin Belson is demonstrating sociopathic tendencies or it's implied by other people mentioning it or moments where Leon makes Seinfeld references in Mr. Robot)
+- Improve support for older versions of DaVinci Resolve utilizing older python scripts.
