@@ -1,6 +1,6 @@
 # Rapid Moment Navigator
 
-A Python application for searching subtitle files and quickly navigating to specific moments in your media files. See my [video](https://www.youtube.com/watch?v=jP1fWYjkZ5s) where I try to make this in an hour with an AI coding agent.
+A Python application for searching subtitle files and quickly navigating to specific moments in your media files. See my [video](https://www.youtube.com/watch?v=jP1fWYjkZ5s) where I try to make this in an hour with an AI coding agent. I also did a [follow-up video](https://www.youtube.com/watch?v=s2W8Wnd-ARs) where I show some interesting lessons I'm learning as I develop it further after the original challenge.
 
 ## Features
 
