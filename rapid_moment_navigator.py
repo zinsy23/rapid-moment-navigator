@@ -732,7 +732,7 @@ class RapidMomentNavigator:
         self.subtitle_to_video_map = {}
         
         # Common video file extensions
-        video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.flv', '.webm']
+        video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.flv', '.webm', '.mp3', '.m4a', '.wav', '.aac', '.ogg']
         
         # Get all show paths from the name-to-path mapping
         show_paths = list(self.show_name_to_path_map.values())
