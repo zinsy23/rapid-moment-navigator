@@ -3118,6 +3118,73 @@ sys.exit(1)
         except Exception:
             return "00:00:00"
 
+    def _show_editor_dialog(self):
+        """Show a dialog with editor settings"""
+        editor_width = 600
+        editor_height = 300
+        editor_x = self.root.winfo_x() + (self.root.winfo_width() - editor_width) // 2
+        editor_y = self.root.winfo_y() + (self.root.winfo_height() - editor_height) // 2
+        editor_dialog = tk.Toplevel(self.root)
+        editor_dialog.title("Editor Navigator")
+        editor_dialog.geometry(f"{editor_width}x{editor_height}+{editor_x}+{editor_y}")
+        editor_dialog.transient(self.root)
+        editor_dialog.grab_set()
+
+        # Make dialog modal
+        editor_dialog.focus_set()
+        
+        # Create main frame with padding
+        main_frame = ttk.Frame(editor_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+
+        # Entry box for search term
+        editor_search_frame = ttk.Frame(main_frame)
+        editor_search_frame.pack(fill="x", pady=5)
+        
+        ttk.Label(editor_search_frame, text="Search:").pack(side="left")
+        
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(editor_search_frame, textvariable=self.search_var, width=30)
+        search_entry.pack(side="left", padx=5)
+        
+        # Button to find text
+        find_btn = ttk.Button(editor_search_frame, text="Find", command=self.find_text_in_editor)
+        find_btn.pack(side="left", padx=5)
+
+        # Combobox for editor selection
+        editor_combobox = ttk.Combobox(editor_search_frame, values=self.editor_var, state="readonly")
+        editor_combobox.pack(side="left", padx=5)
+        editor_combobox['values'] = self.editor_dropdown['values']
+        
+        selected_editor = self.preferences.get("selected_editor", "None")
+        editor_combobox.set(selected_editor)
+
+        editor_combobox.bind("<<ComboboxSelected>>", self._on_editor_changed)
+
+        results_frame = ttk.Frame(main_frame)
+        results_frame.pack(fill="both", expand=True, pady=10)
+
+        editor_results_canvas = tk.Canvas(results_frame)
+        editor_results_canvas.pack(side="left", fill="both", expand=True)
+        editor_results_scrollbar = ttk.Scrollbar(results_frame, orient="vertical", command=editor_results_canvas.yview)
+        editor_results_scrollbar.pack(side="right", fill="y")
+        editor_results_canvas.configure(yscrollcommand=editor_results_scrollbar.set)
+        results_frame = ttk.Frame(editor_results_canvas)
+
+        editor_results_container = ttk.Frame(editor_results_canvas)
+        editor_results_container_id = editor_results_canvas.create_window((0, 0), window=results_frame, anchor="nw")
+
+        editor_results_container.bind("<Configure>", lambda e: editor_results_canvas.configure(scrollregion=editor_results_canvas.bbox("all")))
+        editor_results_canvas.bind("<Configure>", lambda e: editor_results_canvas.itemconfig(editor_results_container_id, width=e.width))
+
+        editor_results_canvas.bind_all("<MouseWheel>", lambda e: editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+    def find_text_in_editor(self):
+        """Find text in the editor"""
+        text_to_find = self.search_var.get()
+        self.debug_print(f"Searching for text: {text_to_find}")
+        self.status_var.set(f"Searching for text: {text_to_find}")
+
     # Add a method to show the settings dialog
     def _show_settings_dialog(self):
         """Show a dialog with minimum duration settings"""
@@ -3600,6 +3667,12 @@ if __name__ == "__main__":
         settings_menu.add_command(label="General Settings...", 
                                  command=app._show_general_settings_dialog)
         menu_bar.add_cascade(label="Settings", menu=settings_menu)
+            
+        # Add Editor Menu
+        editor_menu = tk.Menu(menu_bar, tearoff=0)
+        editor_menu.add_command(label="Editor Navigator", 
+                                command=app._show_editor_dialog)
+        menu_bar.add_cascade(label="Editor", menu=editor_menu)
             
         # Add Debug menu
         debug_menu = tk.Menu(menu_bar, tearoff=0)
