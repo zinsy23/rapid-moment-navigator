@@ -3134,25 +3134,25 @@ sys.exit(1)
         editor_dialog.focus_set()
         
         # Create main frame with padding
-        main_frame = ttk.Frame(editor_dialog, padding=15)
-        main_frame.pack(fill="both", expand=True)
+        self.editor_main_frame = ttk.Frame(editor_dialog, padding=15)
+        self.editor_main_frame.pack(fill="both", expand=True)
 
         # Entry box for search term
-        editor_search_frame = ttk.Frame(main_frame)
-        editor_search_frame.pack(fill="x", pady=5)
+        self.editor_search_frame = ttk.Frame(self.editor_main_frame)
+        self.editor_search_frame.pack(fill="x", pady=5)
         
-        ttk.Label(editor_search_frame, text="Search:").pack(side="left")
+        ttk.Label(self.editor_search_frame, text="Search:").pack(side="left")
         
         self.search_var = tk.StringVar()
-        search_entry = ttk.Entry(editor_search_frame, textvariable=self.search_var, width=30)
+        search_entry = ttk.Entry(self.editor_search_frame, textvariable=self.search_var, width=30)
         search_entry.pack(side="left", padx=5)
         
         # Button to find text
-        find_btn = ttk.Button(editor_search_frame, text="Find", command=self.find_text_in_editor)
+        find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_editor)
         find_btn.pack(side="left", padx=5)
 
         # Combobox for editor selection
-        editor_combobox = ttk.Combobox(editor_search_frame, values=self.editor_var, state="readonly")
+        editor_combobox = ttk.Combobox(self.editor_search_frame, values=self.editor_var, state="readonly")
         editor_combobox.pack(side="left", padx=5)
         editor_combobox['values'] = self.editor_dropdown['values']
         
@@ -3161,29 +3161,40 @@ sys.exit(1)
 
         editor_combobox.bind("<<ComboboxSelected>>", self._on_editor_changed)
 
-        results_frame = ttk.Frame(main_frame)
-        results_frame.pack(fill="both", expand=True, pady=10)
+        self.editor_results_frame = ttk.LabelFrame(self.editor_main_frame, text="Search Results")
+        self.editor_results_frame.pack(fill="both", expand=True, pady=10)
 
-        editor_results_canvas = tk.Canvas(results_frame)
-        editor_results_canvas.pack(side="left", fill="both", expand=True)
-        editor_results_scrollbar = ttk.Scrollbar(results_frame, orient="vertical", command=editor_results_canvas.yview)
-        editor_results_scrollbar.pack(side="right", fill="y")
-        editor_results_canvas.configure(yscrollcommand=editor_results_scrollbar.set)
-        results_frame = ttk.Frame(editor_results_canvas)
+        self.editor_results_canvas = tk.Canvas(self.editor_results_frame)
 
-        editor_results_container = ttk.Frame(editor_results_canvas)
-        editor_results_container_id = editor_results_canvas.create_window((0, 0), window=results_frame, anchor="nw")
+        self.editor_results_scrollbar = ttk.Scrollbar(self.editor_results_frame, orient="vertical", command=self.editor_results_canvas.yview)
+        self.editor_results_scrollbar.pack(side="right", fill="y")
 
-        editor_results_container.bind("<Configure>", lambda e: editor_results_canvas.configure(scrollregion=editor_results_canvas.bbox("all")))
-        editor_results_canvas.bind("<Configure>", lambda e: editor_results_canvas.itemconfig(editor_results_container_id, width=e.width))
+        self.editor_results_canvas.pack(side="left", fill="both", expand=True)
+        self.editor_results_canvas.configure(yscrollcommand=self.editor_results_scrollbar.set)
 
-        editor_results_canvas.bind_all("<MouseWheel>", lambda e: editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        self.editor_results_container = ttk.Frame(self.editor_results_canvas)
+        self.editor_results_container_id = self.editor_results_canvas.create_window((0, 0), window=self.editor_results_container, anchor="nw")
+
+        self.editor_results_container.bind("<Configure>", lambda e: self.editor_results_canvas.configure(scrollregion=self.editor_results_canvas.bbox("all")))
+        self.editor_results_canvas.bind("<Configure>", lambda e: self.editor_results_canvas.itemconfig(self.editor_results_container_id, width=e.width))
+
+        self.editor_results_canvas.bind_all("<MouseWheel>", lambda e: self.editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
     def find_text_in_editor(self):
         """Find text in the editor"""
         text_to_find = self.search_var.get()
         self.debug_print(f"Searching for text: {text_to_find}")
         self.status_var.set(f"Searching for text: {text_to_find}")
+
+        # Sample text add syntax
+        '''
+        for i in range(15):
+            sample_text = f"This is a sample result added to the editor results canvas. {i}"
+            result_frame = ttk.Frame(self.editor_results_container)
+            result_frame.pack(fill="x", pady=5)
+            result_label = ttk.Label(result_frame, text=sample_text)
+            result_label.pack(pady=5, anchor="w")  # Align labels to the left for better scrolling experience
+        '''
 
     # Add a method to show the settings dialog
     def _show_settings_dialog(self):
