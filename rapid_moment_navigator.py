@@ -916,9 +916,9 @@ class RapidMomentNavigator:
             float: Framerate of the video (defaults to 24.0 if detection fails)
         """
         try:
-            # Check if Resolve API is initialized
-            if not hasattr(self, 'resolve_initialized') or not self.resolve_initialized:
-                self.debug_print("Resolve API not initialized, using fallback method")
+            # Ensure DaVinci Resolve is ready for use
+            if not self._ensure_resolve_ready():
+                self.debug_print("Resolve API not ready, using fallback method")
                 return self.detect_video_framerate(video_path)
             
             # Get absolute path to the video file
@@ -1450,7 +1450,7 @@ class RapidMomentNavigator:
             # We don't need framerate for full media import, but update it if needed
             if video_info["fps"] is None and selected_editor == "DaVinci Resolve":
                 try:
-                    if hasattr(self, 'resolve_initialized') and self.resolve_initialized:
+                    if self._ensure_resolve_ready():
                         fps = self.detect_video_framerate_from_resolve(video_file)
                         video_info["fps"] = fps
                 except Exception:
@@ -1496,7 +1496,7 @@ class RapidMomentNavigator:
             if video_info["fps"] is None:
                 # Detect framerate now - use Resolve API if available
                 try:
-                    if self.editor_var.get() == "DaVinci Resolve" and hasattr(self, 'resolve_initialized') and self.resolve_initialized:
+                    if self.editor_var.get() == "DaVinci Resolve" and self._ensure_resolve_ready():
                         fps = self.detect_video_framerate_from_resolve(video_file)
                     else:
                         fps = self.detect_video_framerate(video_file)
