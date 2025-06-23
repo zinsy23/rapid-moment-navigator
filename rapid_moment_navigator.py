@@ -1534,13 +1534,20 @@ class RapidMomentNavigator:
             self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
             self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
     
-    def _import_media_to_davinci_resolve(self, video_file):
-        """Import full media file to DaVinci Resolve"""
+    def _ensure_resolve_ready(self):
+        """
+        Ensure DaVinci Resolve is ready for use by checking editor selection, 
+        initializing API if needed, and handling safety checks.
+        
+        Returns:
+            bool: True if Resolve is ready for use, False otherwise
+        """
+        # Check if DaVinci Resolve is selected as the editor
         selected_editor = self.editor_var.get()
         if selected_editor != "DaVinci Resolve":
             self.debug_print(f"Wrong editor selected: {selected_editor}")
             self.status_var.set("Please select DaVinci Resolve as the editor first")
-            return
+            return False
         
         try:
             # If we haven't initialized yet or previously failed, initialize now
@@ -1556,7 +1563,7 @@ class RapidMomentNavigator:
                                      "The integration is running in safe mode due to initialization errors.\n\n"
                                      "Import functionality is disabled to prevent crashes.\n\n"
                                      "Please check that DaVinci Resolve is properly installed and running.")
-                return
+                return False
             
             # Check if API is initialized, if not initialize it now
             if not self.resolve_initialized:
@@ -1574,7 +1581,7 @@ class RapidMomentNavigator:
                                             "Import functionality has been disabled for safety.\n\n"
                                             "This usually happens if there is an incompatibility between the\n"
                                             "Python version and the DaVinci Resolve API.")
-                        return
+                        return False
                         
                     self.debug_print("Safety test passed, attempting actual initialization")
                     success = self._init_davinci_resolve_api()
@@ -1582,13 +1589,14 @@ class RapidMomentNavigator:
                     if success:
                         self.resolve_initialized = True
                         self.status_var.set("DaVinci Resolve API initialized")
+                        return True
                     else:
                         self.resolve_in_safe_mode = True
                         self.status_var.set("Failed to initialize DaVinci Resolve API")
                         self.show_error_in_gui("DaVinci Resolve Error",
                                             "Failed to initialize DaVinci Resolve API.\n\n"
                                             "Please ensure DaVinci Resolve is installed correctly and running.")
-                        return
+                        return False
                         
                 except Exception as init_error:
                     self.resolve_in_safe_mode = True
@@ -1597,8 +1605,26 @@ class RapidMomentNavigator:
                     self.status_var.set(f"Error: {error_msg}")
                     self.show_error_in_gui("DaVinci Resolve Error",
                                          f"Error initializing DaVinci Resolve API:\n\n{str(init_error)}")
-                    return
+                    return False
             
+            # If we get here, everything is ready
+            return True
+            
+        except Exception as e:
+            self.resolve_in_safe_mode = True
+            error_msg = f"Error ensuring DaVinci Resolve readiness: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
+            self.show_error_in_gui("DaVinci Resolve Error", f"Error preparing DaVinci Resolve:\n\n{str(e)}")
+            return False
+
+    def _import_media_to_davinci_resolve(self, video_file):
+        """Import full media file to DaVinci Resolve"""
+        # Ensure DaVinci Resolve is ready for use
+        if not self._ensure_resolve_ready():
+            return
+        
+        try:
             # Get absolute path to the video file
             abs_video_path = self.get_absolute_path(video_file)
             
@@ -1619,7 +1645,7 @@ class RapidMomentNavigator:
             
             # Enable safe mode to prevent further crashes
             self.resolve_in_safe_mode = True
-
+    
     def _test_resolve_import_in_subprocess(self):
         """Test importing DaVinciResolveScript in a separate process for safety"""
         self.debug_print("Testing DaVinci Resolve import in a separate process...")
@@ -2928,69 +2954,11 @@ sys.exit(1)
         
     def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time, fps=24.0):
         """Import clip with time range to DaVinci Resolve"""
-        selected_editor = self.editor_var.get()
-        if selected_editor != "DaVinci Resolve":
-            self.debug_print(f"Wrong editor selected: {selected_editor}")
-            self.status_var.set("Please select DaVinci Resolve as the editor first")
+        # Ensure DaVinci Resolve is ready for use
+        if not self._ensure_resolve_ready():
             return
             
         try:
-            # If we haven't initialized yet or previously failed, initialize now
-            if not hasattr(self, 'resolve_in_safe_mode') or not hasattr(self, 'resolve_initialized'):
-                self.resolve_in_safe_mode = False
-                self.resolve_initialized = False
-            
-            # Don't attempt to use the API if we're in safe mode
-            if self.resolve_in_safe_mode:
-                self.debug_print("Resolve is in safe mode - import functionality disabled")
-                self.status_var.set("Cannot import: DaVinci Resolve integration is in safe mode")
-                self.show_error_in_gui("DaVinci Resolve Safe Mode", 
-                                     "The integration is running in safe mode due to initialization errors.\n\n"
-                                     "Import functionality is disabled to prevent crashes.\n\n"
-                                     "Please check that DaVinci Resolve is properly installed and running.")
-                return
-            
-            # Check if API is initialized, if not initialize it now
-            if not self.resolve_initialized:
-                self.status_var.set("Testing DaVinci Resolve API safety...")
-                self.debug_print("Initializing DaVinci Resolve API on first use...")
-                
-                # First, test in subprocess for safety
-                try:
-                    subprocess_test_result = self._test_resolve_import_in_subprocess()
-                    if not subprocess_test_result:
-                        self.resolve_in_safe_mode = True
-                        self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
-                        self.show_error_in_gui("DaVinci Resolve Error",
-                                            "The DaVinci Resolve API failed the safety test.\n\n"
-                                            "Import functionality has been disabled for safety.\n\n"
-                                            "This usually happens if there is an incompatibility between the\n"
-                                            "Python version and the DaVinci Resolve API.")
-                        return
-                        
-                    self.debug_print("Safety test passed, attempting actual initialization")
-                    success = self._init_davinci_resolve_api()
-                    
-                    if success:
-                        self.resolve_initialized = True
-                        self.status_var.set("DaVinci Resolve API initialized")
-                    else:
-                        self.resolve_in_safe_mode = True
-                        self.status_var.set("Failed to initialize DaVinci Resolve API")
-                        self.show_error_in_gui("DaVinci Resolve Error",
-                                            "Failed to initialize DaVinci Resolve API.\n\n"
-                                            "Please ensure DaVinci Resolve is installed correctly and running.")
-                        return
-                        
-                except Exception as init_error:
-                    self.resolve_in_safe_mode = True
-                    error_msg = f"Error initializing DaVinci Resolve API: {str(init_error)}"
-                    self.debug_print(error_msg)
-                    self.status_var.set(f"Error: {error_msg}")
-                    self.show_error_in_gui("DaVinci Resolve Error",
-                                         f"Error initializing DaVinci Resolve API:\n\n{str(init_error)}")
-                    return
-            
             # Get absolute path to the video file
             abs_video_path = self.get_absolute_path(video_file)
             
