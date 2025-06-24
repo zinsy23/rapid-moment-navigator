@@ -49,6 +49,20 @@ def find_module_locations(base_path):
         "module_paths": module_paths  # Full paths to the module files
     }
 
+class ClickableResolveTimecode(Label):
+    """A clickable label widget for timecodes"""
+    def __init__(self, parent, timecode, result, callback, frame, **kwargs):
+        super().__init__(parent, text=timecode, cursor="hand2", fg="blue", **kwargs)
+        self.result = result
+        self.callback = callback
+        self.frame = frame
+        self.bind("<Button-1>", self._on_click)
+        # Add underline
+        self.config(font=("TkDefaultFont", 10, "underline"))
+        
+    def _on_click(self, event):
+        """Handle click event"""
+        self.callback(self.frame, self.result)
 
 class ClickableTimecode(Label):
     """A clickable label widget for timecodes"""
@@ -136,7 +150,9 @@ class RapidMomentNavigator:
             "import_clip_method": "_import_clip_to_davinci_resolve",
             "framerate_detection_method": "detect_video_framerate_from_resolve",
             "supports_advanced_framerate": True,
-            "timecode_format": "no_milliseconds"  # Resolve doesn't like milliseconds
+            "timecode_format": "no_milliseconds",  # Resolve doesn't like milliseconds
+            "find_text_in_editor": "find_text_in_resolve",
+            "editor_timecode_click": "resolve_timecode_click"
         }
         # Future editors can be added here:
         # "Adobe Premiere": {
@@ -3204,7 +3220,7 @@ sys.exit(1)
         search_entry.pack(side="left", padx=5)
         
         # Button to find text
-        find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_editor)
+        find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_resolve)
         find_btn.pack(side="left", padx=5)
 
         # Combobox for editor selection
@@ -3236,11 +3252,75 @@ sys.exit(1)
 
         self.editor_results_canvas.bind_all("<MouseWheel>", lambda e: self.editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
-    def find_text_in_editor(self):
+    def find_text_in_resolve(self):
         """Find text in the editor"""
         text_to_find = self.search_var.get()
         self.debug_print(f"Searching for text: {text_to_find}")
         self.status_var.set(f"Searching for text: {text_to_find}")
+
+        # Determine if we have a valid timeline to find text in
+        try:
+            # Ensure DaVinci Resolve is ready for use
+            if self._ensure_resolve_ready():
+                self.debug_print("Resolve Works for searching subtitles directly in editor")
+
+            resolve = dvr_script.scriptapp("Resolve")
+
+            if not self._ensure_resolve_edit_page(resolve):
+                self.debug_print("Failed to ensure we're on the Edit page")
+                return
+
+            # Get the current timeline of the current project
+            project = resolve.GetProjectManager().GetCurrentProject()
+            if not project:
+                logging.error("No project is currently open")
+                return None
+                
+            timeline = project.GetCurrentTimeline()
+            if not timeline:
+                logging.error("No timeline is currently open")
+                return None
+        except Exception as e:
+            self.debug_print(f"Error searching for text in editor: {e}")
+            self.status_var.set(f"Error searching for text in editor: {e}")
+
+        # If we made it this far, start searching for the text
+        self.debug_print("Searching for text in editor")
+        self.status_var.set("Searching for text in editor")
+
+        try:
+            # Get all subtitle items from the timeline
+            subtitle_track = self._get_resolve_subtitle_track(timeline)
+            if not subtitle_track:
+                self.debug_print("No subtitle track found")
+                self.status_var.set("No subtitle track found")
+                return None
+
+            # Search for the text in the subtitle items
+            matches = self._search_subtitle_items(subtitle_track, text_to_find)
+            if not matches:
+                self.debug_print("No matches found")
+                self.status_var.set("No matches found")
+                return None 
+
+            # Get the timeline frame rate
+            timeline_fps = self._get_resolve_timeline_fps(timeline)
+
+            # Create a frame for each match
+            for match in matches:
+                result_frame = ttk.Frame(self.editor_results_container)
+                result_frame.pack(fill="x", pady=5)
+                timecode_string = f"{self._format_timecode(match['start'], timeline_fps)} - {self._format_timecode(match['end'], timeline_fps)}"
+                timecode_label = ClickableResolveTimecode(result_frame, timecode=timecode_string, callback=self._jump_to_frame, result=timeline, frame=match['start'])
+                timecode_label.pack(pady=5, anchor="w")
+                subtitle_label = ttk.Label(result_frame, text=match['text'], wraplength=700)
+                subtitle_label.pack(pady=5, anchor="w")
+
+            print(matches)
+
+        except Exception as e:
+            self.debug_print(f"Error searching text in editor: {e}")
+            self.status_var.set(f"Error searching text in editor: {e}")
 
         # Sample text add syntax
         '''
@@ -3251,6 +3331,149 @@ sys.exit(1)
             result_label = ttk.Label(result_frame, text=sample_text)
             result_label.pack(pady=5, anchor="w")  # Align labels to the left for better scrolling experience
         '''
+
+    def _jump_to_frame(self, frame, timeline, item_ref=None):
+        """Jump to a specific frame in the timeline."""
+        # Try different methods to set the current position
+        try:
+            # Try SetCurrentFramePosition first
+            if hasattr(timeline, 'SetCurrentFramePosition'):
+                if callable(timeline.SetCurrentFramePosition):
+                    success = timeline.SetCurrentFramePosition(frame)
+                    if success:
+                        logging.info(f"Jumped to frame {frame} using SetCurrentFramePosition")
+                        return True
+                else:
+                    logging.warning("SetCurrentFramePosition exists but is not callable")
+            
+            # Try SetPlayHead as fallback
+            if hasattr(timeline, 'SetPlayHead'):
+                if callable(timeline.SetPlayHead):
+                    success = timeline.SetPlayHead(frame)
+                    if success:
+                        logging.info(f"Jumped to frame {frame} using SetPlayHead")
+                        return True
+                else:
+                    logging.warning("SetPlayHead exists but is not callable")
+                    
+            # Try SetCurrentTimecode as last resort
+            if hasattr(timeline, 'SetCurrentTimecode') and callable(timeline.SetCurrentTimecode):
+                tc = self._format_timecode(frame, self._get_resolve_timeline_fps(timeline))
+                logging.info(f"Trying to jump to timecode {tc}")
+                success = timeline.SetCurrentTimecode(tc)
+                if success:
+                    logging.info(f"Jumped to timecode {tc}")
+                    return True
+            else:
+                logging.warning("SetCurrentTimecode doesn't exist or is not callable")
+                
+            # If we got here, all navigation methods failed
+            logging.error(f"All methods failed to jump to frame {frame}")
+            
+            # Try manual selection as a last resort
+            if item_ref and self._select_subtitle_item(timeline, item_ref):
+                logging.info("Selected subtitle item, but couldn't jump to frame")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error using timeline navigation methods: {str(e)}")
+            return False
+            
+
+    def _resolve_navigate_to_timecode(self, timecode):
+        """Navigate to a specific timecode in Resolve"""
+        self._jump_to_frame(self.timeline, self.result['start'], self.result['item'])
+
+    def _format_timecode(self, frames, fps=24):
+        """Convert frames to timecode format."""
+        total_seconds = frames / fps
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        seconds = int(total_seconds % 60)
+        frames = int((total_seconds * fps) % fps)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
+
+    def _get_resolve_timeline_fps(self, timeline):
+        """Get the timeline frame rate."""
+        try:
+            timeline_fps = timeline.GetSetting('timelineFrameRate')
+            if not timeline_fps:
+                # Try alternative methods
+                timeline_fps = timeline.GetSetting('fps')
+                
+            if not timeline_fps:
+                return 24.0  # Default to 24fps if not specified
+            
+            return float(timeline_fps)
+        except Exception as e:
+            logging.warning(f"Error getting timeline frame rate: {str(e)}")
+            return 24.0  # Default to 24fps on error
+
+
+    def _ensure_resolve_edit_page(self, resolve):
+        """Ensure we're on the Edit page."""
+        try:
+            current_page = resolve.GetCurrentPage()
+            if current_page != "edit":
+                resolve.OpenPage("edit")
+                time.sleep(1)  # Wait for page switch
+            return True
+        except Exception as e:
+            logging.error(f"Error ensuring Edit page: {str(e)}")
+            return False
+        
+    def _get_resolve_subtitle_track(self, timeline):
+        """Get all subtitle items from the timeline."""
+        try:
+            # Get subtitle tracks
+            subtitle_track_count = timeline.GetTrackCount("subtitle")
+            if subtitle_track_count < 1:
+                logging.error("No subtitle tracks found")
+                return None
+                
+            subtitle_items = []
+            
+            # Get items from each subtitle track
+            for track_index in range(1, subtitle_track_count + 1):
+                items = timeline.GetItemListInTrack("subtitle", track_index)
+                if not items:
+                    logging.warning(f"No items found in subtitle track {track_index}")
+                    continue
+                    
+                logging.info(f"Found {len(items)} items in subtitle track {track_index}")
+                
+                # Extract text and timing from items
+                for i, item in enumerate(items):
+                    text = item.GetName()
+                    start = item.GetStart()
+                    end = item.GetEnd()
+                    subtitle_items.append({
+                        'text': text,
+                        'start': start,
+                        'end': end,
+                        'track': track_index,
+                        'index': i + 1,
+                        'item': item  # Store the actual item reference for later use
+                    })
+                    
+            return subtitle_items
+        except Exception as e:
+            logging.error(f"Error getting subtitle items: {str(e)}")
+            return None
+
+    def _search_subtitle_items(self, subtitle_items, text_to_find, case_sensitive=False):
+        matches = []
+        for item in subtitle_items:
+            if case_sensitive:
+                if text_to_find in item['text']:
+                    matches.append(item)
+            else:
+                if text_to_find.lower() in item['text'].lower():
+                    matches.append(item)
+                
+        return matches
 
     # Add a method to show the settings dialog
     def _show_settings_dialog(self):
