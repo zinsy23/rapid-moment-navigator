@@ -14,6 +14,9 @@ A Python application for searching subtitle files and quickly navigating to spec
 - Ctrl+Backspace support in the search field for faster text editing
 - Multi-directory support with preferences system
 - Add and remove media directories through a user-friendly interface
+- 🎬 Multi-Editor Support: Extensible editor registry system for video editing software
+- 📝 DaVinci Resolve Integration: Import media and clips directly to DaVinci Resolve timelines
+- 🔧 Plugin Architecture: Easy-to-extend system for adding new video editors
 
 ## Requirements
 
@@ -151,6 +154,203 @@ return
 ```
 
 **Note:** The reason I'm doing it this way with my setup is because I want to keep this script in my GitHub repository on my system, but access it from my AutoHotkey scripts on my system. It works great if I have the `launch-rapid-moment-navigator.ahk` file in the repository, and then have a Windows `.lnk` shortcut to that in my AutoHotkey scripts directory where I have all my personal scripts, including the one that runs this using the above syntax. The `,,hide` prevents a console window from appearing when the script is run.
+
+## Editor Registry System
+
+The application features a powerful Editor Registry System that makes it easy to add support for new video editing software. The system provides a clean, modular architecture for integrating different editors without hardcoding editor-specific logic throughout the codebase.
+
+### Supported Editors
+
+Currently supported editors:
+- 🎥 DaVinci Resolve: Full integration with media/clip import, framerate detection, and timeline management
+
+### Adding New Editors
+
+The editor registry system makes adding new editors straightforward. Here's how to extend the application:
+
+#### 1. 📋 Registry Configuration
+
+Add your editor to the `EDITOR_REGISTRY` dictionary in the `RapidMomentNavigator` class:
+
+```python
+EDITOR_REGISTRY = {
+    "DaVinci Resolve": {
+        "ensure_ready_method": "_ensure_resolve_ready",
+        "import_media_method": "_import_media_to_davinci_resolve", 
+        "import_clip_method": "_import_clip_to_davinci_resolve",
+        "framerate_detection_method": "detect_video_framerate_from_resolve",
+        "supports_advanced_framerate": True,
+        "timecode_format": "no_milliseconds"
+    },
+    # Add your new editor here:
+    "Adobe Premiere Pro": {
+        "ensure_ready_method": "_ensure_premiere_ready",
+        "import_media_method": "_import_media_to_premiere",
+        "import_clip_method": "_import_clip_to_premiere", 
+        "framerate_detection_method": "detect_video_framerate_from_premiere",
+        "supports_advanced_framerate": True,
+        "timecode_format": "with_milliseconds"
+    }
+}
+```
+
+#### 2. 🛠️ Required Methods
+
+Implement the following methods for your editor:
+
+##### **Readiness Check Method**
+```python
+def _ensure_premiere_ready(self):
+    """
+    Ensure Adobe Premiere Pro API is ready for use.
+    
+    Returns:
+        bool: True if ready, False if failed or in safe mode
+    """
+    # Check if already initialized
+    if hasattr(self, 'premiere_initialized') and self.premiere_initialized:
+        return True
+        
+    # Check if in safe mode (previous failures)
+    if hasattr(self, 'premiere_in_safe_mode') and self.premiere_in_safe_mode:
+        return False
+    
+    try:
+        # Initialize Premiere Pro API
+        # Your initialization code here
+        self.premiere_initialized = True
+        return True
+    except Exception as e:
+        self.premiere_in_safe_mode = True
+        self.debug_print(f"❌ Premiere Pro initialization failed: {e}")
+        return False
+```
+
+##### **Media Import Method**
+```python
+def _import_media_to_premiere(self, subtitle_file, start_time, end_time):
+    """
+    Import media file to Adobe Premiere Pro.
+    
+    Args:
+        subtitle_file (str): Path to subtitle file (used to find corresponding video)
+        start_time (str): Start timecode (optional, for reference)
+        end_time (str): End timecode (optional, for reference)
+    """
+    # Get corresponding video file
+    video_file = self.subtitle_to_video_map.get(subtitle_file)
+    if not video_file:
+        self.debug_print(f"❌ No video file found for subtitle: {subtitle_file}")
+        return
+        
+    try:
+        # Your Premiere Pro import logic here
+        self.debug_print(f"📥 Importing to Premiere Pro: {video_file}")
+        # Example: premiere_api.import_media(video_file)
+        
+    except Exception as e:
+        self.debug_print(f"❌ Premiere Pro import failed: {e}")
+```
+
+##### **Clip Import Method**
+```python
+def _import_clip_to_premiere(self, subtitle_file, start_time, end_time):
+    """
+    Import specific clip segment to Adobe Premiere Pro timeline.
+    
+    Args:
+        subtitle_file (str): Path to subtitle file
+        start_time (str): Start timecode for clip
+        end_time (str): End timecode for clip
+    """
+    video_file = self.subtitle_to_video_map.get(subtitle_file)
+    if not video_file:
+        return
+        
+    try:
+        # Your clip import logic here
+        self.debug_print(f"✂️ Importing clip to Premiere Pro: {start_time} - {end_time}")
+        # Example: premiere_api.import_clip(video_file, start_time, end_time)
+        
+    except Exception as e:
+        self.debug_print(f"❌ Premiere Pro clip import failed: {e}")
+```
+
+##### **Framerate Detection Method** (Optional)
+```python
+def detect_video_framerate_from_premiere(self, video_path):
+    """
+    Detect video framerate using Adobe Premiere Pro API.
+    
+    Args:
+        video_path (str): Path to video file
+        
+    Returns:
+        float: Detected framerate, or None if detection fails
+    """
+    try:
+        # Your Premiere Pro framerate detection logic
+        # Example: return premiere_api.get_framerate(video_path)
+        return 24.0  # Fallback
+    except Exception as e:
+        self.debug_print(f"❌ Premiere Pro framerate detection failed: {e}")
+        return None
+```
+
+#### 3. 🎯 Registry Configuration Options
+
+Configure your editor's capabilities in the registry:
+
+| Option | Description | Values |
+|--------|-------------|--------|
+| `ensure_ready_method` | Method name for initialization check | `"_ensure_your_editor_ready"` |
+| `import_media_method` | Method name for media import | `"_import_media_to_your_editor"` |
+| `import_clip_method` | Method name for clip import | `"_import_clip_to_your_editor"` |
+| `framerate_detection_method` | Method name for framerate detection | `"detect_video_framerate_from_your_editor"` |
+| `supports_advanced_framerate` | Whether editor supports advanced framerate detection | `true` / `false` |
+| `timecode_format` | Timecode format preference | `"with_milliseconds"` / `"no_milliseconds"` |
+
+#### 4. 🚀 Automatic Integration
+
+Once you've added the registry entry and implemented the required methods:
+
+1. **Import buttons automatically appear** when your editor is selected
+2. **Generic dispatching handles routing** to your editor-specific methods  
+3. **Fallback systems work automatically** for framerate detection and error handling
+4. **No changes needed** to existing UI or import handler code
+
+#### 5. 🧪 Testing Your Integration
+
+Test your new editor integration:
+
+```python
+# The application will automatically:
+# 1. Show your editor in the dropdown
+# 2. Display import buttons when selected
+# 3. Route import clicks to your methods
+# 4. Handle errors gracefully with fallbacks
+```
+
+### Architecture Benefits
+
+The editor registry system provides several key advantages:
+
+- 🔌 Zero Hardcoding: No editor names hardcoded in import handlers
+- 🎯 Single Source of Truth: All editor capabilities defined in one place
+- ⚡ Easy Extension: Add new editors with minimal code changes
+- 🛡️ Robust Error Handling: Built-in fallbacks and safety checks
+- 🔄 Consistent Interface: Same import workflow for all editors
+- 📈 Future-Proof: Easy to add editor-specific features and capabilities
+
+### Advanced Features
+
+The registry system supports advanced editor-specific features:
+
+- **Custom Timecode Formats**: Different editors prefer different timecode formats
+- **Capability Flags**: Mark which features each editor supports
+- **Fallback Chains**: Automatic fallback to generic methods when editor-specific ones fail
+- **State Management**: Smart initialization that only runs when needed
+- **Performance Optimization**: Lazy loading and caching of editor connections
 
 ## Notes
 
