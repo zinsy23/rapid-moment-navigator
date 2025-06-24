@@ -128,6 +128,27 @@ class ClickableImport(Label):
             self.tooltip_timer = None
 
 class RapidMomentNavigator:
+    # Editor registry - makes it easy to add new editors
+    EDITOR_REGISTRY = {
+        "DaVinci Resolve": {
+            "ensure_ready_method": "_ensure_resolve_ready",
+            "import_media_method": "_import_media_to_davinci_resolve", 
+            "import_clip_method": "_import_clip_to_davinci_resolve",
+            "framerate_detection_method": "detect_video_framerate_from_resolve",
+            "supports_advanced_framerate": True,
+            "timecode_format": "no_milliseconds"  # Resolve doesn't like milliseconds
+        }
+        # Future editors can be added here:
+        # "Adobe Premiere": {
+        #     "ensure_ready_method": "_ensure_premiere_ready",
+        #     "import_media_method": "_import_media_to_premiere",
+        #     "import_clip_method": "_import_clip_to_premiere", 
+        #     "framerate_detection_method": "detect_video_framerate_from_premiere",
+        #     "supports_advanced_framerate": True,
+        #     "timecode_format": "with_milliseconds"
+        # }
+    }
+
     def __init__(self, root, debug=False):
         self.root = root
         self.root.title("Rapid Moment Navigator")
@@ -295,7 +316,91 @@ class RapidMomentNavigator:
         # This helps prevent the "jump" effect where the window moves after initial rendering
         if self.needs_guidance_dialog:
             self.root.after(300, self._delayed_show_guidance)
+        
+        # Initialize UI variables needed for application state loading
+        self.current_dir_status_var = tk.StringVar()
+        self.min_duration_var = tk.BooleanVar()
+        self.min_duration_seconds_var = tk.StringVar()
+        
+        # Load application state
+        self.load_app_state()
     
+    def _get_editor_config(self, editor_name=None):
+        """Get configuration for the specified editor or current editor"""
+        if editor_name is None:
+            editor_name = self.editor_var.get()
+        return self.EDITOR_REGISTRY.get(editor_name, {})
+        
+    def _ensure_editor_ready(self, editor_name=None):
+        """Generic method to ensure any editor is ready"""
+        config = self._get_editor_config(editor_name)
+        if not config:
+            self.debug_print(f"❌ Unknown editor: {editor_name or self.editor_var.get()}")
+            return False
+            
+        ensure_method_name = config.get("ensure_ready_method")
+        if ensure_method_name and hasattr(self, ensure_method_name):
+            ensure_method = getattr(self, ensure_method_name)
+            return ensure_method()
+        else:
+            self.debug_print(f"⚠️ No readiness check available for {editor_name or self.editor_var.get()}")
+            return True  # Assume ready if no check available
+            
+    def _import_media_to_editor(self, subtitle_file, start_time, end_time):
+        """Generic method to import media to any editor"""
+        editor_name = self.editor_var.get()
+        config = self._get_editor_config(editor_name)
+        
+        if not config:
+            self.debug_print(f"❌ Unknown editor: {editor_name}")
+            return
+            
+        import_method_name = config.get("import_media_method")
+        if import_method_name and hasattr(self, import_method_name):
+            import_method = getattr(self, import_method_name)
+            import_method(subtitle_file, start_time, end_time)
+        else:
+            self.debug_print(f"⚠️ Media import not supported for {editor_name}")
+            
+    def _import_clip_to_editor(self, subtitle_file, start_time, end_time):
+        """Generic method to import clips to any editor"""
+        editor_name = self.editor_var.get()
+        config = self._get_editor_config(editor_name)
+        
+        if not config:
+            self.debug_print(f"❌ Unknown editor: {editor_name}")
+            return
+            
+        import_method_name = config.get("import_clip_method")
+        if import_method_name and hasattr(self, import_method_name):
+            import_method = getattr(self, import_method_name)
+            import_method(subtitle_file, start_time, end_time)
+        else:
+            self.debug_print(f"⚠️ Clip import not supported for {editor_name}")
+            
+    def _detect_framerate_for_editor(self, subtitle_file):
+        """Generic method to detect framerate using current editor's method"""
+        editor_name = self.editor_var.get()
+        config = self._get_editor_config(editor_name)
+        
+        if not config:
+            self.debug_print(f"❌ Unknown editor: {editor_name}")
+            return None
+            
+        # Try editor-specific framerate detection first
+        framerate_method_name = config.get("framerate_detection_method")
+        if framerate_method_name and hasattr(self, framerate_method_name):
+            framerate_method = getattr(self, framerate_method_name)
+            framerate = framerate_method(subtitle_file)
+            if framerate:
+                return framerate
+                
+        # Fallback to generic detection
+        video_file = self.subtitle_to_video_map.get(subtitle_file)
+        if video_file:
+            return self.detect_video_framerate(video_file)
+        return None
+
     def position_window(self, window, x=None, y=None, parent=None, offset_x=0, offset_y=0):
         """
         Position a window at specific coordinates or centered, with optional offsets
@@ -916,9 +1021,9 @@ class RapidMomentNavigator:
             float: Framerate of the video (defaults to 24.0 if detection fails)
         """
         try:
-            # Check if Resolve API is initialized
-            if not hasattr(self, 'resolve_initialized') or not self.resolve_initialized:
-                self.debug_print("Resolve API not initialized, using fallback method")
+            # Ensure DaVinci Resolve is ready for use
+            if not self._ensure_resolve_ready():
+                self.debug_print("Resolve API not ready, using fallback method")
                 return self.detect_video_framerate(video_path)
             
             # Get absolute path to the video file
@@ -1010,6 +1115,8 @@ class RapidMomentNavigator:
                 try:
                     timeline_fps_str = project.GetSetting("timelineFrameRate")
                     if timeline_fps_str:
+                        # Convert to string first in case GetSetting returns a float
+                        timeline_fps_str = str(timeline_fps_str)
                         # Parse the timeline FPS string (might be in format like "29.97 DF")
                         timeline_fps_str = timeline_fps_str.split()[0]  # Remove "DF" if present
                         fps = float(timeline_fps_str)
@@ -1439,108 +1546,83 @@ class RapidMomentNavigator:
         self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
     
     def _handle_import_media_click(self, result):
-        """Handle click on Import Media button"""
-        selected_editor = self.editor_var.get()
+        """Handle import media button click - now generic for any editor"""
         subtitle_file = result['file']
+        start_time = result['start_time']
+        end_time = result['end_time']
         
-        if subtitle_file in self.subtitle_to_video_map:
-            video_info = self.subtitle_to_video_map[subtitle_file]
-            video_file = video_info["path"]
+        self.debug_print(f"🎬 Import Media clicked for: {subtitle_file}")
+        self.debug_print(f"   Time range: {start_time} to {end_time}")
+        
+        # Check if subtitle file exists in mapping
+        if subtitle_file not in self.subtitle_to_video_map:
+            self.debug_print(f"❌ Video file not found for subtitle: {subtitle_file}")
+            return
             
-            # We don't need framerate for full media import, but update it if needed
-            if video_info["fps"] is None and selected_editor == "DaVinci Resolve":
-                try:
-                    if hasattr(self, 'resolve_initialized') and self.resolve_initialized:
-                        fps = self.detect_video_framerate_from_resolve(video_file)
-                        video_info["fps"] = fps
-                except Exception:
-                    # Silently ignore framerate detection errors for full media import
-                    pass
-                
-            self.debug_print(f"Import Media clicked for {os.path.basename(video_file)} with editor {selected_editor}")
+        # Generic editor handling - no more hardcoded checks!
+        if not self._ensure_editor_ready():
+            self.debug_print("❌ Editor not ready for import")
+            return
             
-            # Call the appropriate import function based on selected editor
-            if selected_editor == "DaVinci Resolve":
-                self._import_media_to_davinci_resolve(video_file)
-            # Add more editors as needed
+        try:
+            # Detect framerate using editor-specific method
+            fps = self._detect_framerate_for_editor(subtitle_file)
+            self.debug_print(f"🎞️ Detected framerate: {fps} fps")
             
-            self.status_var.set(f"Importing {os.path.basename(video_file)} to {selected_editor}")
-        else:
-            self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
-            self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
+            # Store the detected framerate in the video info cache for use by import methods
+            if fps and subtitle_file in self.subtitle_to_video_map:
+                self.subtitle_to_video_map[subtitle_file]["fps"] = fps
+                self.debug_print(f"📝 Cached framerate {fps} fps for {subtitle_file}")
+            
+            # Import using generic method that dispatches to editor-specific implementation
+            self._import_media_to_editor(subtitle_file, start_time, end_time)
+            
+        except Exception as e:
+            self.debug_print(f"❌ Error during media import: {e}")
+            traceback.print_exc()
     
     def _handle_import_clip_click(self, result):
-        """Handle click on Import Clip button"""
-        selected_editor = self.editor_var.get()
+        """Handle import clip button click - now generic for any editor"""
         subtitle_file = result['file']
-        
-        # Improve timecode handling for better accuracy
-        start_time = result['mpc_start_time']
-        
-        # Parse end time properly - keep milliseconds for more accurate calculations
+        start_time = result['start_time'] 
         end_time = result['end_time']
-        if ',' in end_time:
-            # Convert comma to period for consistent processing
-            end_time = end_time.replace(',', '.')
         
-        # Ensure proper formatting for Resolve (no milliseconds in the string)
-        display_end_time = end_time.split('.')[0]
+        self.debug_print(f"✂️ Import Clip clicked for: {subtitle_file}")
+        self.debug_print(f"   Time range: {start_time} to {end_time}")
         
-        self.debug_print(f"Original timecodes: {start_time} to {end_time}")
-        
-        if subtitle_file in self.subtitle_to_video_map:
-            video_info = self.subtitle_to_video_map[subtitle_file]
-            video_file = video_info["path"]
+        # Check if subtitle file exists in mapping
+        if subtitle_file not in self.subtitle_to_video_map:
+            self.debug_print(f"❌ Video file not found for subtitle: {subtitle_file}")
+            return
             
-            # Check if we need to detect framerate
-            if video_info["fps"] is None:
-                # Detect framerate now - use Resolve API if available
-                try:
-                    if self.editor_var.get() == "DaVinci Resolve" and hasattr(self, 'resolve_initialized') and self.resolve_initialized:
-                        fps = self.detect_video_framerate_from_resolve(video_file)
-                    else:
-                        fps = self.detect_video_framerate(video_file)
-                    
-                    # Store the detected framerate for future use
-                    video_info["fps"] = fps
-                    
-                except Exception as e:
-                    self.debug_print(f"Error detecting framerate for {os.path.basename(video_file)}: {str(e)}")
-                    fps = 24.0  # Default fallback
-                    video_info["fps"] = fps
-            else:
-                # Use cached framerate
-                fps = video_info["fps"]
+        # Generic editor handling - no more hardcoded checks!
+        if not self._ensure_editor_ready():
+            self.debug_print("❌ Editor not ready for import")
+            return
             
-            # Apply minimum duration if enabled
-            adjusted_start, adjusted_end = self._apply_minimum_duration(start_time, display_end_time, fps)
+        try:
+            # Import using generic method that dispatches to editor-specific implementation
+            # Framerate detection now happens directly during import - no separate detection needed!
+            self._import_clip_to_editor(subtitle_file, start_time, end_time)
             
-            # Calculate duration in frames to verify timing
-            start_frame = self.timecode_to_frames(adjusted_start, fps)
-            end_frame = self.timecode_to_frames(adjusted_end, fps)
-            duration_frames = end_frame - start_frame
-            duration_secs = duration_frames / fps
-            
-            self.debug_print(f"Import Clip clicked for {os.path.basename(video_file)} at {adjusted_start}-{adjusted_end} with editor {selected_editor}, FPS: {fps}")
-            self.debug_print(f"Frame calculation: {start_frame} to {end_frame} ({duration_frames} frames, {duration_secs:.2f} seconds)")
-            
-            # Call the appropriate import function based on selected editor
-            if selected_editor == "DaVinci Resolve":
-                self._import_clip_to_davinci_resolve(video_file, adjusted_start, adjusted_end, fps)
-            # Add more editors as needed
-            
-            self.status_var.set(f"Importing clip from {os.path.basename(video_file)} at {adjusted_start}-{adjusted_end} to {selected_editor}")
-        else:
-            self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
-            self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
+        except Exception as e:
+            self.debug_print(f"❌ Error during clip import: {e}")
+            traceback.print_exc()
     
-    def _import_media_to_davinci_resolve(self, video_file):
-        """Import full media file to DaVinci Resolve"""
+    def _ensure_resolve_ready(self):
+        """
+        Ensure DaVinci Resolve is ready for use by checking editor selection, 
+        initializing API if needed, and handling safety checks.
+        
+        Returns:
+            bool: True if Resolve is ready for use, False otherwise
+        """
+        # Check if DaVinci Resolve is selected as the editor
         selected_editor = self.editor_var.get()
         if selected_editor != "DaVinci Resolve":
             self.debug_print(f"Wrong editor selected: {selected_editor}")
             self.status_var.set("Please select DaVinci Resolve as the editor first")
-            return
+            return False
         
         try:
             # If we haven't initialized yet or previously failed, initialize now
@@ -1556,7 +1638,7 @@ class RapidMomentNavigator:
                                      "The integration is running in safe mode due to initialization errors.\n\n"
                                      "Import functionality is disabled to prevent crashes.\n\n"
                                      "Please check that DaVinci Resolve is properly installed and running.")
-                return
+                return False
             
             # Check if API is initialized, if not initialize it now
             if not self.resolve_initialized:
@@ -1574,7 +1656,7 @@ class RapidMomentNavigator:
                                             "Import functionality has been disabled for safety.\n\n"
                                             "This usually happens if there is an incompatibility between the\n"
                                             "Python version and the DaVinci Resolve API.")
-                        return
+                        return False
                         
                     self.debug_print("Safety test passed, attempting actual initialization")
                     success = self._init_davinci_resolve_api()
@@ -1582,13 +1664,14 @@ class RapidMomentNavigator:
                     if success:
                         self.resolve_initialized = True
                         self.status_var.set("DaVinci Resolve API initialized")
+                        return True
                     else:
                         self.resolve_in_safe_mode = True
                         self.status_var.set("Failed to initialize DaVinci Resolve API")
                         self.show_error_in_gui("DaVinci Resolve Error",
                                             "Failed to initialize DaVinci Resolve API.\n\n"
                                             "Please ensure DaVinci Resolve is installed correctly and running.")
-                        return
+                        return False
                         
                 except Exception as init_error:
                     self.resolve_in_safe_mode = True
@@ -1597,23 +1680,45 @@ class RapidMomentNavigator:
                     self.status_var.set(f"Error: {error_msg}")
                     self.show_error_in_gui("DaVinci Resolve Error",
                                          f"Error initializing DaVinci Resolve API:\n\n{str(init_error)}")
-                    return
+                    return False
             
+            # If we get here, everything is ready
+            return True
+            
+        except Exception as e:
+            self.resolve_in_safe_mode = True
+            error_msg = f"Error ensuring DaVinci Resolve readiness: {str(e)}"
+            self.debug_print(error_msg)
+            self.status_var.set(f"Error: {error_msg}")
+            self.show_error_in_gui("DaVinci Resolve Error", f"Error preparing DaVinci Resolve:\n\n{str(e)}")
+            return False
+
+    def _import_media_to_davinci_resolve(self, subtitle_file, start_time, end_time):
+        """Import full media file to DaVinci Resolve - updated for generic system"""
+        # Get video file from subtitle mapping
+        if subtitle_file not in self.subtitle_to_video_map:
+            self.debug_print(f"❌ Video file not found for subtitle: {subtitle_file}")
+            return
+            
+        video_info = self.subtitle_to_video_map[subtitle_file]
+        video_file = video_info["path"]
+        
+        try:
             # Get absolute path to the video file
             abs_video_path = self.get_absolute_path(video_file)
             
-            # Call the timeline import function without time range parameters
+            # Call the timeline import function without time range parameters for full media
             success = self.import_clip_to_timeline(abs_video_path)
             
             if success:
-                self.debug_print(f"Successfully imported media to DaVinci Resolve timeline")
-                self.status_var.set("Media successfully imported to DaVinci Resolve timeline")
+                self.debug_print(f"✅ Successfully imported full media to DaVinci Resolve timeline")
+                self.status_var.set(f"Media {os.path.basename(video_file)} imported to DaVinci Resolve")
             else:
-                self.debug_print("Failed to import media to DaVinci Resolve timeline")
+                self.debug_print("❌ Failed to import media to DaVinci Resolve timeline")
                 self.status_var.set("Failed to import media to DaVinci Resolve timeline")
         except Exception as e:
             error_msg = f"Error importing media to DaVinci Resolve: {str(e)}"
-            self.debug_print(error_msg)
+            self.debug_print(f"❌ {error_msg}")
             self.status_var.set(f"Error: {error_msg}")
             self.show_error_in_gui("DaVinci Resolve Error", f"Error importing media:\n\n{str(e)}")
             
@@ -1776,28 +1881,13 @@ sys.exit(1)
             end_tc (str, optional): End timecode in HH:MM:SS format
             start_frame (int, optional): Start frame (alternative to start_tc)
             end_frame (int, optional): End frame (alternative to end_frame)
-            fps (float, optional): Frames per second of the clip (default: 24.0)
+            fps (float, optional): Frames per second of the clip (default: 24.0 - used as fallback only)
         
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            self.debug_print(f"Importing clip: {clip_path} with FPS: {fps}")
-            
-            # Convert timecodes to frames if provided
-            if start_tc:
-                start_frame = self.timecode_to_frames(start_tc, fps)
-                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame} at {fps} fps")
-            
-            if end_tc:
-                end_frame = self.timecode_to_frames(end_tc, fps)
-                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame} at {fps} fps")
-            
-            # Calculate and log the duration for verification
-            if start_frame is not None and end_frame is not None:
-                duration_frames = end_frame - start_frame
-                duration_seconds = duration_frames / fps
-                self.debug_print(f"Clip duration: {duration_frames} frames ({duration_seconds:.2f} seconds)")
+            self.debug_print(f"Importing clip: {clip_path}")
             
             # Get Resolve
             resolve = dvr_script.scriptapp("Resolve")
@@ -1816,22 +1906,6 @@ sys.exit(1)
             if not project:
                 self.debug_print("No project is currently open")
                 return False
-            
-            # Get current project framerate
-            try:
-                project_fps_str = project.GetSetting("timelineFrameRate")
-                if project_fps_str:
-                    # Remove "DF" if present
-                    if ' ' in project_fps_str:
-                        project_fps_str = project_fps_str.split()[0]
-                    project_fps = float(project_fps_str)
-                    self.debug_print(f"Project timeline framerate: {project_fps} fps")
-                    
-                    # Log warning if project and clip framerates don't match
-                    if abs(project_fps - fps) > 0.01:  # Allow for small floating-point differences
-                        self.debug_print(f"WARNING: Project framerate ({project_fps}) does not match clip framerate ({fps})")
-            except Exception as e:
-                self.debug_print(f"Could not get project framerate: {e}")
             
             self.debug_print(f"Current project: {project.GetName()}")
             
@@ -1861,7 +1935,7 @@ sys.exit(1)
                 self.debug_print(f"File not found: {abs_path}")
                 return False
             
-            # Import media
+            # Import media FIRST
             imported_media = media_pool.ImportMedia([abs_path])
             if not imported_media or len(imported_media) == 0:
                 self.debug_print("Failed to import media")
@@ -1870,21 +1944,55 @@ sys.exit(1)
             media_item = imported_media[0]
             self.debug_print(f"Successfully imported: {media_item.GetName()}")
             
-            # Get actual media properties for verification
+            # NOW detect the ACTUAL framerate from the imported media
+            detected_fps = fps  # Start with fallback
             try:
                 media_fps = media_item.GetClipProperty("FPS")
                 if media_fps:
-                    self.debug_print(f"Imported media actual FPS: {media_fps}")
-                    
-                    # If the detected FPS is significantly different from the imported media's FPS
-                    try:
-                        media_fps_float = float(media_fps)
-                        if abs(media_fps_float - fps) > 0.5:  # If difference is more than 0.5 fps
-                            self.debug_print(f"WARNING: Detected FPS ({fps}) differs from media's actual FPS ({media_fps_float})")
-                    except ValueError:
-                        pass
+                    detected_fps = float(media_fps)
+                    self.debug_print(f"🎞️ Detected actual media FPS: {detected_fps}")
+                else:
+                    self.debug_print(f"⚠️ Could not get media FPS, using fallback: {fps}")
             except Exception as e:
-                self.debug_print(f"Could not get media FPS: {e}")
+                self.debug_print(f"⚠️ Error getting media FPS, using fallback: {e}")
+            
+            # Use the DETECTED framerate for all calculations
+            self.debug_print(f"Using framerate: {detected_fps} fps for all calculations")
+            
+            # Apply minimum duration using the DETECTED framerate if we have timecodes
+            if start_tc and end_tc:
+                start_tc, end_tc = self._apply_minimum_duration(start_tc, end_tc, detected_fps)
+            
+            # Convert timecodes to frames using DETECTED framerate
+            if start_tc:
+                start_frame = self.timecode_to_frames(start_tc, detected_fps)
+                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame} at {detected_fps} fps")
+            
+            if end_tc:
+                end_frame = self.timecode_to_frames(end_tc, detected_fps)
+                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame} at {detected_fps} fps")
+            
+            # Calculate and log the duration for verification
+            if start_frame is not None and end_frame is not None:
+                duration_frames = end_frame - start_frame
+                duration_seconds = duration_frames / detected_fps
+                self.debug_print(f"Clip duration: {duration_frames} frames ({duration_seconds:.2f} seconds)")
+            
+            # Get current project framerate for comparison
+            try:
+                project_fps_str = project.GetSetting("timelineFrameRate")
+                if project_fps_str:
+                    # Remove "DF" if present
+                    if ' ' in project_fps_str:
+                        project_fps_str = project_fps_str.split()[0]
+                    project_fps = float(project_fps_str)
+                    self.debug_print(f"Project timeline framerate: {project_fps} fps")
+                    
+                    # Log warning if project and detected framerates don't match
+                    if abs(project_fps - detected_fps) > 0.01:  # Allow for small floating-point differences
+                        self.debug_print(f"WARNING: Project framerate ({project_fps}) does not match media framerate ({detected_fps})")
+            except Exception as e:
+                self.debug_print(f"Could not get project framerate: {e}")
             
             # Create clip info dictionary with explicit frame ranges
             clip_info = {
@@ -2926,91 +3034,39 @@ sys.exit(1)
         
         return result
         
-    def _import_clip_to_davinci_resolve(self, video_file, start_time, end_time, fps=24.0):
-        """Import clip with time range to DaVinci Resolve"""
-        selected_editor = self.editor_var.get()
-        if selected_editor != "DaVinci Resolve":
-            self.debug_print(f"Wrong editor selected: {selected_editor}")
-            self.status_var.set("Please select DaVinci Resolve as the editor first")
+    def _import_clip_to_davinci_resolve(self, subtitle_file, start_time, end_time):
+        """Import clip with time range to DaVinci Resolve - updated for generic system"""
+        # Get video file from subtitle mapping
+        if subtitle_file not in self.subtitle_to_video_map:
+            self.debug_print(f"❌ Video file not found for subtitle: {subtitle_file}")
             return
             
+        video_info = self.subtitle_to_video_map[subtitle_file]
+        video_file = video_info["path"]
+        # Use fallback framerate - actual detection happens during import
+        fallback_fps = 24.0  # Standard fallback, will be overridden by actual media framerate
+        
         try:
-            # If we haven't initialized yet or previously failed, initialize now
-            if not hasattr(self, 'resolve_in_safe_mode') or not hasattr(self, 'resolve_initialized'):
-                self.resolve_in_safe_mode = False
-                self.resolve_initialized = False
-            
-            # Don't attempt to use the API if we're in safe mode
-            if self.resolve_in_safe_mode:
-                self.debug_print("Resolve is in safe mode - import functionality disabled")
-                self.status_var.set("Cannot import: DaVinci Resolve integration is in safe mode")
-                self.show_error_in_gui("DaVinci Resolve Safe Mode", 
-                                     "The integration is running in safe mode due to initialization errors.\n\n"
-                                     "Import functionality is disabled to prevent crashes.\n\n"
-                                     "Please check that DaVinci Resolve is properly installed and running.")
-                return
-            
-            # Check if API is initialized, if not initialize it now
-            if not self.resolve_initialized:
-                self.status_var.set("Testing DaVinci Resolve API safety...")
-                self.debug_print("Initializing DaVinci Resolve API on first use...")
-                
-                # First, test in subprocess for safety
-                try:
-                    subprocess_test_result = self._test_resolve_import_in_subprocess()
-                    if not subprocess_test_result:
-                        self.resolve_in_safe_mode = True
-                        self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
-                        self.show_error_in_gui("DaVinci Resolve Error",
-                                            "The DaVinci Resolve API failed the safety test.\n\n"
-                                            "Import functionality has been disabled for safety.\n\n"
-                                            "This usually happens if there is an incompatibility between the\n"
-                                            "Python version and the DaVinci Resolve API.")
-                        return
-                        
-                    self.debug_print("Safety test passed, attempting actual initialization")
-                    success = self._init_davinci_resolve_api()
-                    
-                    if success:
-                        self.resolve_initialized = True
-                        self.status_var.set("DaVinci Resolve API initialized")
-                    else:
-                        self.resolve_in_safe_mode = True
-                        self.status_var.set("Failed to initialize DaVinci Resolve API")
-                        self.show_error_in_gui("DaVinci Resolve Error",
-                                            "Failed to initialize DaVinci Resolve API.\n\n"
-                                            "Please ensure DaVinci Resolve is installed correctly and running.")
-                        return
-                        
-                except Exception as init_error:
-                    self.resolve_in_safe_mode = True
-                    error_msg = f"Error initializing DaVinci Resolve API: {str(init_error)}"
-                    self.debug_print(error_msg)
-                    self.status_var.set(f"Error: {error_msg}")
-                    self.show_error_in_gui("DaVinci Resolve Error",
-                                         f"Error initializing DaVinci Resolve API:\n\n{str(init_error)}")
-                    return
-            
             # Get absolute path to the video file
             abs_video_path = self.get_absolute_path(video_file)
             
-            # Call the timeline import function with the detected framerate
+            # Call the timeline import function - framerate detection and minimum duration handling happens during import!
             success = self.import_clip_to_timeline(
                 abs_video_path, 
                 start_tc=start_time, 
                 end_tc=end_time, 
-                fps=fps
+                fps=fallback_fps  # Used only as fallback - actual framerate detected from imported media
             )
             
             if success:
-                self.debug_print(f"Successfully imported clip to DaVinci Resolve timeline")
-                self.status_var.set("Clip successfully imported to DaVinci Resolve timeline")
+                self.debug_print(f"✅ Successfully imported clip to DaVinci Resolve timeline")
+                self.status_var.set(f"Clip {os.path.basename(video_file)} ({start_time}-{end_time}) imported to DaVinci Resolve")
             else:
-                self.debug_print("Failed to import clip to DaVinci Resolve timeline")
+                self.debug_print("❌ Failed to import clip to DaVinci Resolve timeline")
                 self.status_var.set("Failed to import clip to DaVinci Resolve timeline")
         except Exception as e:
             error_msg = f"Error importing clip to DaVinci Resolve: {str(e)}"
-            self.debug_print(error_msg)
+            self.debug_print(f"❌ {error_msg}")
             self.status_var.set(f"Error: {error_msg}")
             self.show_error_in_gui("DaVinci Resolve Error", f"Error importing clip:\n\n{str(e)}")
             
@@ -3548,6 +3604,34 @@ sys.exit(1)
         
         # Force update the UI to ensure all elements are rendered
         guidance_dialog.update()
+
+    def load_app_state(self):
+        """Load application state from preferences"""
+        try:
+            # Load preferences and set them as the instance variable
+            self.preferences = self.load_preferences()
+            
+            # Set editor
+            selected_editor = self.preferences.get("selected_editor", "None")
+            self.editor_var.set(selected_editor)
+            
+            # Update directory listbox (directories are already in self.preferences)
+            self.update_directory_listbox()
+            
+            # Set exclude_current_dir status
+            exclude_current_dir = self.preferences.get("exclude_current_dir", False)
+            self.current_dir_status_var.set("✓" if not exclude_current_dir else "❌")
+            
+            # Set minimum duration settings
+            min_duration_enabled = self.preferences.get("min_duration_enabled", True)
+            self.min_duration_var.set(min_duration_enabled)
+            self.min_duration_seconds_var.set(str(self.preferences.get("min_duration_seconds", 10.0)))
+            
+            # Update status
+            self.status_var.set("Settings loaded successfully")
+        except Exception as e:
+            self.debug_print(f"Error loading application state: {e}")
+            self.status_var.set(f"Error loading application state: {e}")
 
 class DebugWindow:
     """A debug window to display errors and debug information"""
