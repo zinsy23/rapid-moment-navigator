@@ -1601,16 +1601,8 @@ class RapidMomentNavigator:
             return
             
         try:
-            # Detect framerate using editor-specific method  
-            fps = self._detect_framerate_for_editor(subtitle_file)
-            self.debug_print(f"🎞️ Detected framerate: {fps} fps")
-            
-            # Store the detected framerate in the video info cache for use by import methods
-            if fps and subtitle_file in self.subtitle_to_video_map:
-                self.subtitle_to_video_map[subtitle_file]["fps"] = fps
-                self.debug_print(f"📝 Cached framerate {fps} fps for {subtitle_file}")
-            
             # Import using generic method that dispatches to editor-specific implementation
+            # Framerate detection now happens directly during import - no separate detection needed!
             self._import_clip_to_editor(subtitle_file, start_time, end_time)
             
         except Exception as e:
@@ -1889,28 +1881,13 @@ sys.exit(1)
             end_tc (str, optional): End timecode in HH:MM:SS format
             start_frame (int, optional): Start frame (alternative to start_tc)
             end_frame (int, optional): End frame (alternative to end_frame)
-            fps (float, optional): Frames per second of the clip (default: 24.0)
+            fps (float, optional): Frames per second of the clip (default: 24.0 - used as fallback only)
         
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            self.debug_print(f"Importing clip: {clip_path} with FPS: {fps}")
-            
-            # Convert timecodes to frames if provided
-            if start_tc:
-                start_frame = self.timecode_to_frames(start_tc, fps)
-                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame} at {fps} fps")
-            
-            if end_tc:
-                end_frame = self.timecode_to_frames(end_tc, fps)
-                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame} at {fps} fps")
-            
-            # Calculate and log the duration for verification
-            if start_frame is not None and end_frame is not None:
-                duration_frames = end_frame - start_frame
-                duration_seconds = duration_frames / fps
-                self.debug_print(f"Clip duration: {duration_frames} frames ({duration_seconds:.2f} seconds)")
+            self.debug_print(f"Importing clip: {clip_path}")
             
             # Get Resolve
             resolve = dvr_script.scriptapp("Resolve")
@@ -1929,22 +1906,6 @@ sys.exit(1)
             if not project:
                 self.debug_print("No project is currently open")
                 return False
-            
-            # Get current project framerate
-            try:
-                project_fps_str = project.GetSetting("timelineFrameRate")
-                if project_fps_str:
-                    # Remove "DF" if present
-                    if ' ' in project_fps_str:
-                        project_fps_str = project_fps_str.split()[0]
-                    project_fps = float(project_fps_str)
-                    self.debug_print(f"Project timeline framerate: {project_fps} fps")
-                    
-                    # Log warning if project and clip framerates don't match
-                    if abs(project_fps - fps) > 0.01:  # Allow for small floating-point differences
-                        self.debug_print(f"WARNING: Project framerate ({project_fps}) does not match clip framerate ({fps})")
-            except Exception as e:
-                self.debug_print(f"Could not get project framerate: {e}")
             
             self.debug_print(f"Current project: {project.GetName()}")
             
@@ -1974,7 +1935,7 @@ sys.exit(1)
                 self.debug_print(f"File not found: {abs_path}")
                 return False
             
-            # Import media
+            # Import media FIRST
             imported_media = media_pool.ImportMedia([abs_path])
             if not imported_media or len(imported_media) == 0:
                 self.debug_print("Failed to import media")
@@ -1983,21 +1944,55 @@ sys.exit(1)
             media_item = imported_media[0]
             self.debug_print(f"Successfully imported: {media_item.GetName()}")
             
-            # Get actual media properties for verification
+            # NOW detect the ACTUAL framerate from the imported media
+            detected_fps = fps  # Start with fallback
             try:
                 media_fps = media_item.GetClipProperty("FPS")
                 if media_fps:
-                    self.debug_print(f"Imported media actual FPS: {media_fps}")
-                    
-                    # If the detected FPS is significantly different from the imported media's FPS
-                    try:
-                        media_fps_float = float(media_fps)
-                        if abs(media_fps_float - fps) > 0.5:  # If difference is more than 0.5 fps
-                            self.debug_print(f"WARNING: Detected FPS ({fps}) differs from media's actual FPS ({media_fps_float})")
-                    except ValueError:
-                        pass
+                    detected_fps = float(media_fps)
+                    self.debug_print(f"🎞️ Detected actual media FPS: {detected_fps}")
+                else:
+                    self.debug_print(f"⚠️ Could not get media FPS, using fallback: {fps}")
             except Exception as e:
-                self.debug_print(f"Could not get media FPS: {e}")
+                self.debug_print(f"⚠️ Error getting media FPS, using fallback: {e}")
+            
+            # Use the DETECTED framerate for all calculations
+            self.debug_print(f"Using framerate: {detected_fps} fps for all calculations")
+            
+            # Apply minimum duration using the DETECTED framerate if we have timecodes
+            if start_tc and end_tc:
+                start_tc, end_tc = self._apply_minimum_duration(start_tc, end_tc, detected_fps)
+            
+            # Convert timecodes to frames using DETECTED framerate
+            if start_tc:
+                start_frame = self.timecode_to_frames(start_tc, detected_fps)
+                self.debug_print(f"Converted start timecode {start_tc} to frame {start_frame} at {detected_fps} fps")
+            
+            if end_tc:
+                end_frame = self.timecode_to_frames(end_tc, detected_fps)
+                self.debug_print(f"Converted end timecode {end_tc} to frame {end_frame} at {detected_fps} fps")
+            
+            # Calculate and log the duration for verification
+            if start_frame is not None and end_frame is not None:
+                duration_frames = end_frame - start_frame
+                duration_seconds = duration_frames / detected_fps
+                self.debug_print(f"Clip duration: {duration_frames} frames ({duration_seconds:.2f} seconds)")
+            
+            # Get current project framerate for comparison
+            try:
+                project_fps_str = project.GetSetting("timelineFrameRate")
+                if project_fps_str:
+                    # Remove "DF" if present
+                    if ' ' in project_fps_str:
+                        project_fps_str = project_fps_str.split()[0]
+                    project_fps = float(project_fps_str)
+                    self.debug_print(f"Project timeline framerate: {project_fps} fps")
+                    
+                    # Log warning if project and detected framerates don't match
+                    if abs(project_fps - detected_fps) > 0.01:  # Allow for small floating-point differences
+                        self.debug_print(f"WARNING: Project framerate ({project_fps}) does not match media framerate ({detected_fps})")
+            except Exception as e:
+                self.debug_print(f"Could not get project framerate: {e}")
             
             # Create clip info dictionary with explicit frame ranges
             clip_info = {
@@ -3048,26 +3043,24 @@ sys.exit(1)
             
         video_info = self.subtitle_to_video_map[subtitle_file]
         video_file = video_info["path"]
-        fps = video_info.get("fps", 24.0)  # Get cached framerate or default to 24.0
+        # Use fallback framerate - actual detection happens during import
+        fallback_fps = 24.0  # Standard fallback, will be overridden by actual media framerate
         
         try:
             # Get absolute path to the video file
             abs_video_path = self.get_absolute_path(video_file)
             
-            # Apply minimum duration if enabled
-            adjusted_start, adjusted_end = self._apply_minimum_duration(start_time, end_time, fps)
-            
-            # Call the timeline import function with the detected framerate
+            # Call the timeline import function - framerate detection and minimum duration handling happens during import!
             success = self.import_clip_to_timeline(
                 abs_video_path, 
-                start_tc=adjusted_start, 
-                end_tc=adjusted_end, 
-                fps=fps
+                start_tc=start_time, 
+                end_tc=end_time, 
+                fps=fallback_fps  # Used only as fallback - actual framerate detected from imported media
             )
             
             if success:
                 self.debug_print(f"✅ Successfully imported clip to DaVinci Resolve timeline")
-                self.status_var.set(f"Clip {os.path.basename(video_file)} ({adjusted_start}-{adjusted_end}) imported to DaVinci Resolve")
+                self.status_var.set(f"Clip {os.path.basename(video_file)} ({start_time}-{end_time}) imported to DaVinci Resolve")
             else:
                 self.debug_print("❌ Failed to import clip to DaVinci Resolve timeline")
                 self.status_var.set("Failed to import clip to DaVinci Resolve timeline")
