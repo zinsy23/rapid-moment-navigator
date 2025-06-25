@@ -1393,8 +1393,12 @@ class RapidMomentNavigator:
             timecode_label.pack(anchor="w")
             
             # Add text label
-            text_label = ttk.Label(content_frame, text=result['clean_text'], wraplength=700)
-            text_label.pack(anchor="w", padx=10)
+            subtitle_label = ttk.Label(content_frame, text=result['clean_text'], wraplength=700)
+            subtitle_label.pack(anchor="w", padx=10)
+            
+            # Debug output to compare text formatting
+            self.debug_print(f"MAIN SEARCH - Original text: {repr(result['text'])}")
+            self.debug_print(f"MAIN SEARCH - Clean text: {repr(result['clean_text'])}")
             
             # Add some space after each result
             ttk.Separator(self.results_container, orient="horizontal").pack(fill="x", pady=5)
@@ -1402,6 +1406,28 @@ class RapidMomentNavigator:
             self.debug_print(f"Added clickable timecode for {timecode_text}")
         
         self.debug_print(f"UI updated with {len(file_results)} results from {file_basename}")
+    
+    def _restore_subtitle_line_breaks(self, text):
+        """Restore line breaks in subtitle text from DaVinci Resolve API"""
+        if not text:
+            return text
+        
+        # Replace Unicode Line Separator with actual line break
+        # This is the primary fix - DaVinci Resolve uses \u2028 for line breaks
+        text = text.replace('\u2028', '\n')
+        
+        # Also handle Unicode Paragraph Separator (less common but possible)
+        text = text.replace('\u2029', '\n')
+        
+        # Clean up any potential double spaces
+        text = re.sub(r'  +', ' ', text)
+        
+        # Limit to 2 lines maximum to prevent overly tall results
+        lines = text.split('\n')
+        if len(lines) > 2:
+            text = '\n'.join(lines[:2])
+        
+        return text.strip()
     
     def _handle_timecode_click(self, result):
         """Process a click on a timecode tag"""
@@ -3365,7 +3391,10 @@ sys.exit(1)
                 )
                 timecode_label.pack(pady=5, anchor="w")
                 
-                subtitle_label = ttk.Label(result_frame, text=match['text'], wraplength=700)
+                # Debug output to compare text formatting
+                self.debug_print(f"EDITOR SEARCH - API text: {repr(match['text'])}")
+                
+                subtitle_label = ttk.Label(result_frame, text=self._restore_subtitle_line_breaks(match['text']), wraplength=700)
                 subtitle_label.pack(pady=5, anchor="w")
 
         except Exception as e:
