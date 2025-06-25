@@ -27,6 +27,9 @@ DEFAULT_PREFS = {
     "min_duration_seconds": 10.0
 }
 
+# Global variable for DaVinci Resolve script module
+dvr_script = None
+
 def find_module_locations(base_path):
     """Find possible locations of DaVinciResolveScript.py based on a base path.
     Only checks the standard location and directly in the specified path."""
@@ -1073,6 +1076,7 @@ class RapidMomentNavigator:
         Returns:
             float: Framerate of the video (defaults to 24.0 if detection fails)
         """
+        global dvr_script
         try:
             # Ensure DaVinci Resolve is ready for use
             if not self._ensure_resolve_ready():
@@ -1720,8 +1724,12 @@ class RapidMomentNavigator:
                 self.status_var.set("Testing DaVinci Resolve API safety...")
                 self.debug_print("Initializing DaVinci Resolve API on first use...")
                 
-                # First, test in subprocess for safety
+                # FIRST: Set up the environment variables and paths (move this BEFORE subprocess test)
                 try:
+                    # Set up default paths and environment variables
+                    self._setup_resolve_paths()
+                    
+                    # NOW test in subprocess for safety (with proper paths set)
                     subprocess_test_result = self._test_resolve_import_in_subprocess()
                     if not subprocess_test_result:
                         self.resolve_in_safe_mode = True
@@ -1808,108 +1816,50 @@ class RapidMomentNavigator:
         api_path = os.environ.get("RESOLVE_SCRIPT_API", "")
         lib_path = os.environ.get("RESOLVE_SCRIPT_LIB", "")
         
-        # Find all possible module locations
-        module_info = find_module_locations(api_path)
-        module_locations = module_info["locations"]
-        module_files = module_info["module_paths"]
+        self.debug_print(f"API path for subprocess test: {api_path}")
+        self.debug_print(f"LIB path for subprocess test: {lib_path}")
         
-        # Print found paths for debugging
-        self.debug_print("Found module locations:")
-        for path in module_files:
-            self.debug_print(f"  - {path}")
-        
-        # Add the API path itself and its parent to search paths
-        search_paths = []
-        if os.path.exists(api_path):
-            search_paths.append(api_path)
-        if os.path.exists(os.path.dirname(api_path)):
-            search_paths.append(os.path.dirname(api_path))
-            
-        # Add module locations to search paths
-        for loc in module_locations:
-            if loc not in search_paths and os.path.exists(loc):
-                search_paths.append(loc)
-        
-        self.debug_print(f"Search paths to be used: {search_paths}")
-        
-        # Create a temporary Python file with the import test
+        # Create a temporary Python file with the import test using our WORKING approach
         with tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w') as f:
             test_script = f.name
             
-            # Write a script that attempts the import and exits with code 0 if successful
+            # Write a script using the SAME LOGIC that works in our main method
             f.write(f'''
 import os
 import sys
-import glob
 
 # Set required environment variables
 os.environ["RESOLVE_SCRIPT_API"] = r"{api_path}"
 os.environ["RESOLVE_SCRIPT_LIB"] = r"{lib_path}"
 
-# Add all possible module paths to sys.path
-search_paths = {search_paths!r}
-for path in search_paths:
-    if path and path not in sys.path:
-        sys.path.append(path)
-        print(f"Added {{path}} to Python path")
+print(f"Test subprocess - API path: {api_path}")
+print(f"Test subprocess - LIB path: {lib_path}")
 
-# Known module files
-module_files = {module_files!r}
-for module_file in module_files:
-    print(f"Known module file: {{module_file}}")
+# Use the SAME simplified approach that works in the main method
+if r"{api_path}" and os.path.exists(r"{api_path}"):
+    if r"{api_path}" not in sys.path:
+        sys.path.append(r"{api_path}")
+        print(f"Added API path to Python path: {api_path}")
+    
+    # CRITICAL: Also add the Modules subdirectory (this was the key fix!)
+    modules_path = os.path.join(r"{api_path}", "Modules")
+    if os.path.exists(modules_path) and modules_path not in sys.path:
+        sys.path.append(modules_path)
+        print(f"Added Modules path to Python path: {{modules_path}}")
 
-# Print sys.path for debugging
-print(f"Python sys.path: {{sys.path}}")
+print(f"Final sys.path: {{sys.path}}")
 
-# Try direct import first
+# Try the import
 try:
     import DaVinciResolveScript
-    print("Successfully imported DaVinciResolveScript in test process")
+    print("✅ SUCCESS: DaVinciResolveScript imported successfully in subprocess")
     sys.exit(0)
 except ImportError as e:
-    print(f"Standard import failed: {{e}}")
-
-# Try alternate import approaches
-for module_file in module_files:
-    module_dir = os.path.dirname(module_file)
-    module_name = os.path.splitext(os.path.basename(module_file))[0]
-    
-    try:
-        # Try adding module dir directly to path and importing
-        if module_dir not in sys.path:
-            sys.path.append(module_dir)
-            print(f"Added module directory {{module_dir}} directly to path")
-        
-        # Try to import again
-        import DaVinciResolveScript
-        print(f"Successfully imported DaVinciResolveScript after adding {{module_dir}}")
-        sys.exit(0)
-    except ImportError as e:
-        print(f"Import still failed with {{module_dir}} in path: {{e}}")
-
-# If all previous attempts failed, try more aggressive approaches
-# Try to load the module directly using importlib
-print("Trying direct module loading with importlib...")
-try:
-    import importlib.util
-    
-    for module_file in module_files:
-        try:
-            print(f"Trying to load {{module_file}} with importlib...")
-            spec = importlib.util.spec_from_file_location("DaVinciResolveScript", module_file)
-            if spec:
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                print(f"Successfully loaded {{module_file}} with importlib")
-                sys.path.insert(0, os.path.dirname(module_file))
-                sys.exit(0)
-        except Exception as e:
-            print(f"Importlib loading failed for {{module_file}}: {{e}}")
+    print(f"❌ FAILED: Import error in subprocess: {{e}}")
+    sys.exit(1)
 except Exception as e:
-    print(f"Importlib approach failed: {{e}}")
-
-print("All import attempts failed")
-sys.exit(1)
+    print(f"❌ FAILED: Unexpected error in subprocess: {{e}}")
+    sys.exit(1)
 ''')
         
         try:
@@ -1924,11 +1874,11 @@ sys.exit(1)
             
             # Check the result
             if result.returncode == 0:
-                self.debug_print("Import test succeeded in subprocess")
+                self.debug_print("✅ Import test succeeded in subprocess")
                 self.debug_print(f"Subprocess stdout: {result.stdout}")
                 return True
             else:
-                self.debug_print(f"Import test failed in subprocess with exit code {result.returncode}")
+                self.debug_print(f"❌ Import test failed in subprocess with exit code {result.returncode}")
                 self.debug_print(f"Subprocess stderr: {result.stderr}")
                 self.debug_print(f"Subprocess stdout: {result.stdout}")
                 return False
@@ -1961,6 +1911,7 @@ sys.exit(1)
         Returns:
             bool: True if successful, False otherwise
         """
+        global dvr_script
         try:
             self.debug_print(f"Importing clip: {clip_path}")
             
@@ -2731,6 +2682,21 @@ sys.exit(1)
         else:
             self.status_var.set("Directory not found in preferences")
 
+    def _setup_resolve_paths(self):
+        """Set up DaVinci Resolve environment variables and paths"""
+        self.debug_print("Setting up DaVinci Resolve paths...")
+        
+        # Define default paths for macOS
+        default_api_path = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
+        default_lib_path = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
+        
+        # Set environment variables with default paths
+        os.environ["RESOLVE_SCRIPT_API"] = default_api_path
+        os.environ["RESOLVE_SCRIPT_LIB"] = default_lib_path
+        
+        self.debug_print(f"Set RESOLVE_SCRIPT_API: {default_api_path}")
+        self.debug_print(f"Set RESOLVE_SCRIPT_LIB: {default_lib_path}")
+
     def _init_davinci_resolve_api(self):
         """Initialize the DaVinci Resolve API"""
         try:
@@ -2863,22 +2829,22 @@ sys.exit(1)
                     modified = True
                     self.debug_print(f"Updated LIB path: {lib_path}")
             
-            # Add module paths to sys.path
+            # Add module paths to sys.path - SIMPLIFIED APPROACH THAT WORKS
             self.debug_print("========== FINAL PATH CONFIGURATION ==========")
             self.debug_print(f"Using RESOLVE_SCRIPT_API: {api_path}")
             self.debug_print(f"Using RESOLVE_SCRIPT_LIB: {lib_path}")
             
-            # Add all module locations to sys.path
-            module_info = find_module_locations(api_path)
-            for path in module_info["locations"]:
-                if path not in sys.path:
-                    sys.path.append(path)
-                    self.debug_print(f"Added to Python path: {path}")
-                    
-            # Also add the API path itself if not already added
-            if api_path and api_path not in sys.path and os.path.exists(api_path):
-                sys.path.append(api_path)
-                self.debug_print(f"Added API path to Python path: {api_path}")
+            # Simple, proven approach: Add both API path and Modules subdirectory to sys.path
+            if api_path and os.path.exists(api_path):
+                if api_path not in sys.path:
+                    sys.path.append(api_path)
+                    self.debug_print(f"Added API path to Python path: {api_path}")
+                
+                # CRITICAL: Also add the Modules subdirectory (this was missing!)
+                modules_path = os.path.join(api_path, "Modules")
+                if os.path.exists(modules_path) and modules_path not in sys.path:
+                    sys.path.append(modules_path)
+                    self.debug_print(f"Added Modules path to Python path: {modules_path}")
             
             self.debug_print("=============================================")
             
@@ -3430,88 +3396,105 @@ sys.exit(1)
 
     def _find_text_in_resolve(self, text_to_find):
         """Find text specifically in DaVinci Resolve"""
-        # First try to get results from cache
-        timeline_id = self._get_timeline_identifier()
-        if timeline_id:
-            cached_items = self._get_cached_subtitle_items(timeline_id)
-            
-            if cached_items:
-                self.debug_print(f"Using cached subtitle data for search ({len(cached_items)} items)")
-                self.status_var.set("Searching cached subtitle data...")
-                
-                # Search cached items
-                matches = self._search_subtitle_items(cached_items, text_to_find)
-                if matches:
-                    self._display_search_results(matches, timeline_id)
-                    self.status_var.set(f"Found {len(matches)} matches in editor")
-                else:
-                    self.debug_print("No matches found in cached data")
-                    self.status_var.set("No matches found")
-                return
-            else:
-                # No cache available, show status and trigger cache building
-                self.debug_print("No cached data available, fetching from API and building cache")
-                self.status_var.set("Building cache from API...")
-                self._build_subtitle_cache_in_background(timeline_id)
-        
-        # Fallback to API search (original implementation)
-        # Determine if we have a valid timeline to find text in
+        global dvr_script
         try:
-            # Ensure DaVinci Resolve is ready for use
-            if self._ensure_resolve_ready():
-                self.debug_print("Resolve Works for searching subtitles directly in editor")
+            if not self._ensure_resolve_ready():
+                self.debug_print("DaVinci Resolve not ready for text search")
+                return []
 
-            resolve = dvr_script.scriptapp("Resolve")
-
-            if not self._ensure_resolve_edit_page(resolve):
-                self.debug_print("Failed to ensure we're on the Edit page")
-                return
-
-            # Get the current timeline of the current project
-            project = resolve.GetProjectManager().GetCurrentProject()
-            if not project:
-                logging.error("No project is currently open")
-                return None
+            # First try to get results from cache
+            timeline_id = self._get_timeline_identifier()
+            if timeline_id:
+                cached_items = self._get_cached_subtitle_items(timeline_id)
                 
-            timeline = project.GetCurrentTimeline()
-            if not timeline:
-                logging.error("No timeline is currently open")
-                return None
+                if cached_items:
+                    self.debug_print(f"Using cached subtitle data for search ({len(cached_items)} items)")
+                    self.status_var.set("Searching cached subtitle data...")
+                    
+                    # Search cached items
+                    matches = self._search_subtitle_items(cached_items, text_to_find)
+                    if matches:
+                        self._display_search_results(matches, timeline_id)
+                        self.status_var.set(f"Found {len(matches)} matches in editor")
+                    else:
+                        self.debug_print("No matches found in cached data")
+                        self.status_var.set("No matches found")
+                    return
+                else:
+                    # No cache available, show status and trigger cache building
+                    self.debug_print("No cached data available, fetching from API and building cache")
+                    self.status_var.set("Building cache from API...")
+                    self._build_subtitle_cache_in_background(timeline_id)
+            
+            # Fallback to API search (original implementation)
+            # Determine if we have a valid timeline to find text in
+            try:
+                # Ensure DaVinci Resolve is ready for use
+                if self._ensure_resolve_ready():
+                    self.debug_print("Resolve Works for searching subtitles directly in editor")
+
+                resolve = dvr_script.scriptapp("Resolve")
+
+                if not self._ensure_resolve_edit_page(resolve):
+                    self.debug_print("Failed to ensure we're on the Edit page")
+                    return []
+
+                # Get the current timeline of the current project
+                project = resolve.GetProjectManager().GetCurrentProject()
+                if not project:
+                    logging.error("No project is currently open")
+                    return []
+                    
+                timeline = project.GetCurrentTimeline()
+                if not timeline:
+                    logging.error("No timeline is currently open")
+                    return []
+            except Exception as e:
+                self.debug_print(f"Error searching for text in editor: {e}")
+                self.status_var.set(f"Error searching for text in editor: {e}")
+                return []
+
+            # If we made it this far, start searching for the text via API
+            self.debug_print("Searching for text in editor via API")
+            self.status_var.set("Searching for text in editor via API...")
+
+            try:
+                # Get all subtitle items from the timeline
+                subtitle_track = self._get_resolve_subtitle_track(timeline)
+                if not subtitle_track:
+                    self.debug_print("No subtitle track found")
+                    self.status_var.set("No subtitle track found")
+                    return []
+
+                # Search for the text in the subtitle items
+                matches = self._search_subtitle_items(subtitle_track, text_to_find)
+                if not matches:
+                    self.debug_print("No matches found")
+                    self.status_var.set("No matches found")
+                    return [] 
+
+                # Display results using timeline from API
+                self._display_search_results(matches, timeline_id, timeline)
+                self.status_var.set(f"Found {len(matches)} matches via API")
+
+            except Exception as e:
+                self.debug_print(f"Error searching text in editor: {e}")
+                self.status_var.set(f"Error searching text in editor: {e}")
+                return []
+
         except Exception as e:
             self.debug_print(f"Error searching for text in editor: {e}")
             self.status_var.set(f"Error searching for text in editor: {e}")
-            return
-
-        # If we made it this far, start searching for the text via API
-        self.debug_print("Searching for text in editor via API")
-        self.status_var.set("Searching for text in editor via API...")
-
-        try:
-            # Get all subtitle items from the timeline
-            subtitle_track = self._get_resolve_subtitle_track(timeline)
-            if not subtitle_track:
-                self.debug_print("No subtitle track found")
-                self.status_var.set("No subtitle track found")
-                return None
-
-            # Search for the text in the subtitle items
-            matches = self._search_subtitle_items(subtitle_track, text_to_find)
-            if not matches:
-                self.debug_print("No matches found")
-                self.status_var.set("No matches found")
-                return None 
-
-            # Display results using timeline from API
-            self._display_search_results(matches, timeline_id, timeline)
-            self.status_var.set(f"Found {len(matches)} matches via API")
-
-        except Exception as e:
-            self.debug_print(f"Error searching text in editor: {e}")
-            self.status_var.set(f"Error searching text in editor: {e}")
+            return []
 
     def _display_search_results(self, matches, timeline_id, timeline=None):
         """Display search results in the editor dialog"""
+        global dvr_script
         try:
+            if not matches:
+                self.status_var.set("No matches found in current timeline")
+                return
+
             # Clear previous search results
             for widget in self.editor_results_container.winfo_children():
                 widget.destroy()
@@ -4172,6 +4155,7 @@ sys.exit(1)
     # Subtitle Cache Management Methods
     def _get_timeline_identifier(self):
         """Get a unique identifier for the current timeline"""
+        global dvr_script
         try:
             resolve = dvr_script.scriptapp("Resolve")
             project = resolve.GetProjectManager().GetCurrentProject()
@@ -4251,7 +4235,8 @@ sys.exit(1)
                 self.is_caching = False
 
     def _fetch_subtitle_items_from_resolve(self):
-        """Fetch subtitle items directly from Resolve API"""
+        """Fetch subtitle items from DaVinci Resolve"""
+        global dvr_script
         try:
             # Ensure DaVinci Resolve is ready
             if not self._ensure_resolve_ready():
