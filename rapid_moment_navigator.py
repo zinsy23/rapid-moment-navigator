@@ -3224,12 +3224,15 @@ sys.exit(1)
         self.search_var = tk.StringVar()
         search_entry = ttk.Entry(self.editor_search_frame, textvariable=self.search_var, width=30)
         search_entry.pack(side="left", padx=5)
+        search_entry.bind("<Return>", lambda event: self.find_text_in_editor())
+        search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
         
         # Button to find text
         find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_editor)
         find_btn.pack(side="left", padx=5)
 
-        # Combobox for editor selection
+        # Editor label and combobox for editor selection
+        ttk.Label(self.editor_search_frame, text="Editor:").pack(side="left", padx=5)
         editor_combobox = ttk.Combobox(self.editor_search_frame, values=self.editor_var, state="readonly")
         editor_combobox.pack(side="left", padx=5)
         editor_combobox['values'] = self.editor_dropdown['values']
