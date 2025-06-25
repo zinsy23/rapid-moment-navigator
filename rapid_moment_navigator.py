@@ -3361,8 +3361,6 @@ sys.exit(1)
                 subtitle_label = ttk.Label(result_frame, text=match['text'], wraplength=700)
                 subtitle_label.pack(pady=5, anchor="w")
 
-            print(matches)
-
         except Exception as e:
             self.debug_print(f"Error searching text in editor: {e}")
             self.status_var.set(f"Error searching text in editor: {e}")
@@ -3389,7 +3387,7 @@ sys.exit(1)
                         logging.info(f"Jumped to frame {frame} using SetCurrentFramePosition")
                         return True
                 else:
-                    logging.warning("SetCurrentFramePosition exists but is not callable")
+                    logging.debug("SetCurrentFramePosition exists but is not callable, trying next method")
             
             # Try SetPlayHead as fallback
             if hasattr(timeline, 'SetPlayHead'):
@@ -3399,7 +3397,7 @@ sys.exit(1)
                         logging.info(f"Jumped to frame {frame} using SetPlayHead")
                         return True
                 else:
-                    logging.warning("SetPlayHead exists but is not callable")
+                    logging.debug("SetPlayHead exists but is not callable, trying next method")
                     
             # Try SetCurrentTimecode as last resort
             if hasattr(timeline, 'SetCurrentTimecode') and callable(timeline.SetCurrentTimecode):
@@ -3943,7 +3941,7 @@ sys.exit(1)
                         logging.info(f"Jumped to frame {frame} using SetCurrentFramePosition")
                         return True
                 else:
-                    logging.warning("SetCurrentFramePosition exists but is not callable")
+                    logging.debug("SetCurrentFramePosition exists but is not callable, trying next method")
             
             # Try SetPlayHead as fallback
             if hasattr(timeline, 'SetPlayHead'):
@@ -3953,7 +3951,7 @@ sys.exit(1)
                         logging.info(f"Jumped to frame {frame} using SetPlayHead")
                         return True
                 else:
-                    logging.warning("SetPlayHead exists but is not callable")
+                    logging.debug("SetPlayHead exists but is not callable, trying next method")
                     
             # Try SetCurrentTimecode as last resort
             if hasattr(timeline, 'SetCurrentTimecode') and callable(timeline.SetCurrentTimecode):
