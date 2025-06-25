@@ -1727,24 +1727,25 @@ class RapidMomentNavigator:
                 # FIRST: Set up the environment variables and paths (move this BEFORE subprocess test)
                 try:
                     # Set up default paths and environment variables
-                    self._setup_resolve_paths()
+                    # self._setup_resolve_paths()  # REMOVED: This was hardcoded to Mac paths
                     
-                    # NOW test in subprocess for safety (with proper paths set)
-                    subprocess_test_result = self._test_resolve_import_in_subprocess()
-                    if not subprocess_test_result:
-                        self.resolve_in_safe_mode = True
-                        self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
-                        self.show_error_in_gui("DaVinci Resolve Error",
-                                            "The DaVinci Resolve API failed the safety test.\n\n"
-                                            "Import functionality has been disabled for safety.\n\n"
-                                            "This usually happens if there is an incompatibility between the\n"
-                                            "Python version and the DaVinci Resolve API.")
-                        return False
-                        
-                    self.debug_print("Safety test passed, attempting actual initialization")
+                    # Initialize the API which has proper platform detection
                     success = self._init_davinci_resolve_api()
                     
                     if success:
+                        # NOW test in subprocess for safety (with proper paths set)
+                        subprocess_test_result = self._test_resolve_import_in_subprocess()
+                        if not subprocess_test_result:
+                            self.resolve_in_safe_mode = True
+                            self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
+                            self.show_error_in_gui("DaVinci Resolve Error",
+                                                "The DaVinci Resolve API failed the safety test.\n\n"
+                                                "Import functionality has been disabled for safety.\n\n"
+                                                "This usually happens if there is an incompatibility between the\n"
+                                                "Python version and the DaVinci Resolve API.")
+                            return False
+                            
+                        self.debug_print("Safety test passed, API is ready")
                         self.resolve_initialized = True
                         self.status_var.set("DaVinci Resolve API initialized")
                         return True
@@ -1755,7 +1756,6 @@ class RapidMomentNavigator:
                                             "Failed to initialize DaVinci Resolve API.\n\n"
                                             "Please ensure DaVinci Resolve is installed correctly and running.")
                         return False
-                        
                 except Exception as init_error:
                     self.resolve_in_safe_mode = True
                     error_msg = f"Error initializing DaVinci Resolve API: {str(init_error)}"
@@ -1820,7 +1820,7 @@ class RapidMomentNavigator:
         self.debug_print(f"LIB path for subprocess test: {lib_path}")
         
         # Create a temporary Python file with the import test using our WORKING approach
-        with tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w') as f:
+        with tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w', encoding='utf-8') as f:
             test_script = f.name
             
             # Write a script using the SAME LOGIC that works in our main method
@@ -1852,13 +1852,13 @@ print(f"Final sys.path: {{sys.path}}")
 # Try the import
 try:
     import DaVinciResolveScript
-    print("✅ SUCCESS: DaVinciResolveScript imported successfully in subprocess")
+    print("SUCCESS: DaVinciResolveScript imported successfully in subprocess")
     sys.exit(0)
 except ImportError as e:
-    print(f"❌ FAILED: Import error in subprocess: {{e}}")
+    print(f"FAILED: Import error in subprocess: {{e}}")
     sys.exit(1)
 except Exception as e:
-    print(f"❌ FAILED: Unexpected error in subprocess: {{e}}")
+    print(f"FAILED: Unexpected error in subprocess: {{e}}")
     sys.exit(1)
 ''')
         
@@ -1874,11 +1874,11 @@ except Exception as e:
             
             # Check the result
             if result.returncode == 0:
-                self.debug_print("✅ Import test succeeded in subprocess")
+                self.debug_print("Import test succeeded in subprocess")
                 self.debug_print(f"Subprocess stdout: {result.stdout}")
                 return True
             else:
-                self.debug_print(f"❌ Import test failed in subprocess with exit code {result.returncode}")
+                self.debug_print(f"Import test failed in subprocess with exit code {result.returncode}")
                 self.debug_print(f"Subprocess stderr: {result.stderr}")
                 self.debug_print(f"Subprocess stdout: {result.stdout}")
                 return False
@@ -1976,11 +1976,11 @@ except Exception as e:
                 media_fps = media_item.GetClipProperty("FPS")
                 if media_fps:
                     detected_fps = float(media_fps)
-                    self.debug_print(f"🎞️ Detected actual media FPS: {detected_fps}")
+                    self.debug_print(f"Detected actual media FPS: {detected_fps}")
                 else:
-                    self.debug_print(f"⚠️ Could not get media FPS, using fallback: {fps}")
+                    self.debug_print(f"Could not get media FPS, using fallback: {fps}")
             except Exception as e:
-                self.debug_print(f"⚠️ Error getting media FPS, using fallback: {e}")
+                self.debug_print(f"Error getting media FPS, using fallback: {e}")
             
             # Use the DETECTED framerate for all calculations
             self.debug_print(f"Using framerate: {detected_fps} fps for all calculations")
@@ -2683,19 +2683,20 @@ except Exception as e:
             self.status_var.set("Directory not found in preferences")
 
     def _setup_resolve_paths(self):
-        """Set up DaVinci Resolve environment variables and paths"""
-        self.debug_print("Setting up DaVinci Resolve paths...")
-        
-        # Define default paths for macOS
-        default_api_path = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
-        default_lib_path = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
-        
-        # Set environment variables with default paths
-        os.environ["RESOLVE_SCRIPT_API"] = default_api_path
-        os.environ["RESOLVE_SCRIPT_LIB"] = default_lib_path
-        
-        self.debug_print(f"Set RESOLVE_SCRIPT_API: {default_api_path}")
-        self.debug_print(f"Set RESOLVE_SCRIPT_LIB: {default_lib_path}")
+        """Set up DaVinci Resolve environment variables and paths - DISABLED: Was hardcoded to Mac paths"""
+        pass
+        # self.debug_print("Setting up DaVinci Resolve paths...")
+        # 
+        # # Define default paths for macOS
+        # default_api_path = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
+        # default_lib_path = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
+        # 
+        # # Set environment variables with default paths
+        # os.environ["RESOLVE_SCRIPT_API"] = default_api_path
+        # os.environ["RESOLVE_SCRIPT_LIB"] = default_lib_path
+        # 
+        # self.debug_print(f"Set RESOLVE_SCRIPT_API: {default_api_path}")
+        # self.debug_print(f"Set RESOLVE_SCRIPT_LIB: {default_lib_path}")
 
     def _init_davinci_resolve_api(self):
         """Initialize the DaVinci Resolve API"""
