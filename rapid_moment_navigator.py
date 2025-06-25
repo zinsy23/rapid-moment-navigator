@@ -3264,6 +3264,10 @@ sys.exit(1)
         self.debug_print(f"Searching for text: {text_to_find}")
         self.status_var.set(f"Searching for text: {text_to_find}")
 
+        # Clear previous search results
+        for widget in self.editor_results_container.winfo_children():
+            widget.destroy()
+
         # Get current editor configuration
         current_editor = self.editor_var.get()
         editor_config = self._get_editor_config(current_editor)
