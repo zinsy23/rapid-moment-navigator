@@ -49,20 +49,25 @@ def find_module_locations(base_path):
         "module_paths": module_paths  # Full paths to the module files
     }
 
-class ClickableResolveTimecode(Label):
-    """A clickable label widget for timecodes"""
-    def __init__(self, parent, timecode, result, callback, frame, **kwargs):
+class ClickableEditorTimecode(Label):
+    """A clickable label widget for editor timecode links - works with any editor or media system"""
+    def __init__(self, parent, timecode, timeline, callback, start_frame, item_ref=None, **kwargs):
         super().__init__(parent, text=timecode, cursor="hand2", fg="blue", **kwargs)
-        self.result = result
+        self.timeline = timeline
         self.callback = callback
-        self.frame = frame
+        self.start_frame = start_frame
+        self.item_ref = item_ref
         self.bind("<Button-1>", self._on_click)
         # Add underline
         self.config(font=("TkDefaultFont", 10, "underline"))
         
     def _on_click(self, event):
         """Handle click event"""
-        self.callback(self.frame, self.result)
+        self.callback(self.timeline, self.start_frame, self.item_ref)
+
+# Keep the old names for backward compatibility
+ClickableTimecodeLink = ClickableEditorTimecode  # New alias
+ClickableResolveTimecode = ClickableEditorTimecode
 
 class ClickableTimecode(Label):
     """A clickable label widget for timecodes"""
@@ -151,7 +156,7 @@ class RapidMomentNavigator:
             "framerate_detection_method": "detect_video_framerate_from_resolve",
             "supports_advanced_framerate": True,
             "timecode_format": "no_milliseconds",  # Resolve doesn't like milliseconds
-            "find_text_in_editor": "find_text_in_resolve",
+            "find_text_method": "_find_text_in_resolve",  # Method for finding text in editor
             "editor_timecode_click": "resolve_timecode_click"
         }
         # Future editors can be added here:
@@ -161,7 +166,8 @@ class RapidMomentNavigator:
         #     "import_clip_method": "_import_clip_to_premiere", 
         #     "framerate_detection_method": "detect_video_framerate_from_premiere",
         #     "supports_advanced_framerate": True,
-        #     "timecode_format": "with_milliseconds"
+        #     "timecode_format": "with_milliseconds",
+        #     "find_text_method": "_find_text_in_premiere"
         # }
     }
 
@@ -3220,7 +3226,7 @@ sys.exit(1)
         search_entry.pack(side="left", padx=5)
         
         # Button to find text
-        find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_resolve)
+        find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_editor)
         find_btn.pack(side="left", padx=5)
 
         # Combobox for editor selection
@@ -3252,12 +3258,41 @@ sys.exit(1)
 
         self.editor_results_canvas.bind_all("<MouseWheel>", lambda e: self.editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
-    def find_text_in_resolve(self):
-        """Find text in the editor"""
+    def find_text_in_editor(self):
+        """Find text in the currently selected editor"""
         text_to_find = self.search_var.get()
         self.debug_print(f"Searching for text: {text_to_find}")
         self.status_var.set(f"Searching for text: {text_to_find}")
 
+        # Get current editor configuration
+        current_editor = self.editor_var.get()
+        editor_config = self._get_editor_config(current_editor)
+        
+        if not editor_config:
+            self.debug_print(f"No configuration found for editor: {current_editor}")
+            self.status_var.set(f"Editor {current_editor} not supported for text search")
+            return
+
+        # Check if the editor supports text search
+        find_text_method = editor_config.get("find_text_method")
+        if not find_text_method:
+            self.debug_print(f"Editor {current_editor} does not support text search")
+            self.status_var.set(f"Editor {current_editor} does not support text search")
+            return
+
+        # Call the appropriate method for the selected editor
+        try:
+            method = getattr(self, find_text_method)
+            method(text_to_find)
+        except AttributeError:
+            self.debug_print(f"Method {find_text_method} not found for editor {current_editor}")
+            self.status_var.set(f"Text search not implemented for {current_editor}")
+        except Exception as e:
+            self.debug_print(f"Error searching for text in {current_editor}: {e}")
+            self.status_var.set(f"Error searching for text in {current_editor}: {e}")
+
+    def _find_text_in_resolve(self, text_to_find):
+        """Find text specifically in DaVinci Resolve"""
         # Determine if we have a valid timeline to find text in
         try:
             # Ensure DaVinci Resolve is ready for use
@@ -3311,8 +3346,18 @@ sys.exit(1)
                 result_frame = ttk.Frame(self.editor_results_container)
                 result_frame.pack(fill="x", pady=5)
                 timecode_string = f"{self._format_timecode(match['start'], timeline_fps)} - {self._format_timecode(match['end'], timeline_fps)}"
-                timecode_label = ClickableResolveTimecode(result_frame, timecode=timecode_string, callback=self._jump_to_frame, result=timeline, frame=match['start'])
+                
+                # Create clickable timecode with proper parameters
+                timecode_label = ClickableEditorTimecode(
+                    parent=result_frame, 
+                    timecode=timecode_string, 
+                    timeline=timeline,  # Pass timeline as the main object
+                    callback=self._handle_editor_timecode_click, 
+                    start_frame=match['start'],
+                    item_ref=match.get('item')  # Pass the item reference if available
+                )
                 timecode_label.pack(pady=5, anchor="w")
+                
                 subtitle_label = ttk.Label(result_frame, text=match['text'], wraplength=700)
                 subtitle_label.pack(pady=5, anchor="w")
 
@@ -3322,15 +3367,15 @@ sys.exit(1)
             self.debug_print(f"Error searching text in editor: {e}")
             self.status_var.set(f"Error searching text in editor: {e}")
 
-        # Sample text add syntax
-        '''
-        for i in range(15):
-            sample_text = f"This is a sample result added to the editor results canvas. {i}"
-            result_frame = ttk.Frame(self.editor_results_container)
-            result_frame.pack(fill="x", pady=5)
-            result_label = ttk.Label(result_frame, text=sample_text)
-            result_label.pack(pady=5, anchor="w")  # Align labels to the left for better scrolling experience
-        '''
+    def _handle_editor_timecode_click(self, timeline, start_frame, item_ref=None):
+        """Handle clicks on editor timecode results - generic handler"""
+        current_editor = self.editor_var.get()
+        
+        if current_editor == "DaVinci Resolve":
+            self._jump_to_frame(start_frame, timeline, item_ref)
+        else:
+            # Future editors can be handled here
+            self.debug_print(f"Timecode navigation not implemented for {current_editor}")
 
     def _jump_to_frame(self, frame, timeline, item_ref=None):
         """Jump to a specific frame in the timeline."""
@@ -3855,6 +3900,85 @@ sys.exit(1)
         except Exception as e:
             self.debug_print(f"Error loading application state: {e}")
             self.status_var.set(f"Error loading application state: {e}")
+
+    def _select_subtitle_item(self, timeline, item_ref):
+        """Select a specific subtitle item in the timeline as a fallback navigation method."""
+        try:
+            if not item_ref:
+                return False
+                
+            # Try to select the subtitle item directly
+            if hasattr(item_ref, 'SetSelected') and callable(item_ref.SetSelected):
+                success = item_ref.SetSelected(True)
+                if success:
+                    logging.info("Successfully selected subtitle item")
+                    return True
+            
+            # Alternative: Try to get the item's position and select it
+            if hasattr(item_ref, 'GetStart') and callable(item_ref.GetStart):
+                item_start = item_ref.GetStart()
+                # Try to navigate to the item's start position
+                if hasattr(timeline, 'SetCurrentFramePosition') and callable(timeline.SetCurrentFramePosition):
+                    success = timeline.SetCurrentFramePosition(item_start)
+                    if success:
+                        logging.info(f"Navigated to subtitle item at frame {item_start}")
+                        return True
+            
+            logging.warning("Could not select or navigate to subtitle item")
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error selecting subtitle item: {str(e)}")
+            return False
+
+    def _jump_to_frame(self, frame, timeline, item_ref=None):
+        """Jump to a specific frame in the timeline."""
+        # Try different methods to set the current position
+        try:
+            # Try SetCurrentFramePosition first
+            if hasattr(timeline, 'SetCurrentFramePosition'):
+                if callable(timeline.SetCurrentFramePosition):
+                    success = timeline.SetCurrentFramePosition(frame)
+                    if success:
+                        logging.info(f"Jumped to frame {frame} using SetCurrentFramePosition")
+                        return True
+                else:
+                    logging.warning("SetCurrentFramePosition exists but is not callable")
+            
+            # Try SetPlayHead as fallback
+            if hasattr(timeline, 'SetPlayHead'):
+                if callable(timeline.SetPlayHead):
+                    success = timeline.SetPlayHead(frame)
+                    if success:
+                        logging.info(f"Jumped to frame {frame} using SetPlayHead")
+                        return True
+                else:
+                    logging.warning("SetPlayHead exists but is not callable")
+                    
+            # Try SetCurrentTimecode as last resort
+            if hasattr(timeline, 'SetCurrentTimecode') and callable(timeline.SetCurrentTimecode):
+                tc = self._format_timecode(frame, self._get_resolve_timeline_fps(timeline))
+                logging.info(f"Trying to jump to timecode {tc}")
+                success = timeline.SetCurrentTimecode(tc)
+                if success:
+                    logging.info(f"Jumped to timecode {tc}")
+                    return True
+            else:
+                logging.warning("SetCurrentTimecode doesn't exist or is not callable")
+                
+            # If we got here, all navigation methods failed
+            logging.error(f"All methods failed to jump to frame {frame}")
+            
+            # Try manual selection as a last resort
+            if item_ref and self._select_subtitle_item(timeline, item_ref):
+                logging.info("Selected subtitle item, but couldn't jump to frame")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error using timeline navigation methods: {str(e)}")
+            return False
 
 class DebugWindow:
     """A debug window to display errors and debug information"""
