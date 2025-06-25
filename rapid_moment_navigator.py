@@ -14,6 +14,7 @@ import time
 import traceback
 import multiprocessing
 import tempfile
+from threading import Lock
 
 # Constants
 PREFS_FILENAME = "rapid_navigator_prefs.json"
@@ -172,6 +173,7 @@ class RapidMomentNavigator:
     }
 
     def __init__(self, root, debug=False):
+        """Initialize the Rapid Moment Navigator"""
         self.root = root
         self.root.title("Rapid Moment Navigator")
         
@@ -188,6 +190,21 @@ class RapidMomentNavigator:
         
         # Debug mode setting
         self.debug = debug
+        
+        # Initialize subtitle cache system
+        self.subtitle_cache = {}  # Cache for subtitle items
+        self.cache_lock = threading.Lock()  # Thread safety for cache operations
+        self.cache_update_thread = None
+        self.is_caching = False
+        self.last_timeline_id = None
+        self.cache_status_timer = None
+        
+        # Status message preservation
+        self.last_status_message = ""
+        
+        # Track focus state for cache invalidation
+        self.was_focused = True
+        self.editor_dialog = None  # Reference to editor dialog when open
         
         # Initialize debug window to None
         self.debug_window = None
@@ -312,18 +329,20 @@ class RapidMomentNavigator:
         # Initialize the application
         self.debug_print("Initializing shows and mapping...")
         shows_paths = self.load_shows()
-        self.map_subtitles_to_videos()
         
-        # Store the search results for later reference
-        self.search_results = []
-        
-        # Update status based on whether shows were found
+        # Show the UI immediately with a temporary status
         if len(self.show_name_to_path_map) > 0:
-            self.debug_print(f"Application initialized with {len(self.show_name_to_path_map)} shows")
-            self.status_var.set(f"Ready. Found {len(self.show_name_to_path_map)} shows with {len(self.subtitle_to_video_map)} mapped videos.")
+            self.debug_print(f"Application initialized with {len(self.show_name_to_path_map)} shows - mapping subtitles in background")
+            self.status_var.set(f"Loading... Found {len(self.show_name_to_path_map)} shows, mapping subtitle files...")
+            
+            # Start mapping in background
+            self._map_subtitles_in_background()
         else:
             self.debug_print("No shows found during initialization")
             self.status_var.set("No media found. Please add directories containing subtitle files and videos.")
+        
+        # Store the search results for later reference
+        self.search_results = []
         
         # Initialize safe mode flag for editors
         self.resolve_in_safe_mode = False
@@ -346,6 +365,18 @@ class RapidMomentNavigator:
         
         # Load application state
         self.load_app_state()
+        
+        # Set up exception handling
+        self.setup_exception_handler()
+        
+        # Setup focus detection for cache management
+        self._setup_focus_detection()
+
+        # Check if any shows were loaded - use the actual show count
+        show_count = len(self.show_name_to_path_map)
+        if not show_count:
+            # No shows loaded, show guidance
+            self.root.after(100, self._delayed_show_guidance)
     
     def _get_editor_config(self, editor_name=None):
         """Get configuration for the specified editor or current editor"""
@@ -1548,28 +1579,24 @@ class RapidMomentNavigator:
         return "break"
 
     def _on_editor_changed(self, event):
-        """Handle editor dropdown change"""
-        try:
-            selected_editor = self.editor_var.get()
-            self.debug_print(f"Editor changed to: {selected_editor}")
-            
-            # Update preferences
-            self.preferences["selected_editor"] = selected_editor
-            self.save_preferences()
-            
-            # Just update the UI and status - no API loading here
-            self._update_import_buttons_visibility()
-            
-            # Update status
-            if selected_editor == "None":
-                self.status_var.set("Editor integration disabled")
-            else:
-                self.status_var.set(f"{selected_editor} selected. API will be initialized when needed.")
-            
-        except Exception as e:
-            error_msg = f"Error changing editor: {str(e)}"
-            self.debug_print(error_msg)
-            self.status_var.set(f"Error: {error_msg}")
+        """Handle editor selection change"""
+        combobox = event.widget
+        selected_editor = combobox.get()
+        
+        # Update the editor variable
+        self.editor_var.set(selected_editor)
+        
+        # Save the selected editor to preferences
+        self.preferences["selected_editor"] = selected_editor
+        self.save_preferences()
+        
+        # Update import buttons visibility
+        self._update_import_buttons_visibility()
+        
+        # Note: Removed automatic cache building on dropdown selection to prevent UI freezing
+        # Cache will be built when the application regains focus instead
+        
+        self.debug_print(f"Editor changed to: {selected_editor}")
 
     def _update_import_buttons_visibility(self):
         """Update visibility of import buttons based on selected editor"""
@@ -3234,8 +3261,19 @@ sys.exit(1)
         editor_dialog.transient(self.root)
         editor_dialog.grab_set()
 
+        # Store reference to editor dialog and setup focus detection
+        self.editor_dialog = editor_dialog
+        self._setup_focus_detection()
+
         # Make dialog modal
         editor_dialog.focus_set()
+        
+        # Setup dialog close handler to clear reference
+        def on_dialog_close():
+            self.editor_dialog = None
+            editor_dialog.destroy()
+            
+        editor_dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
         
         # Create main frame with padding
         self.editor_main_frame = ttk.Frame(editor_dialog, padding=15)
@@ -3247,15 +3285,73 @@ sys.exit(1)
         
         ttk.Label(self.editor_search_frame, text="Search:").pack(side="left")
         
-        self.search_var = tk.StringVar()
-        search_entry = ttk.Entry(self.editor_search_frame, textvariable=self.search_var, width=30)
+        self.editor_search_var = tk.StringVar()
+        search_entry = ttk.Entry(self.editor_search_frame, textvariable=self.editor_search_var, width=30)
         search_entry.pack(side="left", padx=5)
         search_entry.bind("<Return>", lambda event: self.find_text_in_editor())
         search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
+        search_entry.bind("<KeyPress>", self._on_search_entry_key)
         
         # Button to find text
         find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_editor)
         find_btn.pack(side="left", padx=5)
+        
+        # Manual cache refresh button (most reliable method)
+        refresh_btn = ttk.Button(self.editor_search_frame, text="↻", command=self._manual_cache_refresh, width=3)
+        refresh_btn.pack(side="left", padx=2)
+        
+        # Tooltip for refresh button
+        def show_refresh_tooltip(event):
+            """Show tooltip for refresh button with delay"""
+            def _show_tooltip():
+                try:
+                    # Get widget position
+                    x = refresh_btn.winfo_rootx() + 25
+                    y = refresh_btn.winfo_rooty() + 25
+                    
+                    # Create tooltip window
+                    tooltip = tk.Toplevel(self.root)
+                    tooltip.wm_overrideredirect(True)
+                    tooltip.wm_geometry(f"+{x}+{y}")
+                    
+                    # Store reference for cleanup
+                    refresh_btn.tooltip = tooltip
+                    
+                    # Create tooltip content
+                    frame = tk.Frame(tooltip, background="#ffffe0", borderwidth=1, relief="solid")
+                    frame.pack(ipadx=3, ipady=2)
+                    
+                    label = tk.Label(frame, text="Refresh subtitle cache manually", justify="left",
+                                  background="#ffffe0", fg="#000000",
+                                  wraplength=200, font=("TkDefaultFont", 9))
+                    label.pack()
+                except Exception as e:
+                    self.debug_print(f"Error showing refresh tooltip: {e}")
+            
+            # Start timer for 1-second delay
+            refresh_btn.tooltip_timer = self.root.after(1000, _show_tooltip)
+
+        def hide_refresh_tooltip(event):
+            """Hide tooltip for refresh button"""
+            try:
+                # Cancel timer if it exists
+                if hasattr(refresh_btn, 'tooltip_timer') and refresh_btn.tooltip_timer:
+                    self.root.after_cancel(refresh_btn.tooltip_timer)
+                    refresh_btn.tooltip_timer = None
+                
+                # Destroy tooltip if it exists
+                if hasattr(refresh_btn, 'tooltip') and refresh_btn.tooltip:
+                    refresh_btn.tooltip.destroy()
+                    refresh_btn.tooltip = None
+            except Exception as e:
+                self.debug_print(f"Error hiding refresh tooltip: {e}")
+
+        refresh_btn.bind("<Enter>", show_refresh_tooltip)
+        refresh_btn.bind("<Leave>", hide_refresh_tooltip)
+
+        # Cache status label
+        self.cache_status_label = ttk.Label(self.editor_search_frame, text="", foreground="gray", font=("TkDefaultFont", 8))
+        self.cache_status_label.pack(side="left", padx=(5, 0))
 
         # Editor label and combobox for editor selection
         ttk.Label(self.editor_search_frame, text="Editor:").pack(side="left", padx=5)
@@ -3287,9 +3383,17 @@ sys.exit(1)
 
         self.editor_results_canvas.bind_all("<MouseWheel>", lambda e: self.editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
+        # Show initial status message instead of blocking for cache
+        current_editor = self.editor_var.get()
+        if current_editor == "DaVinci Resolve":
+            self.debug_print("Editor dialog opened - ready for use")
+            self._set_cache_status("Ready - cache will build on first search")
+        else:
+            self.debug_print("Editor dialog opened - ready for use")
+
     def find_text_in_editor(self):
         """Find text in the currently selected editor"""
-        text_to_find = self.search_var.get()
+        text_to_find = self.editor_search_var.get()
         self.debug_print(f"Searching for text: {text_to_find}")
         self.status_var.set(f"Searching for text: {text_to_find}")
 
@@ -3326,6 +3430,31 @@ sys.exit(1)
 
     def _find_text_in_resolve(self, text_to_find):
         """Find text specifically in DaVinci Resolve"""
+        # First try to get results from cache
+        timeline_id = self._get_timeline_identifier()
+        if timeline_id:
+            cached_items = self._get_cached_subtitle_items(timeline_id)
+            
+            if cached_items:
+                self.debug_print(f"Using cached subtitle data for search ({len(cached_items)} items)")
+                self.status_var.set("Searching cached subtitle data...")
+                
+                # Search cached items
+                matches = self._search_subtitle_items(cached_items, text_to_find)
+                if matches:
+                    self._display_search_results(matches, timeline_id)
+                    self.status_var.set(f"Found {len(matches)} matches in editor")
+                else:
+                    self.debug_print("No matches found in cached data")
+                    self.status_var.set("No matches found")
+                return
+            else:
+                # No cache available, show status and trigger cache building
+                self.debug_print("No cached data available, fetching from API and building cache")
+                self.status_var.set("Building cache from API...")
+                self._build_subtitle_cache_in_background(timeline_id)
+        
+        # Fallback to API search (original implementation)
         # Determine if we have a valid timeline to find text in
         try:
             # Ensure DaVinci Resolve is ready for use
@@ -3351,10 +3480,11 @@ sys.exit(1)
         except Exception as e:
             self.debug_print(f"Error searching for text in editor: {e}")
             self.status_var.set(f"Error searching for text in editor: {e}")
+            return
 
-        # If we made it this far, start searching for the text
-        self.debug_print("Searching for text in editor")
-        self.status_var.set("Searching for text in editor")
+        # If we made it this far, start searching for the text via API
+        self.debug_print("Searching for text in editor via API")
+        self.status_var.set("Searching for text in editor via API...")
 
         try:
             # Get all subtitle items from the timeline
@@ -3371,8 +3501,33 @@ sys.exit(1)
                 self.status_var.set("No matches found")
                 return None 
 
+            # Display results using timeline from API
+            self._display_search_results(matches, timeline_id, timeline)
+            self.status_var.set(f"Found {len(matches)} matches via API")
+
+        except Exception as e:
+            self.debug_print(f"Error searching text in editor: {e}")
+            self.status_var.set(f"Error searching text in editor: {e}")
+
+    def _display_search_results(self, matches, timeline_id, timeline=None):
+        """Display search results in the editor dialog"""
+        try:
+            # Clear previous search results
+            for widget in self.editor_results_container.winfo_children():
+                widget.destroy()
+            
+            # If no timeline object provided, try to get it from Resolve
+            if not timeline:
+                try:
+                    resolve = dvr_script.scriptapp("Resolve")
+                    project = resolve.GetProjectManager().GetCurrentProject()
+                    timeline = project.GetCurrentTimeline()
+                except:
+                    self.debug_print("Could not get timeline object for result display")
+                    return
+
             # Get the timeline frame rate
-            timeline_fps = self._get_resolve_timeline_fps(timeline)
+            timeline_fps = self._get_resolve_timeline_fps(timeline) if timeline else 24.0
 
             # Create a frame for each match
             for match in matches:
@@ -3392,14 +3547,14 @@ sys.exit(1)
                 timecode_label.pack(pady=5, anchor="w")
                 
                 # Debug output to compare text formatting
-                self.debug_print(f"EDITOR SEARCH - API text: {repr(match['text'])}")
+                self.debug_print(f"EDITOR SEARCH - text: {repr(match['text'])}")
                 
                 subtitle_label = ttk.Label(result_frame, text=self._restore_subtitle_line_breaks(match['text']), wraplength=700)
                 subtitle_label.pack(pady=5, anchor="w")
-
+                
         except Exception as e:
-            self.debug_print(f"Error searching text in editor: {e}")
-            self.status_var.set(f"Error searching text in editor: {e}")
+            self.debug_print(f"Error displaying search results: {e}")
+            self.status_var.set(f"Error displaying search results: {e}")
 
     def _handle_editor_timecode_click(self, timeline, start_frame, item_ref=None):
         """Handle clicks on editor timecode results - generic handler"""
@@ -4013,6 +4168,278 @@ sys.exit(1)
         except Exception as e:
             logging.error(f"Error using timeline navigation methods: {str(e)}")
             return False
+
+    # Subtitle Cache Management Methods
+    def _get_timeline_identifier(self):
+        """Get a unique identifier for the current timeline"""
+        try:
+            resolve = dvr_script.scriptapp("Resolve")
+            project = resolve.GetProjectManager().GetCurrentProject()
+            if not project:
+                return None
+            timeline = project.GetCurrentTimeline()
+            if not timeline:
+                return None
+            
+            # Create identifier from project and timeline name
+            project_name = project.GetName()
+            timeline_name = timeline.GetName()
+            return f"{project_name}::{timeline_name}"
+        except Exception as e:
+            self.debug_print(f"Error getting timeline identifier: {e}")
+            return None
+
+    def _build_subtitle_cache_in_background(self, timeline_id=None):
+        """Build subtitle cache in background thread"""
+        if self.is_caching:
+            self.debug_print("Cache update already in progress")
+            return
+            
+        if timeline_id is None:
+            timeline_id = self._get_timeline_identifier()
+            
+        if not timeline_id:
+            self.debug_print("No valid timeline found for caching")
+            return
+            
+        # Start background thread for caching
+        self.cache_update_thread = threading.Thread(
+            target=self._update_subtitle_cache_thread,
+            args=(timeline_id,),
+            daemon=True
+        )
+        self.cache_update_thread.start()
+
+    def _update_subtitle_cache_thread(self, timeline_id):
+        """Thread function to update subtitle cache"""
+        try:
+            with self.cache_lock:
+                self.is_caching = True
+                
+            # Update status on main thread
+            self.root.after(0, lambda: self._set_cache_status("Updating subtitle cache..."))
+            
+            # Get subtitle items from Resolve API
+            subtitle_items = self._fetch_subtitle_items_from_resolve()
+            
+            if subtitle_items:
+                with self.cache_lock:
+                    self.subtitle_cache[timeline_id] = {
+                        'items': subtitle_items,
+                        'timestamp': time.time(),
+                        'timeline_id': timeline_id
+                    }
+                    self.last_timeline_id = timeline_id
+                    
+                cache_count = len(subtitle_items)
+                self.debug_print(f"Cached {cache_count} subtitle items for timeline: {timeline_id}")
+                
+                # Update status on main thread
+                self.root.after(0, lambda: self._set_cache_status(f"Cache updated: {cache_count} items"))
+                self.root.after(3000, lambda: self._clear_cache_status())  # Clear after 3 seconds
+            else:
+                self.debug_print(f"No subtitle items found for timeline: {timeline_id}")
+                self.root.after(0, lambda: self._set_cache_status("No subtitle items found"))
+                self.root.after(3000, lambda: self._clear_cache_status())
+                
+        except Exception as e:
+            self.debug_print(f"Error updating subtitle cache: {e}")
+            self.root.after(0, lambda: self._set_cache_status(f"Cache update failed: {e}"))
+            self.root.after(5000, lambda: self._clear_cache_status())
+        finally:
+            with self.cache_lock:
+                self.is_caching = False
+
+    def _fetch_subtitle_items_from_resolve(self):
+        """Fetch subtitle items directly from Resolve API"""
+        try:
+            # Ensure DaVinci Resolve is ready
+            if not self._ensure_resolve_ready():
+                return None
+                
+            resolve = dvr_script.scriptapp("Resolve")
+            
+            if not self._ensure_resolve_edit_page(resolve):
+                return None
+                
+            project = resolve.GetProjectManager().GetCurrentProject()
+            if not project:
+                return None
+                
+            timeline = project.GetCurrentTimeline()
+            if not timeline:
+                return None
+                
+            # Get subtitle track items
+            subtitle_track = self._get_resolve_subtitle_track(timeline)
+            return subtitle_track
+            
+        except Exception as e:
+            self.debug_print(f"Error fetching subtitle items from Resolve: {e}")
+            return None
+
+    def _get_cached_subtitle_items(self, timeline_id=None):
+        """Get subtitle items from cache if available"""
+        if timeline_id is None:
+            timeline_id = self._get_timeline_identifier()
+            
+        if not timeline_id:
+            return None
+            
+        with self.cache_lock:
+            cache_data = self.subtitle_cache.get(timeline_id)
+            if cache_data:
+                self.debug_print(f"Retrieved {len(cache_data['items'])} items from cache")
+                return cache_data['items']
+                
+        self.debug_print("No cached data available")
+        return None
+
+    def _set_cache_status(self, message):
+        """Set cache status in the status bar"""
+        try:
+            if hasattr(self, 'status_var') and self.status_var:
+                # Store the current message before overwriting it
+                current_message = self.status_var.get()
+                if current_message and not current_message.startswith("🔄"):
+                    self.last_status_message = current_message
+                self.status_var.set(f"🔄 {message}")
+        except Exception as e:
+            self.debug_print(f"Error setting cache status: {e}")
+
+    def _clear_cache_status(self):
+        """Clear cache status and restore the previous message"""
+        try:
+            if hasattr(self, 'status_var') and self.status_var:
+                # Restore the last status message if we have one
+                if hasattr(self, 'last_status_message') and self.last_status_message:
+                    self.status_var.set(self.last_status_message)
+                else:
+                    self.status_var.set("")
+        except Exception as e:
+            self.debug_print(f"Error clearing cache status: {e}")
+
+    def _invalidate_cache(self, timeline_id=None):
+        """Invalidate cache for specific timeline or all"""
+        with self.cache_lock:
+            if timeline_id:
+                if timeline_id in self.subtitle_cache:
+                    del self.subtitle_cache[timeline_id]
+                    self.debug_print(f"Invalidated cache for timeline: {timeline_id}")
+            else:
+                self.subtitle_cache.clear()
+                self.debug_print("Invalidated entire subtitle cache")
+
+    def _on_window_focus_in(self, event=None):
+        """Handle window focus in event"""
+        # Only trigger cache update if we have an editor dialog open
+        if self.editor_dialog and self.editor_dialog.winfo_exists():
+            current_timeline_id = self._get_timeline_identifier()
+            if current_timeline_id and current_timeline_id != self.last_timeline_id:
+                self.debug_print("Timeline changed, updating cache")
+                self._build_subtitle_cache_in_background(current_timeline_id)
+            elif current_timeline_id and not self.was_focused:
+                self.debug_print("Window regained focus, updating cache")
+                self._build_subtitle_cache_in_background(current_timeline_id)
+                
+        self.was_focused = True
+
+    def _on_window_focus_out(self, event=None):
+        """Handle window focus out event"""
+        self.was_focused = False
+
+    def _setup_focus_detection(self):
+        """Setup robust focus detection for cache management"""
+        # Method 1: Traditional focus events (works on most platforms)
+        self.root.bind("<FocusIn>", self._on_window_focus_in)
+        self.root.bind("<FocusOut>", self._on_window_focus_out)
+        
+        # Method 2: Periodic focus checking (backup method)
+        self._setup_periodic_focus_check()
+        
+        # Method 3: User interaction triggers (most reliable)
+        self._setup_interaction_cache_triggers()
+        
+        # Also bind to all child windows
+        def bind_focus_events(widget):
+            try:
+                widget.bind("<FocusIn>", self._on_window_focus_in)
+                widget.bind("<FocusOut>", self._on_window_focus_out)
+                for child in widget.winfo_children():
+                    bind_focus_events(child)
+            except:
+                pass
+                    
+        self.root.after(100, lambda: bind_focus_events(self.root))
+
+    def _setup_periodic_focus_check(self):
+        """Setup periodic checking as backup for focus detection"""
+        self.last_focus_check = time.time()
+        self.focus_check_interval = 2000  # Check every 2 seconds
+        self._periodic_focus_check()
+        
+    def _periodic_focus_check(self):
+        """Periodically check if window has focus (backup method)"""
+        try:
+            # Check if main window or any child has focus
+            focused_widget = self.root.focus_get()
+            current_time = time.time()
+            
+            # If we have focus and haven't checked recently
+            if focused_widget and (current_time - self.last_focus_check) > 5:
+                # Only update cache if editor dialog is open and enough time has passed
+                if (self.editor_dialog and self.editor_dialog.winfo_exists() and 
+                    not self.was_focused and not self.is_caching):
+                    self.debug_print("Periodic check detected focus regain, updating cache")
+                    self._build_subtitle_cache_in_background()
+                self.was_focused = True
+                self.last_focus_check = current_time
+            elif not focused_widget:
+                self.was_focused = False
+                
+        except Exception as e:
+            # Silently handle any focus checking errors
+            pass
+        finally:
+            # Schedule next check
+            self.root.after(self.focus_check_interval, self._periodic_focus_check)
+
+    def _setup_interaction_cache_triggers(self):
+        """Setup cache update triggers based on user interactions"""
+        # This is the most reliable method - update cache when user starts typing
+        pass  # Will be implemented in search entry setup
+
+    def _on_search_entry_key(self, event):
+        """Handle key events in search entry - trigger cache update if needed"""
+        # If this is the first character typed and we haven't cached recently
+        if (len(self.editor_search_var.get()) == 0 and 
+            self.editor_dialog and self.editor_dialog.winfo_exists() and
+            not self.is_caching):
+            
+            timeline_id = self._get_timeline_identifier()
+            if timeline_id:
+                cached_items = self._get_cached_subtitle_items(timeline_id)
+                if not cached_items or timeline_id != self.last_timeline_id:
+                    self.debug_print("User interaction triggered cache update")
+                    self._build_subtitle_cache_in_background(timeline_id)
+
+    def _manual_cache_refresh(self):
+        """Manually refresh the subtitle cache"""
+        self.debug_print("Manual cache refresh triggered")
+        self._build_subtitle_cache_in_background()
+
+    def _map_subtitles_in_background(self):
+        """Start subtitle-to-video mapping in background thread"""
+        def mapping_thread():
+            try:
+                self.map_subtitles_to_videos()
+            except Exception as e:
+                self.debug_print(f"Error during background mapping: {e}")
+                self.status_var.set("Error mapping subtitle files. See debug window for details.")
+        
+        # Start the mapping in a background thread
+        mapping_thread = threading.Thread(target=mapping_thread, daemon=True)
+        mapping_thread.start()
 
 class DebugWindow:
     """A debug window to display errors and debug information"""
