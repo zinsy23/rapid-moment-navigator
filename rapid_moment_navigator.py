@@ -217,6 +217,10 @@ class RapidMomentNavigator:
         # Initialize debug window to None
         self.debug_window = None
         
+        # Active canvas tracking for scroll management
+        self.active_scroll_canvases = {}  # canvas -> handler mapping
+        self.current_scroll_canvas = None  # Currently focused canvas for scrolling
+        
         # Setup exception handling for Tkinter
         self.setup_exception_handler()
         
@@ -326,8 +330,14 @@ class RapidMomentNavigator:
         self.results_container.bind("<Configure>", self._configure_scroll_region)
         self.results_canvas.bind("<Configure>", self._configure_canvas_width)
         
-        # Bind mousewheel scrolling
-        self.results_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        # Setup cross-platform mousewheel scrolling
+        self._setup_canvas_scrolling(self.results_canvas)
+        
+        # Immediately activate the main canvas for Mac scrolling
+        import sys
+        if sys.platform == "darwin":  # macOS
+            self.current_scroll_canvas = self.results_canvas
+            self.debug_print("Main canvas immediately activated for Mac scrolling")
         
         # Status bar
         self.status_var = tk.StringVar()
@@ -636,9 +646,137 @@ class RapidMomentNavigator:
         self.results_canvas.itemconfig(self.results_container_id, width=event.width)
     
     def _on_mousewheel(self, event):
-        """Handle mousewheel scrolling"""
-        self.results_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-    
+        """Handle mousewheel scrolling with cross-platform support"""
+        try:
+            # Determine scroll direction and amount based on platform
+            if hasattr(event, 'delta'):
+                # Windows and some Unix systems
+                scroll_amount = int(-1 * (event.delta / 120))
+            elif hasattr(event, 'num'):
+                # Mac and Linux (Button-4/Button-5 events)
+                scroll_amount = -1 if event.num == 4 else 1
+            else:
+                # Fallback
+                scroll_amount = -1 if event.type == '4' else 1
+            
+            self.results_canvas.yview_scroll(scroll_amount, "units")
+        except Exception as e:
+            self.debug_print(f"Error in mousewheel handling: {e}")
+
+    def _setup_canvas_scrolling(self, canvas):
+        """Set up cross-platform scrolling for a canvas widget"""
+        import sys
+        
+        def on_scroll(event):
+            """Handle scroll events for the specific canvas"""
+            try:
+                # Process scroll events with cross-platform support
+                
+                # Determine scroll direction and amount based on platform
+                if sys.platform == "darwin":  # macOS
+                    if hasattr(event, 'delta'):
+                        # macOS MouseWheel event - delta is small integers like 3, -3
+                        scroll_amount = -event.delta
+                    elif hasattr(event, 'num'):
+                        # macOS Button events - 4 is up, 5 is down (fallback)
+                        scroll_amount = -1 if event.num == 4 else 1
+                    else:
+                        # Fallback for macOS
+                        scroll_amount = -1
+                else:
+                    # Windows and Linux
+                    if hasattr(event, 'delta'):
+                        # Windows standard - delta is 120 per notch
+                        scroll_amount = int(-1 * (event.delta / 120))
+                    elif hasattr(event, 'num'):
+                        # Linux Button events
+                        scroll_amount = -1 if event.num == 4 else 1
+                    else:
+                        # Fallback
+                        scroll_amount = -1
+                
+                canvas.yview_scroll(scroll_amount, "units")
+                
+            except Exception as e:
+                self.debug_print(f"Error in canvas scroll handling: {e}")
+                import traceback
+                self.debug_print(f"Traceback: {traceback.format_exc()}")
+        
+        # Remove any existing bindings first
+        canvas.unbind("<MouseWheel>")
+        canvas.unbind("<Button-4>")
+        canvas.unbind("<Button-5>")
+        
+        # Store the handler for this canvas  
+        self.active_scroll_canvases[canvas] = on_scroll
+        
+        # Note: Removed unreliable mouse enter/leave tracking
+        # Will use real-time position checking instead
+        
+        # Use simple window-based approach
+        # Since we have modal dialogs, only one scrollable area should be active at a time
+        def setup_global_handler():
+            """Set up a simple global scroll handler that routes to the appropriate canvas"""
+            if not hasattr(self, '_global_scroll_handler_installed'):
+                def simple_global_scroll_handler(event):
+                    """Simple global scroll handler based on which window should be active"""
+                    try:
+                        # Determine which canvas should receive scroll events
+                        target_canvas = None
+                        
+                        # If editor dialog exists, route to editor canvas
+                        if hasattr(self, 'editor_dialog') and self.editor_dialog and hasattr(self, 'editor_results_canvas'):
+                            try:
+                                if self.editor_results_canvas.winfo_exists():
+                                    target_canvas = self.editor_results_canvas
+                                    self.debug_print("Routing scroll to editor canvas")
+                            except:
+                                pass
+                        
+                        # Otherwise, route to main canvas
+                        if not target_canvas and hasattr(self, 'results_canvas'):
+                            try:
+                                if self.results_canvas.winfo_exists():
+                                    target_canvas = self.results_canvas
+                                    self.debug_print("Routing scroll to main canvas")
+                            except:
+                                pass
+                        
+                        # Execute scroll on target canvas
+                        if target_canvas and target_canvas in self.active_scroll_canvases:
+                            self.active_scroll_canvases[target_canvas](event)
+                            return "break"
+                                
+                    except Exception as e:
+                        self.debug_print(f"Error in simple global scroll handler: {e}")
+                
+                # Install the global handler once for all platforms
+                self.root.bind_all("<MouseWheel>", simple_global_scroll_handler)
+                
+                # Also bind Button events for Linux X11 compatibility
+                if sys.platform.startswith("linux"):
+                    self.root.bind_all("<Button-4>", simple_global_scroll_handler)
+                    self.root.bind_all("<Button-5>", simple_global_scroll_handler)
+                
+                self._global_scroll_handler_installed = True
+                self.debug_print("Installed simple global scroll handler for all platforms")
+        
+        setup_global_handler()
+
+    def _cleanup_canvas_scrolling(self, canvas):
+        """Clean up scroll bindings for a canvas"""
+        try:
+            # Remove from active canvases
+            if canvas in self.active_scroll_canvases:
+                del self.active_scroll_canvases[canvas]
+                self.debug_print(f"Removed canvas from active scroll canvases ({len(self.active_scroll_canvases)} remaining)")
+            
+            # Note: No individual canvas events to unbind since we use global position checking
+            # The global handler will automatically skip destroyed canvases
+            
+        except Exception as e:
+            self.debug_print(f"Error cleaning up canvas scroll bindings: {e}")
+
     def update_show_dropdown(self):
         """Update the show dropdown with current show names"""
         # Get sorted list of show names for the dropdown
@@ -3243,6 +3381,10 @@ except Exception as e:
         
         # Setup dialog close handler to clear reference
         def on_dialog_close():
+            # Clean up scroll bindings for editor canvas
+            if hasattr(self, 'editor_results_canvas'):
+                self._cleanup_canvas_scrolling(self.editor_results_canvas)
+            
             self.editor_dialog = None
             editor_dialog.destroy()
             
@@ -3354,7 +3496,8 @@ except Exception as e:
         self.editor_results_container.bind("<Configure>", lambda e: self.editor_results_canvas.configure(scrollregion=self.editor_results_canvas.bbox("all")))
         self.editor_results_canvas.bind("<Configure>", lambda e: self.editor_results_canvas.itemconfig(self.editor_results_container_id, width=e.width))
 
-        self.editor_results_canvas.bind_all("<MouseWheel>", lambda e: self.editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        # Setup cross-platform mousewheel scrolling for editor dialog
+        self._setup_canvas_scrolling(self.editor_results_canvas)
 
         # Show appropriate status and optionally trigger cache build
         current_editor = self.editor_var.get()
@@ -3364,6 +3507,9 @@ except Exception as e:
         else:
             self.debug_print("Editor dialog opened - ready for use")
 
+        # Note: Canvas scrolling is now handled automatically by the global position-based handler
+        # No platform-specific activation needed
+            
     def find_text_in_editor(self):
         """Find text in the currently selected editor"""
         text_to_find = self.editor_search_var.get()
