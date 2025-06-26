@@ -709,20 +709,7 @@ class RapidMomentNavigator:
                 canvas.bind("<Button-4>", on_scroll)
                 canvas.bind("<Button-5>", on_scroll)
         
-        # Set up focus handling for better scroll responsiveness
-        def on_enter(event):
-            """Give focus to canvas when mouse enters"""
-            canvas.focus_set()
-        
-        def on_leave(event):
-            """Return focus to parent when mouse leaves"""
-            try:
-                canvas.master.focus_set()
-            except:
-                pass
-        
-        canvas.bind("<Enter>", on_enter)
-        canvas.bind("<Leave>", on_leave)
+        # No additional focus handling needed - bind_all captures events globally
 
     def update_show_dropdown(self):
         """Update the show dropdown with current show names"""
