@@ -4164,6 +4164,12 @@ except Exception as e:
         """Get a unique identifier for the current timeline"""
         global dvr_script
         try:
+            # Check if DaVinci Resolve API is initialized
+            if dvr_script is None:
+                # API not initialized yet - try to ensure it's ready
+                if not self._ensure_resolve_ready():
+                    return None
+            
             resolve = dvr_script.scriptapp("Resolve")
             project = resolve.GetProjectManager().GetCurrentProject()
             if not project:
