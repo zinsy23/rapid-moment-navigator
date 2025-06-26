@@ -703,27 +703,27 @@ class RapidMomentNavigator:
             # Use bind_all for global capture without focus requirements
             canvas.bind_all("<MouseWheel>", on_scroll)
         else:
-            # Windows and Linux - use direct binding
-            canvas.bind("<MouseWheel>", on_scroll)
+            # Windows and Linux - try bind_all with position checking to avoid focus issues
+            def on_scroll_filtered(event):
+                """Only scroll if mouse is over this specific canvas"""
+                try:
+                    # Get mouse position relative to canvas
+                    canvas_x = canvas.winfo_pointerx() - canvas.winfo_rootx()
+                    canvas_y = canvas.winfo_pointery() - canvas.winfo_rooty()
+                    
+                    # Check if mouse is within canvas bounds
+                    if (0 <= canvas_x <= canvas.winfo_width() and 
+                        0 <= canvas_y <= canvas.winfo_height()):
+                        on_scroll(event)
+                except:
+                    pass  # Ignore any errors in position checking
+            
+            canvas.bind_all("<MouseWheel>", on_scroll_filtered)
+            
             # Also bind Button events for Linux X11 compatibility
             if sys.platform.startswith("linux"):
-                canvas.bind("<Button-4>", on_scroll)
-                canvas.bind("<Button-5>", on_scroll)
-            
-            # Windows needs focus for scroll events to work with direct binding
-            def on_enter(event):
-                """Give focus to canvas when mouse enters (Windows/Linux)"""
-                canvas.focus_set()
-            
-            def on_leave(event):
-                """Return focus to parent when mouse leaves (Windows/Linux)"""
-                try:
-                    canvas.master.focus_set()
-                except:
-                    pass
-            
-            canvas.bind("<Enter>", on_enter)
-            canvas.bind("<Leave>", on_leave)
+                canvas.bind_all("<Button-4>", on_scroll_filtered)
+                canvas.bind_all("<Button-5>", on_scroll_filtered)
 
     def update_show_dropdown(self):
         """Update the show dropdown with current show names"""
