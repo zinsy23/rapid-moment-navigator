@@ -203,6 +203,10 @@ class RapidMomentNavigator:
         self.last_timeline_id = None
         self.cache_status_timer = None
         
+        # Queued search system for when cache is building
+        self.queued_search_term = None
+        self.search_queue_timer = None
+        
         # Status message preservation
         self.last_status_message = ""
         
@@ -3385,6 +3389,12 @@ except Exception as e:
             if hasattr(self, 'editor_results_canvas'):
                 self._cleanup_canvas_scrolling(self.editor_results_canvas)
             
+            # Clean up search queue
+            if hasattr(self, 'search_queue_timer') and self.search_queue_timer:
+                self.root.after_cancel(self.search_queue_timer)
+                self.search_queue_timer = None
+            self.queued_search_term = None
+            
             self.editor_dialog = None
             editor_dialog.destroy()
             
@@ -3579,8 +3589,11 @@ except Exception as e:
                 else:
                     # No cache available, check if cache is currently being built
                     if self.is_caching:
-                        self.debug_print("Cache is currently being built, please wait")
-                        self.status_var.set("Cache is being built, please wait and try again...")
+                        self.debug_print(f"Cache is currently being built, queuing search for '{text_to_find}'")
+                        self.status_var.set("Cache is building... Your search will run automatically when ready.")
+                        # Queue this search to run when cache is ready (overwrites any previous queued search)
+                        self.queued_search_term = text_to_find
+                        self._start_search_queue_monitor()
                         return
                     else:
                         # No cache available and not currently caching, trigger cache building
@@ -4650,6 +4663,41 @@ except Exception as e:
         except Exception as e:
             self.debug_print(f"Error checking cache during dialog init: {e}")
             self._set_cache_status("Ready - cache will build on first search")
+
+    def _start_search_queue_monitor(self):
+        """Start monitoring for cache completion to execute queued search"""
+        # Cancel any existing timer
+        if self.search_queue_timer:
+            self.root.after_cancel(self.search_queue_timer)
+        
+        # Check every 100ms if cache is ready
+        self.search_queue_timer = self.root.after(100, self._check_search_queue)
+    
+    def _check_search_queue(self):
+        """Check if cache is ready and execute queued search if available"""
+        try:
+            if not self.is_caching and self.queued_search_term:
+                # Cache is ready and we have a queued search
+                search_term = self.queued_search_term
+                self.queued_search_term = None  # Clear the queue
+                self.search_queue_timer = None
+                
+                self.debug_print(f"Cache ready, executing queued search for '{search_term}'")
+                self.status_var.set(f"Cache ready! Searching for '{search_term}'...")
+                
+                # Execute the queued search
+                self.root.after(50, lambda: self._find_text_in_resolve(search_term))
+                
+            elif self.is_caching and self.queued_search_term:
+                # Still caching, keep monitoring
+                self.search_queue_timer = self.root.after(100, self._check_search_queue)
+            else:
+                # No queued search or cache not building anymore
+                self.search_queue_timer = None
+                
+        except Exception as e:
+            self.debug_print(f"Error in search queue monitor: {e}")
+            self.search_queue_timer = None
 
     def _map_subtitles_in_background(self):
         """Start subtitle-to-video mapping in background thread"""
