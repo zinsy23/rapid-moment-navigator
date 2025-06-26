@@ -217,6 +217,10 @@ class RapidMomentNavigator:
         # Initialize debug window to None
         self.debug_window = None
         
+        # Active canvas tracking for scroll management
+        self.active_scroll_canvases = {}  # canvas -> handler mapping
+        self.current_scroll_canvas = None  # Currently focused canvas for scrolling
+        
         # Setup exception handling for Tkinter
         self.setup_exception_handler()
         
@@ -328,6 +332,12 @@ class RapidMomentNavigator:
         
         # Setup cross-platform mousewheel scrolling
         self._setup_canvas_scrolling(self.results_canvas)
+        
+        # Immediately activate the main canvas for Mac scrolling
+        import sys
+        if sys.platform == "darwin":  # macOS
+            self.current_scroll_canvas = self.results_canvas
+            self.debug_print("Main canvas immediately activated for Mac scrolling")
         
         # Status bar
         self.status_var = tk.StringVar()
@@ -697,33 +707,74 @@ class RapidMomentNavigator:
         canvas.unbind("<Button-4>")
         canvas.unbind("<Button-5>")
         
-        # Bind events based on platform
+        # Store the handler for this canvas  
+        self.active_scroll_canvases[canvas] = on_scroll
+        
+        # Set up mouse tracking to determine which canvas should scroll
+        def on_enter(event):
+            """Mouse entered this canvas"""
+            self.current_scroll_canvas = canvas
+        
+        def on_leave(event):
+            """Mouse left this canvas"""
+            if self.current_scroll_canvas is canvas:
+                self.current_scroll_canvas = None
+        
+        canvas.bind("<Enter>", on_enter)
+        canvas.bind("<Leave>", on_leave)
+        
+        # Bind scroll events based on platform
         if sys.platform == "darwin":  # macOS
-            # Mac primarily uses MouseWheel events with delta attribute
-            # Use bind_all for global capture without focus requirements
-            canvas.bind_all("<MouseWheel>", on_scroll)
+            # Mac: Set up a single global handler if it doesn't exist
+            if not hasattr(self, '_mac_global_handler_installed'):
+                def mac_global_scroll_handler(event):
+                    """Single global Mac scroll handler that delegates to the active canvas"""
+                    try:
+                        if (self.current_scroll_canvas and 
+                            self.current_scroll_canvas in self.active_scroll_canvases):
+                            # Call the individual canvas handler
+                            self.active_scroll_canvases[self.current_scroll_canvas](event)
+                    except Exception as e:
+                        self.debug_print(f"Error in Mac global scroll handler: {e}")
+                
+                # Install the global handler once
+                self.root.bind_all("<MouseWheel>", mac_global_scroll_handler)
+                self._mac_global_handler_installed = True
+                self.debug_print("Installed global Mac scroll handler")
         else:
-            # Windows and Linux - try bind_all with position checking to avoid focus issues
-            def on_scroll_filtered(event):
-                """Only scroll if mouse is over this specific canvas"""
-                try:
-                    # Get mouse position relative to canvas
-                    canvas_x = canvas.winfo_pointerx() - canvas.winfo_rootx()
-                    canvas_y = canvas.winfo_pointery() - canvas.winfo_rooty()
-                    
-                    # Check if mouse is within canvas bounds
-                    if (0 <= canvas_x <= canvas.winfo_width() and 
-                        0 <= canvas_y <= canvas.winfo_height()):
-                        on_scroll(event)
-                except:
-                    pass  # Ignore any errors in position checking
-            
-            canvas.bind_all("<MouseWheel>", on_scroll_filtered)
-            
+            # Windows and Linux: Use direct binding to avoid focus highlighting
+            canvas.bind("<MouseWheel>", on_scroll)
             # Also bind Button events for Linux X11 compatibility
             if sys.platform.startswith("linux"):
-                canvas.bind_all("<Button-4>", on_scroll_filtered)
-                canvas.bind_all("<Button-5>", on_scroll_filtered)
+                canvas.bind("<Button-4>", on_scroll)
+                canvas.bind("<Button-5>", on_scroll)
+
+    def _cleanup_canvas_scrolling(self, canvas):
+        """Clean up scroll bindings for a canvas"""
+        import sys
+        try:
+            # Remove from active canvases
+            if canvas in self.active_scroll_canvases:
+                del self.active_scroll_canvases[canvas]
+            
+            # Clear current scroll canvas if it's this one
+            if self.current_scroll_canvas is canvas:
+                self.current_scroll_canvas = None
+            
+            # Unbind events (but don't touch the global Mac handler)
+            if sys.platform != "darwin":  # Only unbind on Windows/Linux
+                canvas.unbind("<MouseWheel>")
+                canvas.unbind("<Button-4>")
+                canvas.unbind("<Button-5>")
+            
+            # Always unbind enter/leave events
+            canvas.unbind("<Enter>")
+            canvas.unbind("<Leave>")
+            
+            self.debug_print(f"Cleaned up scroll bindings for canvas (Mac global handler preserved)")
+            
+        except Exception as e:
+            self.debug_print(f"Error cleaning up canvas scroll bindings: {e}")
 
     def update_show_dropdown(self):
         """Update the show dropdown with current show names"""
@@ -3329,6 +3380,10 @@ except Exception as e:
         
         # Setup dialog close handler to clear reference
         def on_dialog_close():
+            # Clean up scroll bindings for editor canvas
+            if hasattr(self, 'editor_results_canvas'):
+                self._cleanup_canvas_scrolling(self.editor_results_canvas)
+            
             self.editor_dialog = None
             editor_dialog.destroy()
             
@@ -3450,6 +3505,21 @@ except Exception as e:
             self._check_and_initialize_cache()
         else:
             self.debug_print("Editor dialog opened - ready for use")
+
+        # Immediately activate the editor canvas for Mac scrolling (after cache init)
+        import sys
+        if sys.platform == "darwin":  # macOS
+            # Use a small delay to ensure all other initialization is complete
+            self.root.after(50, lambda: self._activate_editor_canvas_for_mac())
+            
+    def _activate_editor_canvas_for_mac(self):
+        """Activate the editor canvas for Mac scrolling after dialog is fully initialized"""
+        try:
+            if hasattr(self, 'editor_results_canvas'):
+                self.current_scroll_canvas = self.editor_results_canvas
+                self.debug_print("Editor canvas activated for Mac scrolling (delayed)")
+        except Exception as e:
+            self.debug_print(f"Error activating editor canvas for Mac: {e}")
 
     def find_text_in_editor(self):
         """Find text in the currently selected editor"""
