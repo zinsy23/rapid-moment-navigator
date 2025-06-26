@@ -3356,11 +3356,11 @@ except Exception as e:
 
         self.editor_results_canvas.bind_all("<MouseWheel>", lambda e: self.editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
-        # Show initial status message instead of blocking for cache
+        # Show appropriate status and optionally trigger cache build
         current_editor = self.editor_var.get()
         if current_editor == "DaVinci Resolve":
             self.debug_print("Editor dialog opened - ready for use")
-            self._set_cache_status("Ready - cache will build on first search")
+            self._check_and_initialize_cache()
         else:
             self.debug_print("Editor dialog opened - ready for use")
 
@@ -4458,6 +4458,36 @@ except Exception as e:
         self.editor_menu = editor_menu
         self.cache_menu_index = cache_index
         self.debug_print(f"Stored editor menu reference with cache item at index {cache_index}")
+
+    def _check_and_initialize_cache(self):
+        """Check if cache exists for current timeline and show appropriate status/action"""
+        try:
+            timeline_id = self._get_timeline_identifier()
+            if not timeline_id:
+                self._set_cache_status("No timeline detected")
+                return
+                
+            # Check if we already have cache for this timeline
+            cached_items = self._get_cached_subtitle_items(timeline_id)
+            if cached_items:
+                cache_count = len(cached_items)
+                self.debug_print(f"Found existing cache with {cache_count} items")
+                self._set_cache_status(f"Cache ready: {cache_count} items")
+                self.root.after(3000, lambda: self._clear_cache_status())  # Clear after 3 seconds
+            else:
+                # No cache exists - check if we should auto-build it
+                if self.preferences.get("auto_cache_update", True):
+                    self.debug_print("No cache found, building cache automatically")
+                    self._set_cache_status("Building cache...")
+                    # Trigger cache build on next tick so dialog can finish rendering
+                    self.root.after(100, lambda: self._build_subtitle_cache_in_background(timeline_id))
+                else:
+                    self.debug_print("No cache found, auto-cache disabled")
+                    self._set_cache_status("Ready - cache will build on first search")
+                    
+        except Exception as e:
+            self.debug_print(f"Error checking cache during dialog init: {e}")
+            self._set_cache_status("Ready - cache will build on first search")
 
     def _map_subtitles_in_background(self):
         """Start subtitle-to-video mapping in background thread"""
