@@ -326,8 +326,8 @@ class RapidMomentNavigator:
         self.results_container.bind("<Configure>", self._configure_scroll_region)
         self.results_canvas.bind("<Configure>", self._configure_canvas_width)
         
-        # Bind mousewheel scrolling
-        self.results_canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        # Setup cross-platform mousewheel scrolling
+        self._setup_canvas_scrolling(self.results_canvas)
         
         # Status bar
         self.status_var = tk.StringVar()
@@ -636,9 +636,94 @@ class RapidMomentNavigator:
         self.results_canvas.itemconfig(self.results_container_id, width=event.width)
     
     def _on_mousewheel(self, event):
-        """Handle mousewheel scrolling"""
-        self.results_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-    
+        """Handle mousewheel scrolling with cross-platform support"""
+        try:
+            # Determine scroll direction and amount based on platform
+            if hasattr(event, 'delta'):
+                # Windows and some Unix systems
+                scroll_amount = int(-1 * (event.delta / 120))
+            elif hasattr(event, 'num'):
+                # Mac and Linux (Button-4/Button-5 events)
+                scroll_amount = -1 if event.num == 4 else 1
+            else:
+                # Fallback
+                scroll_amount = -1 if event.type == '4' else 1
+            
+            self.results_canvas.yview_scroll(scroll_amount, "units")
+        except Exception as e:
+            self.debug_print(f"Error in mousewheel handling: {e}")
+
+    def _setup_canvas_scrolling(self, canvas):
+        """Set up cross-platform scrolling for a canvas widget"""
+        import sys
+        
+        def on_scroll(event):
+            """Handle scroll events for the specific canvas"""
+            try:
+                # Process scroll events with cross-platform support
+                
+                # Determine scroll direction and amount based on platform
+                if sys.platform == "darwin":  # macOS
+                    if hasattr(event, 'delta'):
+                        # macOS MouseWheel event - delta is small integers like 3, -3
+                        scroll_amount = -event.delta
+                    elif hasattr(event, 'num'):
+                        # macOS Button events - 4 is up, 5 is down (fallback)
+                        scroll_amount = -1 if event.num == 4 else 1
+                    else:
+                        # Fallback for macOS
+                        scroll_amount = -1
+                else:
+                    # Windows and Linux
+                    if hasattr(event, 'delta'):
+                        # Windows standard - delta is 120 per notch
+                        scroll_amount = int(-1 * (event.delta / 120))
+                    elif hasattr(event, 'num'):
+                        # Linux Button events
+                        scroll_amount = -1 if event.num == 4 else 1
+                    else:
+                        # Fallback
+                        scroll_amount = -1
+                
+                canvas.yview_scroll(scroll_amount, "units")
+                
+            except Exception as e:
+                self.debug_print(f"Error in canvas scroll handling: {e}")
+                import traceback
+                self.debug_print(f"Traceback: {traceback.format_exc()}")
+        
+        # Remove any existing bindings first
+        canvas.unbind("<MouseWheel>")
+        canvas.unbind("<Button-4>")
+        canvas.unbind("<Button-5>")
+        
+        # Bind events based on platform
+        if sys.platform == "darwin":  # macOS
+            # Mac primarily uses MouseWheel events with delta attribute
+            canvas.bind_all("<MouseWheel>", on_scroll)
+        else:
+            # Windows and Linux
+            canvas.bind("<MouseWheel>", on_scroll)
+            # Also bind Button events for Linux X11 compatibility
+            if sys.platform.startswith("linux"):
+                canvas.bind("<Button-4>", on_scroll)
+                canvas.bind("<Button-5>", on_scroll)
+        
+        # Set up focus handling for better scroll responsiveness
+        def on_enter(event):
+            """Give focus to canvas when mouse enters"""
+            canvas.focus_set()
+        
+        def on_leave(event):
+            """Return focus to parent when mouse leaves"""
+            try:
+                canvas.master.focus_set()
+            except:
+                pass
+        
+        canvas.bind("<Enter>", on_enter)
+        canvas.bind("<Leave>", on_leave)
+
     def update_show_dropdown(self):
         """Update the show dropdown with current show names"""
         # Get sorted list of show names for the dropdown
@@ -3354,7 +3439,8 @@ except Exception as e:
         self.editor_results_container.bind("<Configure>", lambda e: self.editor_results_canvas.configure(scrollregion=self.editor_results_canvas.bbox("all")))
         self.editor_results_canvas.bind("<Configure>", lambda e: self.editor_results_canvas.itemconfig(self.editor_results_container_id, width=e.width))
 
-        self.editor_results_canvas.bind_all("<MouseWheel>", lambda e: self.editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        # Setup cross-platform mousewheel scrolling for editor dialog
+        self._setup_canvas_scrolling(self.editor_results_canvas)
 
         # Show appropriate status and optionally trigger cache build
         current_editor = self.editor_var.get()
