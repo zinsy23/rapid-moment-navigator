@@ -3509,19 +3509,21 @@ except Exception as e:
         # Setup cross-platform mousewheel scrolling for editor dialog
         self._setup_canvas_scrolling(self.editor_results_canvas)
 
-        # Show appropriate status and optionally trigger cache build
-        current_editor = self.editor_var.get()
-        if current_editor == "DaVinci Resolve":
-            self.debug_print("Editor dialog opened - ready for use")
-            self._check_and_initialize_cache()
-        else:
-            self.debug_print("Editor dialog opened - ready for use")
-
         # Note: Canvas scrolling is now handled automatically by the global position-based handler
         # No platform-specific activation needed
         
         # Set focus to search entry after dialog is fully created
         self.root.after(100, lambda: self.editor_search_entry.focus_set())
+        
+        # Show appropriate status and start background preparation
+        current_editor = self.editor_var.get()
+        if current_editor == "DaVinci Resolve":
+            self.debug_print("Editor dialog opened - ready for use")
+            self._set_cache_status("Ready - preparing for fast search...")
+            # Start background API preparation (but not cache building yet)
+            self.root.after(300, lambda: self._start_background_preparation())
+        else:
+            self.debug_print("Editor dialog opened - ready for use")
             
     def find_text_in_editor(self):
         """Find text in the currently selected editor"""
@@ -3552,13 +3554,33 @@ except Exception as e:
         # Call the appropriate method for the selected editor
         try:
             method = getattr(self, find_text_method)
-            method(text_to_find)
+            
+            # If this is DaVinci Resolve, run search in background to avoid UI blocking
+            if current_editor == "DaVinci Resolve":
+                self._start_async_search(text_to_find, method)
+            else:
+                method(text_to_find)
         except AttributeError:
             self.debug_print(f"Method {find_text_method} not found for editor {current_editor}")
             self.status_var.set(f"Text search not implemented for {current_editor}")
         except Exception as e:
             self.debug_print(f"Error searching for text in {current_editor}: {e}")
             self.status_var.set(f"Error searching for text in {current_editor}: {e}")
+    
+    def _start_async_search(self, text_to_find, search_method):
+        """Start the search in a background thread to avoid blocking UI"""
+        self.status_var.set("Starting search...")
+        
+        def async_search():
+            try:
+                search_method(text_to_find)
+            except Exception as e:
+                self.debug_print(f"Error in async search: {e}")
+                self.root.after(0, lambda: self.status_var.set(f"Search error: {e}"))
+        
+        # Run the entire search in background thread
+        thread = threading.Thread(target=async_search, daemon=True)
+        thread.start()
 
     def _find_text_in_resolve(self, text_to_find):
         """Find text specifically in DaVinci Resolve"""
@@ -3575,32 +3597,34 @@ except Exception as e:
                 
                 if cached_items:
                     self.debug_print(f"Using cached subtitle data for search ({len(cached_items)} items)")
-                    self.status_var.set("Searching cached subtitle data...")
+                    self.root.after(0, lambda: self.status_var.set("Searching cached subtitle data..."))
                     
                     # Search cached items
                     matches = self._search_subtitle_items(cached_items, text_to_find)
                     if matches:
-                        self._display_search_results(matches, timeline_id)
-                        self.status_var.set(f"Found {len(matches)} matches in editor")
+                        self.root.after(0, lambda: self._display_search_results(matches, timeline_id))
+                        self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches in editor"))
                     else:
                         self.debug_print("No matches found in cached data")
-                        self.status_var.set("No matches found")
+                        self.root.after(0, lambda: self.status_var.set("No matches found"))
                     return
                 else:
-                    # No cache available, check if cache is currently being built
-                    if self.is_caching:
-                        self.debug_print(f"Cache is currently being built, queuing search for '{text_to_find}'")
-                        self.status_var.set("Cache is building... Your search will run automatically when ready.")
-                        # Queue this search to run when cache is ready (overwrites any previous queued search)
-                        self.queued_search_term = text_to_find
-                        self._start_search_queue_monitor()
-                        return
+                    # No cache available - queue search and ensure cache building starts
+                    self.debug_print(f"No cached data available, starting cache build and queuing search for '{text_to_find}'")
+                    self.root.after(0, lambda: self.status_var.set("Building cache... Your search will run automatically when ready."))
+                    
+                    # Queue this search to run when cache is ready
+                    self.queued_search_term = text_to_find
+                    self.root.after(0, lambda: self._start_search_queue_monitor())
+                    
+                    # Start cache building if not already in progress
+                    if not self.is_caching:
+                        self.debug_print("Starting cache build from search")
+                        # Start cache building in background to avoid blocking UI
+                        self._start_async_cache_build(timeline_id)
                     else:
-                        # No cache available and not currently caching, trigger cache building
-                        self.debug_print("No cached data available, building cache in background")
-                        self.status_var.set("Building cache... Please wait and search again in a moment.")
-                        self._build_subtitle_cache_in_background(timeline_id)
-                        return
+                        self.debug_print("Cache build already in progress")
+                    return
             
             # Fallback to API search (original implementation)
             # Determine if we have a valid timeline to find text in
@@ -3632,35 +3656,35 @@ except Exception as e:
 
             # If we made it this far, start searching for the text via API
             self.debug_print("Searching for text in editor via API")
-            self.status_var.set("Searching for text in editor via API...")
+            self.root.after(0, lambda: self.status_var.set("Searching for text in editor via API..."))
 
             try:
                 # Get all subtitle items from the timeline
                 subtitle_track = self._get_resolve_subtitle_track(timeline)
                 if not subtitle_track:
                     self.debug_print("No subtitle track found")
-                    self.status_var.set("No subtitle track found")
+                    self.root.after(0, lambda: self.status_var.set("No subtitle track found"))
                     return []
 
                 # Search for the text in the subtitle items
                 matches = self._search_subtitle_items(subtitle_track, text_to_find)
                 if not matches:
                     self.debug_print("No matches found")
-                    self.status_var.set("No matches found")
+                    self.root.after(0, lambda: self.status_var.set("No matches found"))
                     return [] 
 
                 # Display results using timeline from API
-                self._display_search_results(matches, timeline_id, timeline)
-                self.status_var.set(f"Found {len(matches)} matches via API")
+                self.root.after(0, lambda: self._display_search_results(matches, timeline_id, timeline))
+                self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches via API"))
 
             except Exception as e:
                 self.debug_print(f"Error searching text in editor: {e}")
-                self.status_var.set(f"Error searching text in editor: {e}")
+                self.root.after(0, lambda: self.status_var.set(f"Error searching text in editor: {e}"))
                 return []
 
         except Exception as e:
             self.debug_print(f"Error searching for text in editor: {e}")
-            self.status_var.set(f"Error searching for text in editor: {e}")
+            self.root.after(0, lambda: self.status_var.set(f"Error searching for text in editor: {e}"))
             return []
 
     def _display_search_results(self, matches, timeline_id, timeline=None):
@@ -4357,16 +4381,21 @@ except Exception as e:
 
     def _build_subtitle_cache_in_background(self, timeline_id=None):
         """Build subtitle cache in background thread"""
-        if self.is_caching:
-            self.debug_print("Cache update already in progress")
-            return
+        # Use lock to prevent race conditions
+        with self.cache_lock:
+            if self.is_caching:
+                self.debug_print("Cache update already in progress, skipping duplicate request")
+                return
             
-        if timeline_id is None:
-            timeline_id = self._get_timeline_identifier()
-            
-        if not timeline_id:
-            self.debug_print("No valid timeline found for caching")
-            return
+            if timeline_id is None:
+                timeline_id = self._get_timeline_identifier()
+                
+            if not timeline_id:
+                self.debug_print("No valid timeline found for caching")
+                return
+                
+            # Set caching flag before starting thread to prevent duplicates
+            self.is_caching = True
             
         # Start background thread for caching
         self.cache_update_thread = threading.Thread(
@@ -4379,10 +4408,7 @@ except Exception as e:
     def _update_subtitle_cache_thread(self, timeline_id):
         """Thread function to update subtitle cache"""
         try:
-            with self.cache_lock:
-                self.is_caching = True
-                
-            # Update status on main thread
+            # Update status on main thread (is_caching already set by caller)
             self.root.after(0, lambda: self._set_cache_status("Updating subtitle cache..."))
             
             # Get subtitle items from Resolve API
@@ -4579,18 +4605,9 @@ except Exception as e:
         pass  # Will be implemented in search entry setup
 
     def _on_search_entry_key(self, event):
-        """Handle key events in search entry - trigger cache update if needed"""
-        # If this is the first character typed and we haven't cached recently
-        if (len(self.editor_search_var.get()) == 0 and 
-            self.editor_dialog and self.editor_dialog.winfo_exists() and
-            not self.is_caching):
-            
-            timeline_id = self._get_timeline_identifier()
-            if timeline_id:
-                cached_items = self._get_cached_subtitle_items(timeline_id)
-                if not cached_items or timeline_id != self.last_timeline_id:
-                    self.debug_print("User interaction triggered cache update")
-                    self._build_subtitle_cache_in_background(timeline_id)
+        """Handle key events in search entry - no proactive cache building to avoid blocking UI"""
+        # Cache building is now handled only during actual search to prevent UI blocking
+        pass
 
     def _manual_cache_refresh(self):
         """Manually refresh the subtitle cache"""
@@ -4634,35 +4651,55 @@ except Exception as e:
         self.cache_menu_index = cache_index
         self.debug_print(f"Stored editor menu reference with cache item at index {cache_index}")
 
-    def _check_and_initialize_cache(self):
-        """Check if cache exists for current timeline and show appropriate status/action"""
-        try:
-            timeline_id = self._get_timeline_identifier()
-            if not timeline_id:
-                self._set_cache_status("No timeline detected")
-                return
+    def _start_background_preparation(self):
+        """Start background API preparation without building cache yet"""
+        def async_preparation():
+            try:
+                self.debug_print("Starting background API preparation")
+                self.root.after(0, lambda: self._set_cache_status("Preparing API for fast search..."))
                 
-            # Check if we already have cache for this timeline
-            cached_items = self._get_cached_subtitle_items(timeline_id)
-            if cached_items:
-                cache_count = len(cached_items)
-                self.debug_print(f"Found existing cache with {cache_count} items")
-                self._set_cache_status(f"Cache ready: {cache_count} items")
-                self.root.after(3000, lambda: self._clear_cache_status())  # Clear after 3 seconds
-            else:
-                # No cache exists - always build it on first dialog open for better UX
-                if not self.is_caching:  # Only start if not already caching
-                    self.debug_print("No cache found, building cache on first dialog open")
-                    self._set_cache_status("Building cache for faster searches...")
-                    # Trigger cache build on next tick so dialog can finish rendering
-                    self.root.after(100, lambda: self._build_subtitle_cache_in_background(timeline_id))
+                # Initialize API in background
+                if self._ensure_resolve_ready():
+                    # Get timeline ID to prepare cache metadata but don't build yet
+                    timeline_id = self._get_timeline_identifier()
+                    if timeline_id:
+                        self.debug_print("API ready, timeline detected - ready for instant cache building")
+                        self.root.after(0, lambda: self._set_cache_status("Ready - search will be fast!"))
+                        self.root.after(2000, lambda: self._clear_cache_status())
+                    else:
+                        self.debug_print("API ready, but no timeline detected")
+                        self.root.after(0, lambda: self._set_cache_status("Ready - no timeline detected"))
+                        self.root.after(3000, lambda: self._clear_cache_status())
                 else:
-                    self.debug_print("Cache is already being built")
-                    self._set_cache_status("Building cache...")
+                    self.debug_print("DaVinci Resolve not available")
+                    self.root.after(0, lambda: self._set_cache_status("DaVinci Resolve not available"))
+                    self.root.after(3000, lambda: self._clear_cache_status())
                     
-        except Exception as e:
-            self.debug_print(f"Error checking cache during dialog init: {e}")
-            self._set_cache_status("Ready - cache will build on first search")
+            except Exception as e:
+                self.debug_print(f"Error in background preparation: {e}")
+                self.root.after(0, lambda: self._set_cache_status("Ready - will initialize on first search"))
+                self.root.after(3000, lambda: self._clear_cache_status())
+        
+        # Run the preparation in background thread
+        thread = threading.Thread(target=async_preparation, daemon=True)
+        thread.start()
+
+    def _start_async_cache_build(self, timeline_id):
+        """Start cache building in a background thread to avoid blocking UI"""
+        def async_cache_build():
+            try:
+                self._build_subtitle_cache_in_background(timeline_id)
+            except Exception as e:
+                self.debug_print(f"Error in async cache build: {e}")
+                with self.cache_lock:
+                    self.is_caching = False
+                self.root.after(0, lambda: self._set_cache_status("Cache build failed - will retry on next search"))
+        
+        # Run the cache build in background thread
+        thread = threading.Thread(target=async_cache_build, daemon=True)
+        thread.start()
+
+
 
     def _start_search_queue_monitor(self):
         """Start monitoring for cache completion to execute queued search"""
