@@ -24,7 +24,8 @@ DEFAULT_PREFS = {
     "exclude_current_dir": False,
     "selected_editor": "None",
     "min_duration_enabled": True,  # Changed from False to True
-    "min_duration_seconds": 10.0
+    "min_duration_seconds": 10.0,
+    "auto_cache_update": True  # Enable automatic cache updates when app gains focus
 }
 
 # Global variable for DaVinci Resolve script module
@@ -208,6 +209,10 @@ class RapidMomentNavigator:
         # Track focus state for cache invalidation
         self.was_focused = True
         self.editor_dialog = None  # Reference to editor dialog when open
+        
+        # Menu references for dynamic updates
+        self.editor_menu = None
+        self.cache_menu_index = None
         
         # Initialize debug window to None
         self.debug_window = None
@@ -2175,6 +2180,7 @@ except Exception as e:
                     for key in DEFAULT_PREFS.keys():
                         if key not in prefs:
                             prefs[key] = DEFAULT_PREFS[key]
+                            self.debug_print(f"Added missing preference: {key} = {DEFAULT_PREFS[key]}")
                     
                     # Validate directory paths
                     valid_dirs = []
@@ -3350,11 +3356,11 @@ except Exception as e:
 
         self.editor_results_canvas.bind_all("<MouseWheel>", lambda e: self.editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
-        # Show initial status message instead of blocking for cache
+        # Show appropriate status and optionally trigger cache build
         current_editor = self.editor_var.get()
         if current_editor == "DaVinci Resolve":
             self.debug_print("Editor dialog opened - ready for use")
-            self._set_cache_status("Ready - cache will build on first search")
+            self._check_and_initialize_cache()
         else:
             self.debug_print("Editor dialog opened - ready for use")
 
@@ -4318,8 +4324,9 @@ except Exception as e:
 
     def _on_window_focus_in(self, event=None):
         """Handle window focus in event"""
-        # Only trigger cache update if we have an editor dialog open
-        if self.editor_dialog and self.editor_dialog.winfo_exists():
+        # Only trigger cache update if we have an editor dialog open and auto cache is enabled
+        if (self.editor_dialog and self.editor_dialog.winfo_exists() and 
+            self.preferences.get("auto_cache_update", True)):
             current_timeline_id = self._get_timeline_identifier()
             if current_timeline_id and current_timeline_id != self.last_timeline_id:
                 self.debug_print("Timeline changed, updating cache")
@@ -4373,9 +4380,10 @@ except Exception as e:
             
             # If we have focus and haven't checked recently
             if focused_widget and (current_time - self.last_focus_check) > 5:
-                # Only update cache if editor dialog is open and enough time has passed
+                # Only update cache if editor dialog is open, auto cache is enabled, and enough time has passed
                 if (self.editor_dialog and self.editor_dialog.winfo_exists() and 
-                    not self.was_focused and not self.is_caching):
+                    not self.was_focused and not self.is_caching and
+                    self.preferences.get("auto_cache_update", True)):
                     self.debug_print("Periodic check detected focus regain, updating cache")
                     self._build_subtitle_cache_in_background()
                 self.was_focused = True
@@ -4413,6 +4421,73 @@ except Exception as e:
         """Manually refresh the subtitle cache"""
         self.debug_print("Manual cache refresh triggered")
         self._build_subtitle_cache_in_background()
+
+    def _toggle_auto_cache_update(self):
+        """Toggle the automatic cache update preference"""
+        current_setting = self.preferences.get("auto_cache_update", True)
+        new_setting = not current_setting
+        self.preferences["auto_cache_update"] = new_setting
+        self.save_preferences()
+        
+        status_msg = "enabled" if new_setting else "disabled"
+        self.debug_print(f"Automatic cache updates {status_msg}")
+        self.status_var.set(f"Automatic cache updates {status_msg}")
+        
+        # Update the menu item label to reflect new state
+        self._update_editor_menu()
+        
+        # Clear status after 3 seconds
+        self.root.after(3000, lambda: self.status_var.set("") if self.status_var.get().startswith("Automatic cache") else None)
+
+    def _update_editor_menu(self):
+        """Update the Editor menu to reflect current cache setting"""
+        try:
+            if self.editor_menu and self.cache_menu_index is not None:
+                auto_cache_enabled = self.preferences.get("auto_cache_update", True)
+                cache_label = "✓ Auto Update Cache on Focus" if auto_cache_enabled else "Auto Update Cache on Focus"
+                self.editor_menu.entryconfig(self.cache_menu_index, label=cache_label)
+                self.debug_print(f"Updated cache menu item label to: {cache_label}")
+            else:
+                self.debug_print("Editor menu reference not available for update")
+        except Exception as e:
+            # Silently fail if menu update doesn't work - not critical
+            self.debug_print(f"Could not update editor menu: {e}")
+
+    def _set_editor_menu_reference(self, editor_menu, cache_index):
+        """Store reference to editor menu for dynamic updates"""
+        self.editor_menu = editor_menu
+        self.cache_menu_index = cache_index
+        self.debug_print(f"Stored editor menu reference with cache item at index {cache_index}")
+
+    def _check_and_initialize_cache(self):
+        """Check if cache exists for current timeline and show appropriate status/action"""
+        try:
+            timeline_id = self._get_timeline_identifier()
+            if not timeline_id:
+                self._set_cache_status("No timeline detected")
+                return
+                
+            # Check if we already have cache for this timeline
+            cached_items = self._get_cached_subtitle_items(timeline_id)
+            if cached_items:
+                cache_count = len(cached_items)
+                self.debug_print(f"Found existing cache with {cache_count} items")
+                self._set_cache_status(f"Cache ready: {cache_count} items")
+                self.root.after(3000, lambda: self._clear_cache_status())  # Clear after 3 seconds
+            else:
+                # No cache exists - check if we should auto-build it
+                if self.preferences.get("auto_cache_update", True):
+                    self.debug_print("No cache found, building cache automatically")
+                    self._set_cache_status("Building cache...")
+                    # Trigger cache build on next tick so dialog can finish rendering
+                    self.root.after(100, lambda: self._build_subtitle_cache_in_background(timeline_id))
+                else:
+                    self.debug_print("No cache found, auto-cache disabled")
+                    self._set_cache_status("Ready - cache will build on first search")
+                    
+        except Exception as e:
+            self.debug_print(f"Error checking cache during dialog init: {e}")
+            self._set_cache_status("Ready - cache will build on first search")
 
     def _map_subtitles_in_background(self):
         """Start subtitle-to-video mapping in background thread"""
@@ -4561,6 +4636,17 @@ if __name__ == "__main__":
         editor_menu = tk.Menu(menu_bar, tearoff=0)
         editor_menu.add_command(label="Editor Navigator", 
                                 command=app._show_editor_dialog)
+        editor_menu.add_separator()
+        
+        # Add cache setting with dynamic label showing current state
+        auto_cache_enabled = app.preferences.get("auto_cache_update", True)
+        cache_label = "✓ Auto Update Cache on Focus" if auto_cache_enabled else "Auto Update Cache on Focus"
+        editor_menu.add_command(label=cache_label, 
+                                command=app._toggle_auto_cache_update)
+        
+        # Store reference for dynamic menu updates (cache item is at index 2)
+        app._set_editor_menu_reference(editor_menu, 2)
+        
         menu_bar.add_cascade(label="Editor", menu=editor_menu)
             
         # Add Debug menu
