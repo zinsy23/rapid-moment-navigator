@@ -700,16 +700,30 @@ class RapidMomentNavigator:
         # Bind events based on platform
         if sys.platform == "darwin":  # macOS
             # Mac primarily uses MouseWheel events with delta attribute
+            # Use bind_all for global capture without focus requirements
             canvas.bind_all("<MouseWheel>", on_scroll)
         else:
-            # Windows and Linux
+            # Windows and Linux - use direct binding
             canvas.bind("<MouseWheel>", on_scroll)
             # Also bind Button events for Linux X11 compatibility
             if sys.platform.startswith("linux"):
                 canvas.bind("<Button-4>", on_scroll)
                 canvas.bind("<Button-5>", on_scroll)
-        
-        # No additional focus handling needed - bind_all captures events globally
+            
+            # Windows needs focus for scroll events to work with direct binding
+            def on_enter(event):
+                """Give focus to canvas when mouse enters (Windows/Linux)"""
+                canvas.focus_set()
+            
+            def on_leave(event):
+                """Return focus to parent when mouse leaves (Windows/Linux)"""
+                try:
+                    canvas.master.focus_set()
+                except:
+                    pass
+            
+            canvas.bind("<Enter>", on_enter)
+            canvas.bind("<Leave>", on_leave)
 
     def update_show_dropdown(self):
         """Update the show dropdown with current show names"""
