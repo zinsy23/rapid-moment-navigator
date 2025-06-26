@@ -710,22 +710,22 @@ class RapidMomentNavigator:
         # Store the handler for this canvas  
         self.active_scroll_canvases[canvas] = on_scroll
         
-        # Set up mouse tracking to determine which canvas should scroll
-        def on_enter(event):
-            """Mouse entered this canvas"""
-            self.current_scroll_canvas = canvas
-        
-        def on_leave(event):
-            """Mouse left this canvas"""
-            if self.current_scroll_canvas is canvas:
-                self.current_scroll_canvas = None
-        
-        canvas.bind("<Enter>", on_enter)
-        canvas.bind("<Leave>", on_leave)
-        
         # Bind scroll events based on platform
         if sys.platform == "darwin":  # macOS
-            # Mac: Set up a single global handler if it doesn't exist
+            # Mac: Set up mouse tracking and global handler
+            def on_enter(event):
+                """Mouse entered this canvas"""
+                self.current_scroll_canvas = canvas
+            
+            def on_leave(event):
+                """Mouse left this canvas"""
+                if self.current_scroll_canvas is canvas:
+                    self.current_scroll_canvas = None
+            
+            canvas.bind("<Enter>", on_enter)
+            canvas.bind("<Leave>", on_leave)
+            
+            # Set up a single global handler if it doesn't exist
             if not hasattr(self, '_mac_global_handler_installed'):
                 def mac_global_scroll_handler(event):
                     """Single global Mac scroll handler that delegates to the active canvas"""
@@ -742,8 +742,34 @@ class RapidMomentNavigator:
                 self._mac_global_handler_installed = True
                 self.debug_print("Installed global Mac scroll handler")
         else:
-            # Windows and Linux: Use direct binding to avoid focus highlighting
+            # Windows and Linux: Use focus-based approach for reliable scrolling
+            def on_enter(event):
+                """Mouse entered canvas - give it focus for scrolling"""
+                try:
+                    # Make canvas focusable and give it focus
+                    canvas.configure(highlightthickness=0)  # Remove focus border
+                    canvas.focus_set()
+                    self.current_scroll_canvas = canvas
+                    self.debug_print(f"Canvas focused for scrolling (Windows/Linux)")
+                except Exception as e:
+                    self.debug_print(f"Error focusing canvas: {e}")
+            
+            def on_leave(event):
+                """Mouse left canvas - clear focus tracking"""
+                if self.current_scroll_canvas is canvas:
+                    self.current_scroll_canvas = None
+                # Note: We don't remove focus here as it can interfere with other UI elements
+            
+            # Make canvas able to receive focus
+            canvas.configure(takefocus=True, highlightthickness=0)
+            
+            # Bind mouse enter/leave for focus management
+            canvas.bind("<Enter>", on_enter)
+            canvas.bind("<Leave>", on_leave)
+            
+            # Bind scroll events directly to the canvas
             canvas.bind("<MouseWheel>", on_scroll)
+            
             # Also bind Button events for Linux X11 compatibility
             if sys.platform.startswith("linux"):
                 canvas.bind("<Button-4>", on_scroll)
@@ -766,6 +792,8 @@ class RapidMomentNavigator:
                 canvas.unbind("<MouseWheel>")
                 canvas.unbind("<Button-4>")
                 canvas.unbind("<Button-5>")
+                # Reset canvas focus properties
+                canvas.configure(takefocus=False, highlightthickness=1)
             
             # Always unbind enter/leave events
             canvas.unbind("<Enter>")
@@ -3506,11 +3534,14 @@ except Exception as e:
         else:
             self.debug_print("Editor dialog opened - ready for use")
 
-        # Immediately activate the editor canvas for Mac scrolling (after cache init)
+        # Activate the editor canvas for proper scrolling on all platforms
         import sys
         if sys.platform == "darwin":  # macOS
             # Use a small delay to ensure all other initialization is complete
             self.root.after(50, lambda: self._activate_editor_canvas_for_mac())
+        else:
+            # Windows/Linux: Set up initial focus state
+            self.root.after(50, lambda: self._activate_editor_canvas_for_windows())
             
     def _activate_editor_canvas_for_mac(self):
         """Activate the editor canvas for Mac scrolling after dialog is fully initialized"""
@@ -3520,6 +3551,18 @@ except Exception as e:
                 self.debug_print("Editor canvas activated for Mac scrolling (delayed)")
         except Exception as e:
             self.debug_print(f"Error activating editor canvas for Mac: {e}")
+
+    def _activate_editor_canvas_for_windows(self):
+        """Activate the editor canvas for Windows/Linux scrolling after dialog is fully initialized"""
+        try:
+            if hasattr(self, 'editor_results_canvas'):
+                # Ensure canvas is properly configured for focus
+                self.editor_results_canvas.configure(takefocus=True, highlightthickness=0)
+                # Set it as the current scroll canvas (but don't force focus yet)
+                self.current_scroll_canvas = self.editor_results_canvas
+                self.debug_print("Editor canvas activated for Windows/Linux scrolling (delayed)")
+        except Exception as e:
+            self.debug_print(f"Error activating editor canvas for Windows/Linux: {e}")
 
     def find_text_in_editor(self):
         """Find text in the currently selected editor"""
