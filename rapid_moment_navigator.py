@@ -3574,10 +3574,17 @@ except Exception as e:
                         self.status_var.set("No matches found")
                     return
                 else:
-                    # No cache available, show status and trigger cache building
-                    self.debug_print("No cached data available, fetching from API and building cache")
-                    self.status_var.set("Building cache from API...")
-                    self._build_subtitle_cache_in_background(timeline_id)
+                    # No cache available, check if cache is currently being built
+                    if self.is_caching:
+                        self.debug_print("Cache is currently being built, please wait")
+                        self.status_var.set("Cache is being built, please wait and try again...")
+                        return
+                    else:
+                        # No cache available and not currently caching, trigger cache building
+                        self.debug_print("No cached data available, building cache in background")
+                        self.status_var.set("Building cache... Please wait and search again in a moment.")
+                        self._build_subtitle_cache_in_background(timeline_id)
+                        return
             
             # Fallback to API search (original implementation)
             # Determine if we have a valid timeline to find text in
@@ -4378,7 +4385,7 @@ except Exception as e:
                 self.debug_print(f"Cached {cache_count} subtitle items for timeline: {timeline_id}")
                 
                 # Update status on main thread
-                self.root.after(0, lambda: self._set_cache_status(f"Cache updated: {cache_count} items"))
+                self.root.after(0, lambda: self._set_cache_status(f"Cache ready: {cache_count} items - You can now search!"))
                 self.root.after(3000, lambda: self._clear_cache_status())  # Clear after 3 seconds
             else:
                 self.debug_print(f"No subtitle items found for timeline: {timeline_id}")
@@ -4627,15 +4634,15 @@ except Exception as e:
                 self._set_cache_status(f"Cache ready: {cache_count} items")
                 self.root.after(3000, lambda: self._clear_cache_status())  # Clear after 3 seconds
             else:
-                # No cache exists - check if we should auto-build it
-                if self.preferences.get("auto_cache_update", True):
-                    self.debug_print("No cache found, building cache automatically")
-                    self._set_cache_status("Building cache...")
+                # No cache exists - always build it on first dialog open for better UX
+                if not self.is_caching:  # Only start if not already caching
+                    self.debug_print("No cache found, building cache on first dialog open")
+                    self._set_cache_status("Building cache for faster searches...")
                     # Trigger cache build on next tick so dialog can finish rendering
                     self.root.after(100, lambda: self._build_subtitle_cache_in_background(timeline_id))
                 else:
-                    self.debug_print("No cache found, auto-cache disabled")
-                    self._set_cache_status("Ready - cache will build on first search")
+                    self.debug_print("Cache is already being built")
+                    self._set_cache_status("Building cache...")
                     
         except Exception as e:
             self.debug_print(f"Error checking cache during dialog init: {e}")
