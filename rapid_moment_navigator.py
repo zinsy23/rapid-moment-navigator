@@ -14,6 +14,7 @@ import time
 import traceback
 import multiprocessing
 import tempfile
+from threading import Lock
 
 # Constants
 PREFS_FILENAME = "rapid_navigator_prefs.json"
@@ -25,6 +26,9 @@ DEFAULT_PREFS = {
     "min_duration_enabled": True,  # Changed from False to True
     "min_duration_seconds": 10.0
 }
+
+# Global variable for DaVinci Resolve script module
+dvr_script = None
 
 def find_module_locations(base_path):
     """Find possible locations of DaVinciResolveScript.py based on a base path.
@@ -49,6 +53,25 @@ def find_module_locations(base_path):
         "module_paths": module_paths  # Full paths to the module files
     }
 
+class ClickableEditorTimecode(Label):
+    """A clickable label widget for editor timecode links - works with any editor or media system"""
+    def __init__(self, parent, timecode, timeline, callback, start_frame, item_ref=None, **kwargs):
+        super().__init__(parent, text=timecode, cursor="hand2", fg="blue", **kwargs)
+        self.timeline = timeline
+        self.callback = callback
+        self.start_frame = start_frame
+        self.item_ref = item_ref
+        self.bind("<Button-1>", self._on_click)
+        # Add underline
+        self.config(font=("TkDefaultFont", 10, "underline"))
+        
+    def _on_click(self, event):
+        """Handle click event"""
+        self.callback(self.timeline, self.start_frame, self.item_ref)
+
+# Keep the old names for backward compatibility
+ClickableTimecodeLink = ClickableEditorTimecode  # New alias
+ClickableResolveTimecode = ClickableEditorTimecode
 
 class ClickableTimecode(Label):
     """A clickable label widget for timecodes"""
@@ -136,7 +159,9 @@ class RapidMomentNavigator:
             "import_clip_method": "_import_clip_to_davinci_resolve",
             "framerate_detection_method": "detect_video_framerate_from_resolve",
             "supports_advanced_framerate": True,
-            "timecode_format": "no_milliseconds"  # Resolve doesn't like milliseconds
+            "timecode_format": "no_milliseconds",  # Resolve doesn't like milliseconds
+            "find_text_method": "_find_text_in_resolve",  # Method for finding text in editor
+            "editor_timecode_click": "resolve_timecode_click"
         }
         # Future editors can be added here:
         # "Adobe Premiere": {
@@ -145,11 +170,13 @@ class RapidMomentNavigator:
         #     "import_clip_method": "_import_clip_to_premiere", 
         #     "framerate_detection_method": "detect_video_framerate_from_premiere",
         #     "supports_advanced_framerate": True,
-        #     "timecode_format": "with_milliseconds"
+        #     "timecode_format": "with_milliseconds",
+        #     "find_text_method": "_find_text_in_premiere"
         # }
     }
 
     def __init__(self, root, debug=False):
+        """Initialize the Rapid Moment Navigator"""
         self.root = root
         self.root.title("Rapid Moment Navigator")
         
@@ -166,6 +193,21 @@ class RapidMomentNavigator:
         
         # Debug mode setting
         self.debug = debug
+        
+        # Initialize subtitle cache system
+        self.subtitle_cache = {}  # Cache for subtitle items
+        self.cache_lock = threading.Lock()  # Thread safety for cache operations
+        self.cache_update_thread = None
+        self.is_caching = False
+        self.last_timeline_id = None
+        self.cache_status_timer = None
+        
+        # Status message preservation
+        self.last_status_message = ""
+        
+        # Track focus state for cache invalidation
+        self.was_focused = True
+        self.editor_dialog = None  # Reference to editor dialog when open
         
         # Initialize debug window to None
         self.debug_window = None
@@ -290,18 +332,20 @@ class RapidMomentNavigator:
         # Initialize the application
         self.debug_print("Initializing shows and mapping...")
         shows_paths = self.load_shows()
-        self.map_subtitles_to_videos()
         
-        # Store the search results for later reference
-        self.search_results = []
-        
-        # Update status based on whether shows were found
+        # Show the UI immediately with a temporary status
         if len(self.show_name_to_path_map) > 0:
-            self.debug_print(f"Application initialized with {len(self.show_name_to_path_map)} shows")
-            self.status_var.set(f"Ready. Found {len(self.show_name_to_path_map)} shows with {len(self.subtitle_to_video_map)} mapped videos.")
+            self.debug_print(f"Application initialized with {len(self.show_name_to_path_map)} shows - mapping subtitles in background")
+            self.status_var.set(f"Loading... Found {len(self.show_name_to_path_map)} shows, mapping subtitle files...")
+            
+            # Start mapping in background
+            self._map_subtitles_in_background()
         else:
             self.debug_print("No shows found during initialization")
             self.status_var.set("No media found. Please add directories containing subtitle files and videos.")
+        
+        # Store the search results for later reference
+        self.search_results = []
         
         # Initialize safe mode flag for editors
         self.resolve_in_safe_mode = False
@@ -324,6 +368,18 @@ class RapidMomentNavigator:
         
         # Load application state
         self.load_app_state()
+        
+        # Set up exception handling
+        self.setup_exception_handler()
+        
+        # Setup focus detection for cache management
+        self._setup_focus_detection()
+
+        # Check if any shows were loaded - use the actual show count
+        show_count = len(self.show_name_to_path_map)
+        if not show_count:
+            # No shows loaded, show guidance
+            self.root.after(100, self._delayed_show_guidance)
     
     def _get_editor_config(self, editor_name=None):
         """Get configuration for the specified editor or current editor"""
@@ -1020,6 +1076,7 @@ class RapidMomentNavigator:
         Returns:
             float: Framerate of the video (defaults to 24.0 if detection fails)
         """
+        global dvr_script
         try:
             # Ensure DaVinci Resolve is ready for use
             if not self._ensure_resolve_ready():
@@ -1371,8 +1428,12 @@ class RapidMomentNavigator:
             timecode_label.pack(anchor="w")
             
             # Add text label
-            text_label = ttk.Label(content_frame, text=result['clean_text'], wraplength=700)
-            text_label.pack(anchor="w", padx=10)
+            subtitle_label = ttk.Label(content_frame, text=result['clean_text'], wraplength=700)
+            subtitle_label.pack(anchor="w", padx=10)
+            
+            # Debug output to compare text formatting
+            self.debug_print(f"MAIN SEARCH - Original text: {repr(result['text'])}")
+            self.debug_print(f"MAIN SEARCH - Clean text: {repr(result['clean_text'])}")
             
             # Add some space after each result
             ttk.Separator(self.results_container, orient="horizontal").pack(fill="x", pady=5)
@@ -1380,6 +1441,28 @@ class RapidMomentNavigator:
             self.debug_print(f"Added clickable timecode for {timecode_text}")
         
         self.debug_print(f"UI updated with {len(file_results)} results from {file_basename}")
+    
+    def _restore_subtitle_line_breaks(self, text):
+        """Restore line breaks in subtitle text from DaVinci Resolve API"""
+        if not text:
+            return text
+        
+        # Replace Unicode Line Separator with actual line break
+        # This is the primary fix - DaVinci Resolve uses \u2028 for line breaks
+        text = text.replace('\u2028', '\n')
+        
+        # Also handle Unicode Paragraph Separator (less common but possible)
+        text = text.replace('\u2029', '\n')
+        
+        # Clean up any potential double spaces
+        text = re.sub(r'  +', ' ', text)
+        
+        # Limit to 2 lines maximum to prevent overly tall results
+        lines = text.split('\n')
+        if len(lines) > 2:
+            text = '\n'.join(lines[:2])
+        
+        return text.strip()
     
     def _handle_timecode_click(self, result):
         """Process a click on a timecode tag"""
@@ -1500,28 +1583,24 @@ class RapidMomentNavigator:
         return "break"
 
     def _on_editor_changed(self, event):
-        """Handle editor dropdown change"""
-        try:
-            selected_editor = self.editor_var.get()
-            self.debug_print(f"Editor changed to: {selected_editor}")
-            
-            # Update preferences
-            self.preferences["selected_editor"] = selected_editor
-            self.save_preferences()
-            
-            # Just update the UI and status - no API loading here
-            self._update_import_buttons_visibility()
-            
-            # Update status
-            if selected_editor == "None":
-                self.status_var.set("Editor integration disabled")
-            else:
-                self.status_var.set(f"{selected_editor} selected. API will be initialized when needed.")
-            
-        except Exception as e:
-            error_msg = f"Error changing editor: {str(e)}"
-            self.debug_print(error_msg)
-            self.status_var.set(f"Error: {error_msg}")
+        """Handle editor selection change"""
+        combobox = event.widget
+        selected_editor = combobox.get()
+        
+        # Update the editor variable
+        self.editor_var.set(selected_editor)
+        
+        # Save the selected editor to preferences
+        self.preferences["selected_editor"] = selected_editor
+        self.save_preferences()
+        
+        # Update import buttons visibility
+        self._update_import_buttons_visibility()
+        
+        # Note: Removed automatic cache building on dropdown selection to prevent UI freezing
+        # Cache will be built when the application regains focus instead
+        
+        self.debug_print(f"Editor changed to: {selected_editor}")
 
     def _update_import_buttons_visibility(self):
         """Update visibility of import buttons based on selected editor"""
@@ -1645,23 +1724,28 @@ class RapidMomentNavigator:
                 self.status_var.set("Testing DaVinci Resolve API safety...")
                 self.debug_print("Initializing DaVinci Resolve API on first use...")
                 
-                # First, test in subprocess for safety
+                # FIRST: Set up the environment variables and paths (move this BEFORE subprocess test)
                 try:
-                    subprocess_test_result = self._test_resolve_import_in_subprocess()
-                    if not subprocess_test_result:
-                        self.resolve_in_safe_mode = True
-                        self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
-                        self.show_error_in_gui("DaVinci Resolve Error",
-                                            "The DaVinci Resolve API failed the safety test.\n\n"
-                                            "Import functionality has been disabled for safety.\n\n"
-                                            "This usually happens if there is an incompatibility between the\n"
-                                            "Python version and the DaVinci Resolve API.")
-                        return False
-                        
-                    self.debug_print("Safety test passed, attempting actual initialization")
+                    # Set up default paths and environment variables
+                    # self._setup_resolve_paths()  # REMOVED: This was hardcoded to Mac paths
+                    
+                    # Initialize the API which has proper platform detection
                     success = self._init_davinci_resolve_api()
                     
                     if success:
+                        # NOW test in subprocess for safety (with proper paths set)
+                        subprocess_test_result = self._test_resolve_import_in_subprocess()
+                        if not subprocess_test_result:
+                            self.resolve_in_safe_mode = True
+                            self.status_var.set("DaVinci Resolve API failed safety test - import disabled")
+                            self.show_error_in_gui("DaVinci Resolve Error",
+                                                "The DaVinci Resolve API failed the safety test.\n\n"
+                                                "Import functionality has been disabled for safety.\n\n"
+                                                "This usually happens if there is an incompatibility between the\n"
+                                                "Python version and the DaVinci Resolve API.")
+                            return False
+                            
+                        self.debug_print("Safety test passed, API is ready")
                         self.resolve_initialized = True
                         self.status_var.set("DaVinci Resolve API initialized")
                         return True
@@ -1672,7 +1756,6 @@ class RapidMomentNavigator:
                                             "Failed to initialize DaVinci Resolve API.\n\n"
                                             "Please ensure DaVinci Resolve is installed correctly and running.")
                         return False
-                        
                 except Exception as init_error:
                     self.resolve_in_safe_mode = True
                     error_msg = f"Error initializing DaVinci Resolve API: {str(init_error)}"
@@ -1733,108 +1816,50 @@ class RapidMomentNavigator:
         api_path = os.environ.get("RESOLVE_SCRIPT_API", "")
         lib_path = os.environ.get("RESOLVE_SCRIPT_LIB", "")
         
-        # Find all possible module locations
-        module_info = find_module_locations(api_path)
-        module_locations = module_info["locations"]
-        module_files = module_info["module_paths"]
+        self.debug_print(f"API path for subprocess test: {api_path}")
+        self.debug_print(f"LIB path for subprocess test: {lib_path}")
         
-        # Print found paths for debugging
-        self.debug_print("Found module locations:")
-        for path in module_files:
-            self.debug_print(f"  - {path}")
-        
-        # Add the API path itself and its parent to search paths
-        search_paths = []
-        if os.path.exists(api_path):
-            search_paths.append(api_path)
-        if os.path.exists(os.path.dirname(api_path)):
-            search_paths.append(os.path.dirname(api_path))
-            
-        # Add module locations to search paths
-        for loc in module_locations:
-            if loc not in search_paths and os.path.exists(loc):
-                search_paths.append(loc)
-        
-        self.debug_print(f"Search paths to be used: {search_paths}")
-        
-        # Create a temporary Python file with the import test
-        with tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w') as f:
+        # Create a temporary Python file with the import test using our WORKING approach
+        with tempfile.NamedTemporaryFile(suffix='.py', delete=False, mode='w', encoding='utf-8') as f:
             test_script = f.name
             
-            # Write a script that attempts the import and exits with code 0 if successful
+            # Write a script using the SAME LOGIC that works in our main method
             f.write(f'''
 import os
 import sys
-import glob
 
 # Set required environment variables
 os.environ["RESOLVE_SCRIPT_API"] = r"{api_path}"
 os.environ["RESOLVE_SCRIPT_LIB"] = r"{lib_path}"
 
-# Add all possible module paths to sys.path
-search_paths = {search_paths!r}
-for path in search_paths:
-    if path and path not in sys.path:
-        sys.path.append(path)
-        print(f"Added {{path}} to Python path")
+print(f"Test subprocess - API path: {api_path}")
+print(f"Test subprocess - LIB path: {lib_path}")
 
-# Known module files
-module_files = {module_files!r}
-for module_file in module_files:
-    print(f"Known module file: {{module_file}}")
+# Use the SAME simplified approach that works in the main method
+if r"{api_path}" and os.path.exists(r"{api_path}"):
+    if r"{api_path}" not in sys.path:
+        sys.path.append(r"{api_path}")
+        print(f"Added API path to Python path: {api_path}")
+    
+    # CRITICAL: Also add the Modules subdirectory (this was the key fix!)
+    modules_path = os.path.join(r"{api_path}", "Modules")
+    if os.path.exists(modules_path) and modules_path not in sys.path:
+        sys.path.append(modules_path)
+        print(f"Added Modules path to Python path: {{modules_path}}")
 
-# Print sys.path for debugging
-print(f"Python sys.path: {{sys.path}}")
+print(f"Final sys.path: {{sys.path}}")
 
-# Try direct import first
+# Try the import
 try:
     import DaVinciResolveScript
-    print("Successfully imported DaVinciResolveScript in test process")
+    print("SUCCESS: DaVinciResolveScript imported successfully in subprocess")
     sys.exit(0)
 except ImportError as e:
-    print(f"Standard import failed: {{e}}")
-
-# Try alternate import approaches
-for module_file in module_files:
-    module_dir = os.path.dirname(module_file)
-    module_name = os.path.splitext(os.path.basename(module_file))[0]
-    
-    try:
-        # Try adding module dir directly to path and importing
-        if module_dir not in sys.path:
-            sys.path.append(module_dir)
-            print(f"Added module directory {{module_dir}} directly to path")
-        
-        # Try to import again
-        import DaVinciResolveScript
-        print(f"Successfully imported DaVinciResolveScript after adding {{module_dir}}")
-        sys.exit(0)
-    except ImportError as e:
-        print(f"Import still failed with {{module_dir}} in path: {{e}}")
-
-# If all previous attempts failed, try more aggressive approaches
-# Try to load the module directly using importlib
-print("Trying direct module loading with importlib...")
-try:
-    import importlib.util
-    
-    for module_file in module_files:
-        try:
-            print(f"Trying to load {{module_file}} with importlib...")
-            spec = importlib.util.spec_from_file_location("DaVinciResolveScript", module_file)
-            if spec:
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                print(f"Successfully loaded {{module_file}} with importlib")
-                sys.path.insert(0, os.path.dirname(module_file))
-                sys.exit(0)
-        except Exception as e:
-            print(f"Importlib loading failed for {{module_file}}: {{e}}")
+    print(f"FAILED: Import error in subprocess: {{e}}")
+    sys.exit(1)
 except Exception as e:
-    print(f"Importlib approach failed: {{e}}")
-
-print("All import attempts failed")
-sys.exit(1)
+    print(f"FAILED: Unexpected error in subprocess: {{e}}")
+    sys.exit(1)
 ''')
         
         try:
@@ -1886,6 +1911,7 @@ sys.exit(1)
         Returns:
             bool: True if successful, False otherwise
         """
+        global dvr_script
         try:
             self.debug_print(f"Importing clip: {clip_path}")
             
@@ -1950,11 +1976,11 @@ sys.exit(1)
                 media_fps = media_item.GetClipProperty("FPS")
                 if media_fps:
                     detected_fps = float(media_fps)
-                    self.debug_print(f"🎞️ Detected actual media FPS: {detected_fps}")
+                    self.debug_print(f"Detected actual media FPS: {detected_fps}")
                 else:
-                    self.debug_print(f"⚠️ Could not get media FPS, using fallback: {fps}")
+                    self.debug_print(f"Could not get media FPS, using fallback: {fps}")
             except Exception as e:
-                self.debug_print(f"⚠️ Error getting media FPS, using fallback: {e}")
+                self.debug_print(f"Error getting media FPS, using fallback: {e}")
             
             # Use the DETECTED framerate for all calculations
             self.debug_print(f"Using framerate: {detected_fps} fps for all calculations")
@@ -2656,6 +2682,22 @@ sys.exit(1)
         else:
             self.status_var.set("Directory not found in preferences")
 
+    def _setup_resolve_paths(self):
+        """Set up DaVinci Resolve environment variables and paths - DISABLED: Was hardcoded to Mac paths"""
+        pass
+        # self.debug_print("Setting up DaVinci Resolve paths...")
+        # 
+        # # Define default paths for macOS
+        # default_api_path = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
+        # default_lib_path = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
+        # 
+        # # Set environment variables with default paths
+        # os.environ["RESOLVE_SCRIPT_API"] = default_api_path
+        # os.environ["RESOLVE_SCRIPT_LIB"] = default_lib_path
+        # 
+        # self.debug_print(f"Set RESOLVE_SCRIPT_API: {default_api_path}")
+        # self.debug_print(f"Set RESOLVE_SCRIPT_LIB: {default_lib_path}")
+
     def _init_davinci_resolve_api(self):
         """Initialize the DaVinci Resolve API"""
         try:
@@ -2788,22 +2830,22 @@ sys.exit(1)
                     modified = True
                     self.debug_print(f"Updated LIB path: {lib_path}")
             
-            # Add module paths to sys.path
+            # Add module paths to sys.path - SIMPLIFIED APPROACH THAT WORKS
             self.debug_print("========== FINAL PATH CONFIGURATION ==========")
             self.debug_print(f"Using RESOLVE_SCRIPT_API: {api_path}")
             self.debug_print(f"Using RESOLVE_SCRIPT_LIB: {lib_path}")
             
-            # Add all module locations to sys.path
-            module_info = find_module_locations(api_path)
-            for path in module_info["locations"]:
-                if path not in sys.path:
-                    sys.path.append(path)
-                    self.debug_print(f"Added to Python path: {path}")
-                    
-            # Also add the API path itself if not already added
-            if api_path and api_path not in sys.path and os.path.exists(api_path):
-                sys.path.append(api_path)
-                self.debug_print(f"Added API path to Python path: {api_path}")
+            # Simple, proven approach: Add both API path and Modules subdirectory to sys.path
+            if api_path and os.path.exists(api_path):
+                if api_path not in sys.path:
+                    sys.path.append(api_path)
+                    self.debug_print(f"Added API path to Python path: {api_path}")
+                
+                # CRITICAL: Also add the Modules subdirectory (this was missing!)
+                modules_path = os.path.join(api_path, "Modules")
+                if os.path.exists(modules_path) and modules_path not in sys.path:
+                    sys.path.append(modules_path)
+                    self.debug_print(f"Added Modules path to Python path: {modules_path}")
             
             self.debug_print("=============================================")
             
@@ -3173,6 +3215,483 @@ sys.exit(1)
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         except Exception:
             return "00:00:00"
+
+    def _show_editor_dialog(self):
+        """Show a dialog with editor settings"""
+        editor_width = 600
+        editor_height = 300
+        editor_x = self.root.winfo_x() + (self.root.winfo_width() - editor_width) // 2
+        editor_y = self.root.winfo_y() + (self.root.winfo_height() - editor_height) // 2
+        editor_dialog = tk.Toplevel(self.root)
+        editor_dialog.title("Editor Navigator")
+        editor_dialog.geometry(f"{editor_width}x{editor_height}+{editor_x}+{editor_y}")
+        editor_dialog.transient(self.root)
+        editor_dialog.grab_set()
+
+        # Store reference to editor dialog and setup focus detection
+        self.editor_dialog = editor_dialog
+        self._setup_focus_detection()
+
+        # Make dialog modal
+        editor_dialog.focus_set()
+        
+        # Setup dialog close handler to clear reference
+        def on_dialog_close():
+            self.editor_dialog = None
+            editor_dialog.destroy()
+            
+        editor_dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
+        
+        # Create main frame with padding
+        self.editor_main_frame = ttk.Frame(editor_dialog, padding=15)
+        self.editor_main_frame.pack(fill="both", expand=True)
+
+        # Entry box for search term
+        self.editor_search_frame = ttk.Frame(self.editor_main_frame)
+        self.editor_search_frame.pack(fill="x", pady=5)
+        
+        ttk.Label(self.editor_search_frame, text="Search:").pack(side="left")
+        
+        self.editor_search_var = tk.StringVar()
+        search_entry = ttk.Entry(self.editor_search_frame, textvariable=self.editor_search_var, width=30)
+        search_entry.pack(side="left", padx=5)
+        search_entry.bind("<Return>", lambda event: self.find_text_in_editor())
+        search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
+        search_entry.bind("<KeyPress>", self._on_search_entry_key)
+        
+        # Button to find text
+        find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_editor)
+        find_btn.pack(side="left", padx=5)
+        
+        # Manual cache refresh button (most reliable method)
+        refresh_btn = ttk.Button(self.editor_search_frame, text="↻", command=self._manual_cache_refresh, width=3)
+        refresh_btn.pack(side="left", padx=2)
+        
+        # Tooltip for refresh button
+        def show_refresh_tooltip(event):
+            """Show tooltip for refresh button with delay"""
+            def _show_tooltip():
+                try:
+                    # Get widget position
+                    x = refresh_btn.winfo_rootx() + 25
+                    y = refresh_btn.winfo_rooty() + 25
+                    
+                    # Create tooltip window
+                    tooltip = tk.Toplevel(self.root)
+                    tooltip.wm_overrideredirect(True)
+                    tooltip.wm_geometry(f"+{x}+{y}")
+                    
+                    # Store reference for cleanup
+                    refresh_btn.tooltip = tooltip
+                    
+                    # Create tooltip content
+                    frame = tk.Frame(tooltip, background="#ffffe0", borderwidth=1, relief="solid")
+                    frame.pack(ipadx=3, ipady=2)
+                    
+                    label = tk.Label(frame, text="Refresh subtitle cache manually", justify="left",
+                                  background="#ffffe0", fg="#000000",
+                                  wraplength=200, font=("TkDefaultFont", 9))
+                    label.pack()
+                except Exception as e:
+                    self.debug_print(f"Error showing refresh tooltip: {e}")
+            
+            # Start timer for 1-second delay
+            refresh_btn.tooltip_timer = self.root.after(1000, _show_tooltip)
+
+        def hide_refresh_tooltip(event):
+            """Hide tooltip for refresh button"""
+            try:
+                # Cancel timer if it exists
+                if hasattr(refresh_btn, 'tooltip_timer') and refresh_btn.tooltip_timer:
+                    self.root.after_cancel(refresh_btn.tooltip_timer)
+                    refresh_btn.tooltip_timer = None
+                
+                # Destroy tooltip if it exists
+                if hasattr(refresh_btn, 'tooltip') and refresh_btn.tooltip:
+                    refresh_btn.tooltip.destroy()
+                    refresh_btn.tooltip = None
+            except Exception as e:
+                self.debug_print(f"Error hiding refresh tooltip: {e}")
+
+        refresh_btn.bind("<Enter>", show_refresh_tooltip)
+        refresh_btn.bind("<Leave>", hide_refresh_tooltip)
+
+        # Cache status label
+        self.cache_status_label = ttk.Label(self.editor_search_frame, text="", foreground="gray", font=("TkDefaultFont", 8))
+        self.cache_status_label.pack(side="left", padx=(5, 0))
+
+        # Editor label and combobox for editor selection
+        ttk.Label(self.editor_search_frame, text="Editor:").pack(side="left", padx=5)
+        editor_combobox = ttk.Combobox(self.editor_search_frame, values=self.editor_var, state="readonly")
+        editor_combobox.pack(side="left", padx=5)
+        editor_combobox['values'] = self.editor_dropdown['values']
+        
+        selected_editor = self.preferences.get("selected_editor", "None")
+        editor_combobox.set(selected_editor)
+
+        editor_combobox.bind("<<ComboboxSelected>>", self._on_editor_changed)
+
+        self.editor_results_frame = ttk.LabelFrame(self.editor_main_frame, text="Search Results")
+        self.editor_results_frame.pack(fill="both", expand=True, pady=10)
+
+        self.editor_results_canvas = tk.Canvas(self.editor_results_frame)
+
+        self.editor_results_scrollbar = ttk.Scrollbar(self.editor_results_frame, orient="vertical", command=self.editor_results_canvas.yview)
+        self.editor_results_scrollbar.pack(side="right", fill="y")
+
+        self.editor_results_canvas.pack(side="left", fill="both", expand=True)
+        self.editor_results_canvas.configure(yscrollcommand=self.editor_results_scrollbar.set)
+
+        self.editor_results_container = ttk.Frame(self.editor_results_canvas)
+        self.editor_results_container_id = self.editor_results_canvas.create_window((0, 0), window=self.editor_results_container, anchor="nw")
+
+        self.editor_results_container.bind("<Configure>", lambda e: self.editor_results_canvas.configure(scrollregion=self.editor_results_canvas.bbox("all")))
+        self.editor_results_canvas.bind("<Configure>", lambda e: self.editor_results_canvas.itemconfig(self.editor_results_container_id, width=e.width))
+
+        self.editor_results_canvas.bind_all("<MouseWheel>", lambda e: self.editor_results_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        # Show initial status message instead of blocking for cache
+        current_editor = self.editor_var.get()
+        if current_editor == "DaVinci Resolve":
+            self.debug_print("Editor dialog opened - ready for use")
+            self._set_cache_status("Ready - cache will build on first search")
+        else:
+            self.debug_print("Editor dialog opened - ready for use")
+
+    def find_text_in_editor(self):
+        """Find text in the currently selected editor"""
+        text_to_find = self.editor_search_var.get()
+        self.debug_print(f"Searching for text: {text_to_find}")
+        self.status_var.set(f"Searching for text: {text_to_find}")
+
+        # Clear previous search results
+        for widget in self.editor_results_container.winfo_children():
+            widget.destroy()
+
+        # Get current editor configuration
+        current_editor = self.editor_var.get()
+        editor_config = self._get_editor_config(current_editor)
+        
+        if not editor_config:
+            self.debug_print(f"No configuration found for editor: {current_editor}")
+            self.status_var.set(f"Editor {current_editor} not supported for text search")
+            return
+
+        # Check if the editor supports text search
+        find_text_method = editor_config.get("find_text_method")
+        if not find_text_method:
+            self.debug_print(f"Editor {current_editor} does not support text search")
+            self.status_var.set(f"Editor {current_editor} does not support text search")
+            return
+
+        # Call the appropriate method for the selected editor
+        try:
+            method = getattr(self, find_text_method)
+            method(text_to_find)
+        except AttributeError:
+            self.debug_print(f"Method {find_text_method} not found for editor {current_editor}")
+            self.status_var.set(f"Text search not implemented for {current_editor}")
+        except Exception as e:
+            self.debug_print(f"Error searching for text in {current_editor}: {e}")
+            self.status_var.set(f"Error searching for text in {current_editor}: {e}")
+
+    def _find_text_in_resolve(self, text_to_find):
+        """Find text specifically in DaVinci Resolve"""
+        global dvr_script
+        try:
+            if not self._ensure_resolve_ready():
+                self.debug_print("DaVinci Resolve not ready for text search")
+                return []
+
+            # First try to get results from cache
+            timeline_id = self._get_timeline_identifier()
+            if timeline_id:
+                cached_items = self._get_cached_subtitle_items(timeline_id)
+                
+                if cached_items:
+                    self.debug_print(f"Using cached subtitle data for search ({len(cached_items)} items)")
+                    self.status_var.set("Searching cached subtitle data...")
+                    
+                    # Search cached items
+                    matches = self._search_subtitle_items(cached_items, text_to_find)
+                    if matches:
+                        self._display_search_results(matches, timeline_id)
+                        self.status_var.set(f"Found {len(matches)} matches in editor")
+                    else:
+                        self.debug_print("No matches found in cached data")
+                        self.status_var.set("No matches found")
+                    return
+                else:
+                    # No cache available, show status and trigger cache building
+                    self.debug_print("No cached data available, fetching from API and building cache")
+                    self.status_var.set("Building cache from API...")
+                    self._build_subtitle_cache_in_background(timeline_id)
+            
+            # Fallback to API search (original implementation)
+            # Determine if we have a valid timeline to find text in
+            try:
+                # Ensure DaVinci Resolve is ready for use
+                if self._ensure_resolve_ready():
+                    self.debug_print("Resolve Works for searching subtitles directly in editor")
+
+                resolve = dvr_script.scriptapp("Resolve")
+
+                if not self._ensure_resolve_edit_page(resolve):
+                    self.debug_print("Failed to ensure we're on the Edit page")
+                    return []
+
+                # Get the current timeline of the current project
+                project = resolve.GetProjectManager().GetCurrentProject()
+                if not project:
+                    logging.error("No project is currently open")
+                    return []
+                    
+                timeline = project.GetCurrentTimeline()
+                if not timeline:
+                    logging.error("No timeline is currently open")
+                    return []
+            except Exception as e:
+                self.debug_print(f"Error searching for text in editor: {e}")
+                self.status_var.set(f"Error searching for text in editor: {e}")
+                return []
+
+            # If we made it this far, start searching for the text via API
+            self.debug_print("Searching for text in editor via API")
+            self.status_var.set("Searching for text in editor via API...")
+
+            try:
+                # Get all subtitle items from the timeline
+                subtitle_track = self._get_resolve_subtitle_track(timeline)
+                if not subtitle_track:
+                    self.debug_print("No subtitle track found")
+                    self.status_var.set("No subtitle track found")
+                    return []
+
+                # Search for the text in the subtitle items
+                matches = self._search_subtitle_items(subtitle_track, text_to_find)
+                if not matches:
+                    self.debug_print("No matches found")
+                    self.status_var.set("No matches found")
+                    return [] 
+
+                # Display results using timeline from API
+                self._display_search_results(matches, timeline_id, timeline)
+                self.status_var.set(f"Found {len(matches)} matches via API")
+
+            except Exception as e:
+                self.debug_print(f"Error searching text in editor: {e}")
+                self.status_var.set(f"Error searching text in editor: {e}")
+                return []
+
+        except Exception as e:
+            self.debug_print(f"Error searching for text in editor: {e}")
+            self.status_var.set(f"Error searching for text in editor: {e}")
+            return []
+
+    def _display_search_results(self, matches, timeline_id, timeline=None):
+        """Display search results in the editor dialog"""
+        global dvr_script
+        try:
+            if not matches:
+                self.status_var.set("No matches found in current timeline")
+                return
+
+            # Clear previous search results
+            for widget in self.editor_results_container.winfo_children():
+                widget.destroy()
+            
+            # If no timeline object provided, try to get it from Resolve
+            if not timeline:
+                try:
+                    resolve = dvr_script.scriptapp("Resolve")
+                    project = resolve.GetProjectManager().GetCurrentProject()
+                    timeline = project.GetCurrentTimeline()
+                except:
+                    self.debug_print("Could not get timeline object for result display")
+                    return
+
+            # Get the timeline frame rate
+            timeline_fps = self._get_resolve_timeline_fps(timeline) if timeline else 24.0
+
+            # Create a frame for each match
+            for match in matches:
+                result_frame = ttk.Frame(self.editor_results_container)
+                result_frame.pack(fill="x", pady=5)
+                timecode_string = f"{self._format_timecode(match['start'], timeline_fps)} - {self._format_timecode(match['end'], timeline_fps)}"
+                
+                # Create clickable timecode with proper parameters
+                timecode_label = ClickableEditorTimecode(
+                    parent=result_frame, 
+                    timecode=timecode_string, 
+                    timeline=timeline,  # Pass timeline as the main object
+                    callback=self._handle_editor_timecode_click, 
+                    start_frame=match['start'],
+                    item_ref=match.get('item')  # Pass the item reference if available
+                )
+                timecode_label.pack(pady=5, anchor="w")
+                
+                # Debug output to compare text formatting
+                self.debug_print(f"EDITOR SEARCH - text: {repr(match['text'])}")
+                
+                subtitle_label = ttk.Label(result_frame, text=self._restore_subtitle_line_breaks(match['text']), wraplength=700)
+                subtitle_label.pack(pady=5, anchor="w")
+                
+        except Exception as e:
+            self.debug_print(f"Error displaying search results: {e}")
+            self.status_var.set(f"Error displaying search results: {e}")
+
+    def _handle_editor_timecode_click(self, timeline, start_frame, item_ref=None):
+        """Handle clicks on editor timecode results - generic handler"""
+        current_editor = self.editor_var.get()
+        
+        if current_editor == "DaVinci Resolve":
+            self._jump_to_frame(start_frame, timeline, item_ref)
+        else:
+            # Future editors can be handled here
+            self.debug_print(f"Timecode navigation not implemented for {current_editor}")
+
+    def _jump_to_frame(self, frame, timeline, item_ref=None):
+        """Jump to a specific frame in the timeline."""
+        # Try different methods to set the current position
+        try:
+            # Try SetCurrentFramePosition first
+            if hasattr(timeline, 'SetCurrentFramePosition'):
+                if callable(timeline.SetCurrentFramePosition):
+                    success = timeline.SetCurrentFramePosition(frame)
+                    if success:
+                        logging.info(f"Jumped to frame {frame} using SetCurrentFramePosition")
+                        return True
+                else:
+                    logging.debug("SetCurrentFramePosition exists but is not callable, trying next method")
+            
+            # Try SetPlayHead as fallback
+            if hasattr(timeline, 'SetPlayHead'):
+                if callable(timeline.SetPlayHead):
+                    success = timeline.SetPlayHead(frame)
+                    if success:
+                        logging.info(f"Jumped to frame {frame} using SetPlayHead")
+                        return True
+                else:
+                    logging.debug("SetPlayHead exists but is not callable, trying next method")
+                    
+            # Try SetCurrentTimecode as last resort
+            if hasattr(timeline, 'SetCurrentTimecode') and callable(timeline.SetCurrentTimecode):
+                tc = self._format_timecode(frame, self._get_resolve_timeline_fps(timeline))
+                logging.info(f"Trying to jump to timecode {tc}")
+                success = timeline.SetCurrentTimecode(tc)
+                if success:
+                    logging.info(f"Jumped to timecode {tc}")
+                    return True
+            else:
+                logging.warning("SetCurrentTimecode doesn't exist or is not callable")
+                
+            # If we got here, all navigation methods failed
+            logging.error(f"All methods failed to jump to frame {frame}")
+            
+            # Try manual selection as a last resort
+            if item_ref and self._select_subtitle_item(timeline, item_ref):
+                logging.info("Selected subtitle item, but couldn't jump to frame")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error using timeline navigation methods: {str(e)}")
+            return False
+            
+
+    def _resolve_navigate_to_timecode(self, timecode):
+        """Navigate to a specific timecode in Resolve"""
+        self._jump_to_frame(self.timeline, self.result['start'], self.result['item'])
+
+    def _format_timecode(self, frames, fps=24):
+        """Convert frames to timecode format."""
+        total_seconds = frames / fps
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        seconds = int(total_seconds % 60)
+        frames = int((total_seconds * fps) % fps)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
+
+    def _get_resolve_timeline_fps(self, timeline):
+        """Get the timeline frame rate."""
+        try:
+            timeline_fps = timeline.GetSetting('timelineFrameRate')
+            if not timeline_fps:
+                # Try alternative methods
+                timeline_fps = timeline.GetSetting('fps')
+                
+            if not timeline_fps:
+                return 24.0  # Default to 24fps if not specified
+            
+            return float(timeline_fps)
+        except Exception as e:
+            logging.warning(f"Error getting timeline frame rate: {str(e)}")
+            return 24.0  # Default to 24fps on error
+
+
+    def _ensure_resolve_edit_page(self, resolve):
+        """Ensure we're on the Edit page."""
+        try:
+            current_page = resolve.GetCurrentPage()
+            if current_page != "edit":
+                resolve.OpenPage("edit")
+                time.sleep(1)  # Wait for page switch
+            return True
+        except Exception as e:
+            logging.error(f"Error ensuring Edit page: {str(e)}")
+            return False
+        
+    def _get_resolve_subtitle_track(self, timeline):
+        """Get all subtitle items from the timeline."""
+        try:
+            # Get subtitle tracks
+            subtitle_track_count = timeline.GetTrackCount("subtitle")
+            if subtitle_track_count < 1:
+                logging.error("No subtitle tracks found")
+                return None
+                
+            subtitle_items = []
+            
+            # Get items from each subtitle track
+            for track_index in range(1, subtitle_track_count + 1):
+                items = timeline.GetItemListInTrack("subtitle", track_index)
+                if not items:
+                    logging.warning(f"No items found in subtitle track {track_index}")
+                    continue
+                    
+                logging.info(f"Found {len(items)} items in subtitle track {track_index}")
+                
+                # Extract text and timing from items
+                for i, item in enumerate(items):
+                    text = item.GetName()
+                    start = item.GetStart()
+                    end = item.GetEnd()
+                    subtitle_items.append({
+                        'text': text,
+                        'start': start,
+                        'end': end,
+                        'track': track_index,
+                        'index': i + 1,
+                        'item': item  # Store the actual item reference for later use
+                    })
+                    
+            return subtitle_items
+        except Exception as e:
+            logging.error(f"Error getting subtitle items: {str(e)}")
+            return None
+
+    def _search_subtitle_items(self, subtitle_items, text_to_find, case_sensitive=False):
+        matches = []
+        for item in subtitle_items:
+            if case_sensitive:
+                if text_to_find in item['text']:
+                    matches.append(item)
+            else:
+                if text_to_find.lower() in item['text'].lower():
+                    matches.append(item)
+                
+        return matches
 
     # Add a method to show the settings dialog
     def _show_settings_dialog(self):
@@ -3555,6 +4074,359 @@ sys.exit(1)
             self.debug_print(f"Error loading application state: {e}")
             self.status_var.set(f"Error loading application state: {e}")
 
+    def _select_subtitle_item(self, timeline, item_ref):
+        """Select a specific subtitle item in the timeline as a fallback navigation method."""
+        try:
+            if not item_ref:
+                return False
+                
+            # Try to select the subtitle item directly
+            if hasattr(item_ref, 'SetSelected') and callable(item_ref.SetSelected):
+                success = item_ref.SetSelected(True)
+                if success:
+                    logging.info("Successfully selected subtitle item")
+                    return True
+            
+            # Alternative: Try to get the item's position and select it
+            if hasattr(item_ref, 'GetStart') and callable(item_ref.GetStart):
+                item_start = item_ref.GetStart()
+                # Try to navigate to the item's start position
+                if hasattr(timeline, 'SetCurrentFramePosition') and callable(timeline.SetCurrentFramePosition):
+                    success = timeline.SetCurrentFramePosition(item_start)
+                    if success:
+                        logging.info(f"Navigated to subtitle item at frame {item_start}")
+                        return True
+            
+            logging.warning("Could not select or navigate to subtitle item")
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error selecting subtitle item: {str(e)}")
+            return False
+
+    def _jump_to_frame(self, frame, timeline, item_ref=None):
+        """Jump to a specific frame in the timeline."""
+        # Try different methods to set the current position
+        try:
+            # Try SetCurrentFramePosition first
+            if hasattr(timeline, 'SetCurrentFramePosition'):
+                if callable(timeline.SetCurrentFramePosition):
+                    success = timeline.SetCurrentFramePosition(frame)
+                    if success:
+                        logging.info(f"Jumped to frame {frame} using SetCurrentFramePosition")
+                        return True
+                else:
+                    logging.debug("SetCurrentFramePosition exists but is not callable, trying next method")
+            
+            # Try SetPlayHead as fallback
+            if hasattr(timeline, 'SetPlayHead'):
+                if callable(timeline.SetPlayHead):
+                    success = timeline.SetPlayHead(frame)
+                    if success:
+                        logging.info(f"Jumped to frame {frame} using SetPlayHead")
+                        return True
+                else:
+                    logging.debug("SetPlayHead exists but is not callable, trying next method")
+                    
+            # Try SetCurrentTimecode as last resort
+            if hasattr(timeline, 'SetCurrentTimecode') and callable(timeline.SetCurrentTimecode):
+                tc = self._format_timecode(frame, self._get_resolve_timeline_fps(timeline))
+                logging.info(f"Trying to jump to timecode {tc}")
+                success = timeline.SetCurrentTimecode(tc)
+                if success:
+                    logging.info(f"Jumped to timecode {tc}")
+                    return True
+            else:
+                logging.warning("SetCurrentTimecode doesn't exist or is not callable")
+                
+            # If we got here, all navigation methods failed
+            logging.error(f"All methods failed to jump to frame {frame}")
+            
+            # Try manual selection as a last resort
+            if item_ref and self._select_subtitle_item(timeline, item_ref):
+                logging.info("Selected subtitle item, but couldn't jump to frame")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logging.error(f"Error using timeline navigation methods: {str(e)}")
+            return False
+
+    # Subtitle Cache Management Methods
+    def _get_timeline_identifier(self):
+        """Get a unique identifier for the current timeline"""
+        global dvr_script
+        try:
+            resolve = dvr_script.scriptapp("Resolve")
+            project = resolve.GetProjectManager().GetCurrentProject()
+            if not project:
+                return None
+            timeline = project.GetCurrentTimeline()
+            if not timeline:
+                return None
+            
+            # Create identifier from project and timeline name
+            project_name = project.GetName()
+            timeline_name = timeline.GetName()
+            return f"{project_name}::{timeline_name}"
+        except Exception as e:
+            self.debug_print(f"Error getting timeline identifier: {e}")
+            return None
+
+    def _build_subtitle_cache_in_background(self, timeline_id=None):
+        """Build subtitle cache in background thread"""
+        if self.is_caching:
+            self.debug_print("Cache update already in progress")
+            return
+            
+        if timeline_id is None:
+            timeline_id = self._get_timeline_identifier()
+            
+        if not timeline_id:
+            self.debug_print("No valid timeline found for caching")
+            return
+            
+        # Start background thread for caching
+        self.cache_update_thread = threading.Thread(
+            target=self._update_subtitle_cache_thread,
+            args=(timeline_id,),
+            daemon=True
+        )
+        self.cache_update_thread.start()
+
+    def _update_subtitle_cache_thread(self, timeline_id):
+        """Thread function to update subtitle cache"""
+        try:
+            with self.cache_lock:
+                self.is_caching = True
+                
+            # Update status on main thread
+            self.root.after(0, lambda: self._set_cache_status("Updating subtitle cache..."))
+            
+            # Get subtitle items from Resolve API
+            subtitle_items = self._fetch_subtitle_items_from_resolve()
+            
+            if subtitle_items:
+                with self.cache_lock:
+                    self.subtitle_cache[timeline_id] = {
+                        'items': subtitle_items,
+                        'timestamp': time.time(),
+                        'timeline_id': timeline_id
+                    }
+                    self.last_timeline_id = timeline_id
+                    
+                cache_count = len(subtitle_items)
+                self.debug_print(f"Cached {cache_count} subtitle items for timeline: {timeline_id}")
+                
+                # Update status on main thread
+                self.root.after(0, lambda: self._set_cache_status(f"Cache updated: {cache_count} items"))
+                self.root.after(3000, lambda: self._clear_cache_status())  # Clear after 3 seconds
+            else:
+                self.debug_print(f"No subtitle items found for timeline: {timeline_id}")
+                self.root.after(0, lambda: self._set_cache_status("No subtitle items found"))
+                self.root.after(3000, lambda: self._clear_cache_status())
+                
+        except Exception as e:
+            self.debug_print(f"Error updating subtitle cache: {e}")
+            self.root.after(0, lambda: self._set_cache_status(f"Cache update failed: {e}"))
+            self.root.after(5000, lambda: self._clear_cache_status())
+        finally:
+            with self.cache_lock:
+                self.is_caching = False
+
+    def _fetch_subtitle_items_from_resolve(self):
+        """Fetch subtitle items from DaVinci Resolve"""
+        global dvr_script
+        try:
+            # Ensure DaVinci Resolve is ready
+            if not self._ensure_resolve_ready():
+                return None
+                
+            resolve = dvr_script.scriptapp("Resolve")
+            
+            if not self._ensure_resolve_edit_page(resolve):
+                return None
+                
+            project = resolve.GetProjectManager().GetCurrentProject()
+            if not project:
+                return None
+                
+            timeline = project.GetCurrentTimeline()
+            if not timeline:
+                return None
+                
+            # Get subtitle track items
+            subtitle_track = self._get_resolve_subtitle_track(timeline)
+            return subtitle_track
+            
+        except Exception as e:
+            self.debug_print(f"Error fetching subtitle items from Resolve: {e}")
+            return None
+
+    def _get_cached_subtitle_items(self, timeline_id=None):
+        """Get subtitle items from cache if available"""
+        if timeline_id is None:
+            timeline_id = self._get_timeline_identifier()
+            
+        if not timeline_id:
+            return None
+            
+        with self.cache_lock:
+            cache_data = self.subtitle_cache.get(timeline_id)
+            if cache_data:
+                self.debug_print(f"Retrieved {len(cache_data['items'])} items from cache")
+                return cache_data['items']
+                
+        self.debug_print("No cached data available")
+        return None
+
+    def _set_cache_status(self, message):
+        """Set cache status in the status bar"""
+        try:
+            if hasattr(self, 'status_var') and self.status_var:
+                # Store the current message before overwriting it
+                current_message = self.status_var.get()
+                if current_message and not current_message.startswith("🔄"):
+                    self.last_status_message = current_message
+                self.status_var.set(f"🔄 {message}")
+        except Exception as e:
+            self.debug_print(f"Error setting cache status: {e}")
+
+    def _clear_cache_status(self):
+        """Clear cache status and restore the previous message"""
+        try:
+            if hasattr(self, 'status_var') and self.status_var:
+                # Restore the last status message if we have one
+                if hasattr(self, 'last_status_message') and self.last_status_message:
+                    self.status_var.set(self.last_status_message)
+                else:
+                    self.status_var.set("")
+        except Exception as e:
+            self.debug_print(f"Error clearing cache status: {e}")
+
+    def _invalidate_cache(self, timeline_id=None):
+        """Invalidate cache for specific timeline or all"""
+        with self.cache_lock:
+            if timeline_id:
+                if timeline_id in self.subtitle_cache:
+                    del self.subtitle_cache[timeline_id]
+                    self.debug_print(f"Invalidated cache for timeline: {timeline_id}")
+            else:
+                self.subtitle_cache.clear()
+                self.debug_print("Invalidated entire subtitle cache")
+
+    def _on_window_focus_in(self, event=None):
+        """Handle window focus in event"""
+        # Only trigger cache update if we have an editor dialog open
+        if self.editor_dialog and self.editor_dialog.winfo_exists():
+            current_timeline_id = self._get_timeline_identifier()
+            if current_timeline_id and current_timeline_id != self.last_timeline_id:
+                self.debug_print("Timeline changed, updating cache")
+                self._build_subtitle_cache_in_background(current_timeline_id)
+            elif current_timeline_id and not self.was_focused:
+                self.debug_print("Window regained focus, updating cache")
+                self._build_subtitle_cache_in_background(current_timeline_id)
+                
+        self.was_focused = True
+
+    def _on_window_focus_out(self, event=None):
+        """Handle window focus out event"""
+        self.was_focused = False
+
+    def _setup_focus_detection(self):
+        """Setup robust focus detection for cache management"""
+        # Method 1: Traditional focus events (works on most platforms)
+        self.root.bind("<FocusIn>", self._on_window_focus_in)
+        self.root.bind("<FocusOut>", self._on_window_focus_out)
+        
+        # Method 2: Periodic focus checking (backup method)
+        self._setup_periodic_focus_check()
+        
+        # Method 3: User interaction triggers (most reliable)
+        self._setup_interaction_cache_triggers()
+        
+        # Also bind to all child windows
+        def bind_focus_events(widget):
+            try:
+                widget.bind("<FocusIn>", self._on_window_focus_in)
+                widget.bind("<FocusOut>", self._on_window_focus_out)
+                for child in widget.winfo_children():
+                    bind_focus_events(child)
+            except:
+                pass
+                    
+        self.root.after(100, lambda: bind_focus_events(self.root))
+
+    def _setup_periodic_focus_check(self):
+        """Setup periodic checking as backup for focus detection"""
+        self.last_focus_check = time.time()
+        self.focus_check_interval = 2000  # Check every 2 seconds
+        self._periodic_focus_check()
+        
+    def _periodic_focus_check(self):
+        """Periodically check if window has focus (backup method)"""
+        try:
+            # Check if main window or any child has focus
+            focused_widget = self.root.focus_get()
+            current_time = time.time()
+            
+            # If we have focus and haven't checked recently
+            if focused_widget and (current_time - self.last_focus_check) > 5:
+                # Only update cache if editor dialog is open and enough time has passed
+                if (self.editor_dialog and self.editor_dialog.winfo_exists() and 
+                    not self.was_focused and not self.is_caching):
+                    self.debug_print("Periodic check detected focus regain, updating cache")
+                    self._build_subtitle_cache_in_background()
+                self.was_focused = True
+                self.last_focus_check = current_time
+            elif not focused_widget:
+                self.was_focused = False
+                
+        except Exception as e:
+            # Silently handle any focus checking errors
+            pass
+        finally:
+            # Schedule next check
+            self.root.after(self.focus_check_interval, self._periodic_focus_check)
+
+    def _setup_interaction_cache_triggers(self):
+        """Setup cache update triggers based on user interactions"""
+        # This is the most reliable method - update cache when user starts typing
+        pass  # Will be implemented in search entry setup
+
+    def _on_search_entry_key(self, event):
+        """Handle key events in search entry - trigger cache update if needed"""
+        # If this is the first character typed and we haven't cached recently
+        if (len(self.editor_search_var.get()) == 0 and 
+            self.editor_dialog and self.editor_dialog.winfo_exists() and
+            not self.is_caching):
+            
+            timeline_id = self._get_timeline_identifier()
+            if timeline_id:
+                cached_items = self._get_cached_subtitle_items(timeline_id)
+                if not cached_items or timeline_id != self.last_timeline_id:
+                    self.debug_print("User interaction triggered cache update")
+                    self._build_subtitle_cache_in_background(timeline_id)
+
+    def _manual_cache_refresh(self):
+        """Manually refresh the subtitle cache"""
+        self.debug_print("Manual cache refresh triggered")
+        self._build_subtitle_cache_in_background()
+
+    def _map_subtitles_in_background(self):
+        """Start subtitle-to-video mapping in background thread"""
+        def mapping_thread():
+            try:
+                self.map_subtitles_to_videos()
+            except Exception as e:
+                self.debug_print(f"Error during background mapping: {e}")
+                self.status_var.set("Error mapping subtitle files. See debug window for details.")
+        
+        # Start the mapping in a background thread
+        mapping_thread = threading.Thread(target=mapping_thread, daemon=True)
+        mapping_thread.start()
+
 class DebugWindow:
     """A debug window to display errors and debug information"""
     def __init__(self, parent, auto_show=False):
@@ -3684,6 +4556,12 @@ if __name__ == "__main__":
         settings_menu.add_command(label="General Settings...", 
                                  command=app._show_general_settings_dialog)
         menu_bar.add_cascade(label="Settings", menu=settings_menu)
+            
+        # Add Editor Menu
+        editor_menu = tk.Menu(menu_bar, tearoff=0)
+        editor_menu.add_command(label="Editor Navigator", 
+                                command=app._show_editor_dialog)
+        menu_bar.add_cascade(label="Editor", menu=editor_menu)
             
         # Add Debug menu
         debug_menu = tk.Menu(menu_bar, tearoff=0)
