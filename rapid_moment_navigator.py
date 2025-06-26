@@ -3401,11 +3401,11 @@ except Exception as e:
         ttk.Label(self.editor_search_frame, text="Search:").pack(side="left")
         
         self.editor_search_var = tk.StringVar()
-        search_entry = ttk.Entry(self.editor_search_frame, textvariable=self.editor_search_var, width=30)
-        search_entry.pack(side="left", padx=5)
-        search_entry.bind("<Return>", lambda event: self.find_text_in_editor())
-        search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
-        search_entry.bind("<KeyPress>", self._on_search_entry_key)
+        self.editor_search_entry = ttk.Entry(self.editor_search_frame, textvariable=self.editor_search_var, width=30)
+        self.editor_search_entry.pack(side="left", padx=5)
+        self.editor_search_entry.bind("<Return>", lambda event: self.find_text_in_editor())
+        self.editor_search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
+        self.editor_search_entry.bind("<KeyPress>", self._on_search_entry_key)
         
         # Button to find text
         find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_editor)
@@ -3509,6 +3509,9 @@ except Exception as e:
 
         # Note: Canvas scrolling is now handled automatically by the global position-based handler
         # No platform-specific activation needed
+        
+        # Set focus to search entry after dialog is fully created
+        self.root.after(100, lambda: self.editor_search_entry.focus_set())
             
     def find_text_in_editor(self):
         """Find text in the currently selected editor"""
