@@ -4484,28 +4484,24 @@ except Exception as e:
             self.status_var.set(f"Error applying window sizing settings: {e}")
     
     def _apply_sizes_to_open_windows(self, new_sizes):
-        """Apply new sizes to currently open windows"""
+        """Apply new sizes to currently open windows and re-center them"""
         try:
             # Apply to main window
             if "main_window" in new_sizes:
                 width, height = new_sizes["main_window"]
-                current_geometry = self.root.geometry()
-                if '+' in current_geometry:
-                    size_part, pos_part = current_geometry.split('+', 1)
-                    self.root.geometry(f"{width}x{height}+{pos_part}")
-                else:
-                    self.root.geometry(f"{width}x{height}")
+                self.root.geometry(f"{width}x{height}")
+                # Re-center the main window on screen
+                self.center_window(self.root)
+                self.debug_print(f"Resized and centered main window to {width}x{height}")
             
             # Apply to debug window if open
             if hasattr(self, 'debug_window') and self.debug_window and self.debug_window.winfo_exists():
                 if "debug_window" in new_sizes:
                     width, height = new_sizes["debug_window"]
-                    current_geometry = self.debug_window.window.geometry()
-                    if '+' in current_geometry:
-                        size_part, pos_part = current_geometry.split('+', 1)
-                        self.debug_window.window.geometry(f"{width}x{height}+{pos_part}")
-                    else:
-                        self.debug_window.window.geometry(f"{width}x{height}")
+                    self.debug_window.window.geometry(f"{width}x{height}")
+                    # Re-center the debug window relative to the main window
+                    self.center_window(self.debug_window.window, self.root)
+                    self.debug_print(f"Resized and centered debug window to {width}x{height}")
             
             # Note: Other dialogs are typically modal and short-lived, 
             # so they'll use the new sizes when next opened
