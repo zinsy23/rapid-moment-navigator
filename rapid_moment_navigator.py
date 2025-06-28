@@ -3968,6 +3968,13 @@ except Exception as e:
         settings_dialog.transient(self.root)
         settings_dialog.grab_set()
         
+        # Setup dialog close handler to apply settings automatically
+        def on_dialog_close():
+            self._apply_settings_without_closing(settings_dialog)
+            settings_dialog.destroy()
+            
+        settings_dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
+        
         # Make dialog modal
         settings_dialog.focus_set()
         
@@ -4019,10 +4026,15 @@ except Exception as e:
         buttons_frame.pack(fill="x", padx=15, pady=15)
         
         # Cancel button
+        def on_cancel():
+            # Close without applying settings by bypassing the close handler
+            settings_dialog.protocol("WM_DELETE_WINDOW", lambda: None)  # Remove close handler
+            settings_dialog.destroy()
+            
         cancel_btn = ttk.Button(
             buttons_frame, 
             text="Cancel", 
-            command=settings_dialog.destroy
+            command=on_cancel
         )
         cancel_btn.pack(side="right", padx=5)
         
@@ -4067,6 +4079,40 @@ except Exception as e:
             
             # Close the dialog
             dialog.destroy()
+            
+            # Update status
+            self.status_var.set("Settings updated successfully")
+        except Exception as e:
+            self.debug_print(f"Error updating settings: {e}")
+            self.status_var.set(f"Error updating settings: {e}")
+
+    def _apply_settings_without_closing(self, dialog):
+        """Apply settings from the dialog without closing it"""
+        try:
+            # Get the minimum duration settings
+            enabled = self.min_duration_var.get()
+            
+            # Parse and validate seconds value
+            seconds_str = self.min_duration_seconds_var.get()
+            try:
+                seconds = float(seconds_str)
+                if seconds < 0:
+                    seconds = 0.0
+                    self.min_duration_seconds_var.set("0.0")
+                elif seconds > 60:
+                    seconds = 60.0
+                    self.min_duration_seconds_var.set("60.0")
+            except ValueError:
+                # If not a valid float, reset to default
+                seconds = 10.0
+                self.min_duration_seconds_var.set("10.0")
+            
+            # Update preferences
+            self.preferences["min_duration_enabled"] = enabled
+            self.preferences["min_duration_seconds"] = seconds
+            self.save_preferences()
+            
+            self.debug_print(f"Minimum duration settings updated - enabled: {enabled}, seconds: {seconds}")
             
             # Update status
             self.status_var.set("Settings updated successfully")
