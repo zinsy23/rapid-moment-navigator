@@ -2479,17 +2479,17 @@ except Exception as e:
     
     def add_directory(self):
         """Open file dialog to add directories to preferences"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("add_directory_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
         # Create dialog window
         root = tk.Toplevel(self.root)
         root.title("Add Media Directories")
+        root.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         root.transient(self.root)
         root.grab_set()
-        
-        # Apply saved size or use default
-        self.apply_window_size(root, "add_directory_dialog")
-        
-        # Center on main window
-        self.center_window(root, self.root)
         
         # Create frame to hold the listbox and buttons
         frame = ttk.Frame(root)
@@ -3092,13 +3092,16 @@ except Exception as e:
     def _show_resolve_paths_dialog(self, current_api, current_lib, default_api, default_lib, 
                                  default_api_valid, default_lib_valid, module_exists, lib_exists):
         """Show a dialog to get custom paths for DaVinci Resolve scripting"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("resolve_paths_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
         dialog = tk.Toplevel(self.root)
         dialog.title("DaVinci Resolve Scripting Setup")
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         dialog.transient(self.root)
         dialog.grab_set()
-        
-        # Apply saved size or use default
-        self.apply_window_size(dialog, "resolve_paths_dialog")
         
         # Set the result
         result = {
@@ -3424,14 +3427,16 @@ except Exception as e:
 
     def _show_editor_dialog(self):
         """Show a dialog with editor settings"""
+        # Get saved size and calculate centered position BEFORE creating window
+        editor_width, editor_height = self.get_window_size("editor_dialog")
+        editor_x = self.root.winfo_x() + (self.root.winfo_width() - editor_width) // 2
+        editor_y = self.root.winfo_y() + (self.root.winfo_height() - editor_height) // 2
+        
         editor_dialog = tk.Toplevel(self.root)
         editor_dialog.title("Editor Navigator")
+        editor_dialog.geometry(f"{editor_width}x{editor_height}+{editor_x}+{editor_y}")
         editor_dialog.transient(self.root)
         editor_dialog.grab_set()
-        
-        # Apply saved size and center
-        self.apply_window_size(editor_dialog, "editor_dialog")
-        self.center_window(editor_dialog, self.root)
 
         # Store reference to editor dialog and setup focus detection
         self.editor_dialog = editor_dialog
@@ -3952,13 +3957,16 @@ except Exception as e:
     # Add a method to show the settings dialog
     def _show_settings_dialog(self):
         """Show a dialog with minimum duration settings"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("settings_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
         settings_dialog = tk.Toplevel(self.root)
         settings_dialog.title("Minimum Import Duration")
+        settings_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         settings_dialog.transient(self.root)
         settings_dialog.grab_set()
-        
-        # Apply saved size or use default
-        self.apply_window_size(settings_dialog, "settings_dialog")
         
         # Make dialog modal
         settings_dialog.focus_set()
@@ -4026,11 +4034,7 @@ except Exception as e:
         )
         apply_btn.pack(side="right", padx=5)
         
-        # Center the dialog on the main window
-        settings_dialog.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() / 2) - (settings_dialog.winfo_width() / 2)
-        y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (settings_dialog.winfo_height() / 2)
-        settings_dialog.geometry(f"+{int(x)}+{int(y)}")
+        # Dialog is already positioned correctly from creation
 
     # Add a method to apply the settings
     def _apply_settings(self, dialog):
@@ -4073,13 +4077,16 @@ except Exception as e:
     # Add a new method for general settings
     def _show_general_settings_dialog(self):
         """Show a dialog with general application settings"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("general_settings_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
         settings_dialog = tk.Toplevel(self.root)
         settings_dialog.title("General Settings")
+        settings_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         settings_dialog.transient(self.root)
         settings_dialog.grab_set()
-        
-        # Apply saved size or use default
-        self.apply_window_size(settings_dialog, "general_settings_dialog")
         
         # Make dialog modal
         settings_dialog.focus_set()
@@ -4112,21 +4119,20 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
         
-        # Center the dialog on the main window
-        settings_dialog.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() / 2) - (settings_dialog.winfo_width() / 2)
-        y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (settings_dialog.winfo_height() / 2)
-        settings_dialog.geometry(f"+{int(x)}+{int(y)}")
+        # Dialog is already positioned correctly from creation
 
     def _show_window_sizing_dialog(self):
         """Show a dialog for configuring window sizes"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("window_sizing_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
         dialog = tk.Toplevel(self.root)
         dialog.title("Window Sizing Settings")
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         dialog.transient(self.root)
         dialog.grab_set()
-        
-        # Apply saved size or use default
-        self.apply_window_size(dialog, "window_sizing_dialog")
         
         # Set minimum window size to ensure all elements are always visible
         # Calculate minimum height: title(30) + aspect(80) + canvas(150) + info(120) + separator(20) + buttons(40) + padding(60) = ~500
@@ -4330,11 +4336,7 @@ except Exception as e:
         )
         apply_btn.pack(side="right", padx=(5, 5))
         
-        # Center the dialog on the main window
-        dialog.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() / 2) - (dialog.winfo_width() / 2)
-        y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (dialog.winfo_height() / 2)
-        dialog.geometry(f"+{int(x)}+{int(y)}")
+        # Dialog is already positioned correctly from creation
     
     def _maintain_aspect_ratio(self, window_type, changed_dimension):
         """Maintain aspect ratio when one dimension is changed"""
@@ -4553,17 +4555,17 @@ except Exception as e:
         # Set flag to indicate dialog is showing
         self.guidance_dialog_showing = True
         
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("guidance_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
         # Create the dialog window
         guidance_dialog = tk.Toplevel(self.root)
         guidance_dialog.title("Welcome to Rapid Moment Navigator")
+        guidance_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         guidance_dialog.transient(self.root)
         guidance_dialog.grab_set()
-        
-        # Apply saved size or use default
-        self.apply_window_size(guidance_dialog, "guidance_dialog")
-        
-        # Center on main window
-        self.center_window(guidance_dialog, self.root)
         
         # Function to handle dialog close
         def on_dialog_close():
@@ -5243,8 +5245,11 @@ class DebugWindow:
         
         # Apply saved size if the parent has the sizing methods (i.e., it's our main app)
         if hasattr(parent, 'get_window_size'):
-            parent.apply_window_size(self.window, "debug_window")
-            parent.center_window(self.window, parent)
+            # Get saved size and calculate centered position BEFORE setting geometry
+            debug_width, debug_height = parent.get_window_size("debug_window")
+            x = parent_x + (parent_width - debug_width) // 2
+            y = parent_y + (parent_height - debug_height) // 2
+            self.window.geometry(f"{debug_width}x{debug_height}+{x}+{y}")
         else:
             # Fallback for cases where parent doesn't have sizing methods
             debug_width = 800
