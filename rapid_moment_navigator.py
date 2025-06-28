@@ -4177,6 +4177,9 @@ except Exception as e:
         # Store references to entry widgets for later retrieval
         self.size_entries = {}
         
+        # Flag to prevent infinite loops during proportional scaling
+        self._updating_proportional_scaling = False
+        
         # Create size controls for each window type
         window_labels = {
             "main_window": "Main Application Window",
@@ -4242,23 +4245,33 @@ except Exception as e:
                 "height_entry": height_entry
             }
             
-            # Bind aspect ratio maintenance if enabled
-            if self.aspect_lock_var.get():
-                def on_width_change(event, wtype=window_type):
+            # Bind real-time scaling handlers
+            def on_width_change(event, wtype=window_type):
+                if self._updating_proportional_scaling:
+                    return  # Prevent infinite loops
+                if self.aspect_lock_var.get():
                     self._maintain_aspect_ratio(wtype, "width")
-                def on_height_change(event, wtype=window_type):
-                    self._maintain_aspect_ratio(wtype, "height")
+                if self.proportional_scaling_var.get():
+                    self._apply_proportional_scaling(wtype, "width")
                     
-                width_entry.bind("<KeyRelease>", on_width_change)
-                height_entry.bind("<KeyRelease>", on_height_change)
+            def on_height_change(event, wtype=window_type):
+                if self._updating_proportional_scaling:
+                    return  # Prevent infinite loops
+                if self.aspect_lock_var.get():
+                    self._maintain_aspect_ratio(wtype, "height")
+                if self.proportional_scaling_var.get():
+                    self._apply_proportional_scaling(wtype, "height")
+                    
+            width_entry.bind("<KeyRelease>", on_width_change)
+            height_entry.bind("<KeyRelease>", on_height_change)
         
         # Description
         desc_frame = ttk.LabelFrame(main_frame, text="Information", padding=10)
         desc_frame.pack(fill="x", pady=(0, 10))
         
         description_text = ("• Window sizes are only saved if different from defaults\n"
-                          "• Aspect ratio maintenance applies only during active editing\n"
-                          "• Proportional scaling affects all windows when one is changed\n"
+                          "• Aspect ratio maintenance applies in real-time while typing\n"
+                          "• Proportional scaling updates all windows in real-time when one is changed\n"
                           "• Changes take effect immediately when Apply is clicked")
         
         ttk.Label(desc_frame, text=description_text, justify="left").pack(anchor="w")
@@ -4291,10 +4304,14 @@ except Exception as e:
     
     def _maintain_aspect_ratio(self, window_type, changed_dimension):
         """Maintain aspect ratio when one dimension is changed"""
-        if not self.aspect_lock_var.get():
+        if not self.aspect_lock_var.get() or self._updating_proportional_scaling:
             return
             
         try:
+            # Set flag to prevent conflicts with proportional scaling
+            was_updating = self._updating_proportional_scaling
+            self._updating_proportional_scaling = True
+            
             entry_data = self.size_entries[window_type]
             width_var = entry_data["width_var"]
             height_var = entry_data["height_var"]
@@ -4314,6 +4331,66 @@ except Exception as e:
                 
         except (ValueError, KeyError):
             pass  # Ignore invalid input
+        finally:
+            # Restore the flag state
+            self._updating_proportional_scaling = was_updating
+
+    def _apply_proportional_scaling(self, changed_window_type, changed_dimension):
+        """Apply proportional scaling to all other windows when one is changed"""
+        if not self.proportional_scaling_var.get() or self._updating_proportional_scaling:
+            return
+            
+        try:
+            # Set flag to prevent infinite loops
+            self._updating_proportional_scaling = True
+            
+            # Get the changed window's current and original sizes
+            changed_entry = self.size_entries[changed_window_type]
+            changed_width = int(changed_entry["width_var"].get())
+            changed_height = int(changed_entry["height_var"].get())
+            
+            # Get the original size for this window
+            original_width, original_height = self.get_window_size(changed_window_type)
+            
+            # Calculate scaling ratios
+            width_ratio = changed_width / original_width if original_width > 0 else 1.0
+            height_ratio = changed_height / original_height if original_height > 0 else 1.0
+            
+            # Use the ratio from the dimension that was actually changed
+            if changed_dimension == "width":
+                scale_ratio = width_ratio
+            else:
+                scale_ratio = height_ratio
+            
+            # Only apply if the change is significant (more than 5%)
+            if abs(scale_ratio - 1.0) < 0.05:
+                return
+                
+            # Apply scaling to all other windows
+            for window_type, entries in self.size_entries.items():
+                if window_type == changed_window_type:
+                    continue  # Skip the window that was changed
+                    
+                # Get original size for this window
+                orig_w, orig_h = self.get_window_size(window_type)
+                
+                # Calculate new scaled sizes
+                new_w = int(orig_w * scale_ratio)
+                new_h = int(orig_h * scale_ratio)
+                
+                # Apply bounds
+                new_w = max(200, min(3000, new_w))
+                new_h = max(150, min(2000, new_h))
+                
+                # Update the UI entries
+                entries["width_var"].set(str(new_w))
+                entries["height_var"].set(str(new_h))
+                
+        except (ValueError, KeyError, ZeroDivisionError):
+            pass  # Ignore invalid input or calculation errors
+        finally:
+            # Always clear the flag
+            self._updating_proportional_scaling = False
     
     def _apply_window_sizing_settings(self, dialog):
         """Apply window sizing settings"""
