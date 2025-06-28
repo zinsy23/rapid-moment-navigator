@@ -3975,29 +3975,37 @@ except Exception as e:
             
         settings_dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
         
+        # Set minimum window size to ensure all elements are always visible
+        settings_dialog.minsize(400, 350)
+        
         # Make dialog modal
         settings_dialog.focus_set()
         
-        # Create main frame with padding
-        main_frame = ttk.Frame(settings_dialog, padding=15)
-        main_frame.pack(fill="both", expand=True)
+        # Create main container with grid layout for absolute control
+        main_container = ttk.Frame(settings_dialog, padding=15)
+        main_container.pack(fill="both", expand=True)
         
-        # Title label
-        ttk.Label(main_frame, text="Minimum Clip Duration Settings", 
-                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        # Configure grid weights - allow container to expand but keep content fixed
+        main_container.grid_rowconfigure(6, weight=1)  # Add expandable spacer row after buttons
+        main_container.grid_columnconfigure(0, weight=1)
         
-        # Enable checkbox
+        # Title label (row 0 - fixed)
+        title_label = ttk.Label(main_container, text="Minimum Clip Duration Settings", 
+                               font=("TkDefaultFont", 12, "bold"))
+        title_label.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        
+        # Enable checkbox (row 1 - fixed)
         self.min_duration_var = tk.BooleanVar(value=self.preferences.get("min_duration_enabled", True))
         min_duration_cb = ttk.Checkbutton(
-            main_frame, 
+            main_container, 
             text="Enable minimum duration for imported clips", 
             variable=self.min_duration_var
         )
-        min_duration_cb.pack(anchor="w", pady=5)
+        min_duration_cb.grid(row=1, column=0, sticky="w", pady=5)
         
-        # Duration input frame
-        duration_input_frame = ttk.Frame(main_frame)
-        duration_input_frame.pack(fill="x", pady=5)
+        # Duration input frame (row 2 - fixed)
+        duration_input_frame = ttk.Frame(main_container)
+        duration_input_frame.grid(row=2, column=0, sticky="ew", pady=5)
         
         ttk.Label(duration_input_frame, text="Minimum duration:").pack(side="left")
         
@@ -4011,19 +4019,25 @@ except Exception as e:
         
         ttk.Label(duration_input_frame, text="seconds").pack(side="left")
         
-        # Description label
-        description_frame = ttk.LabelFrame(main_frame, text="Description", padding=10)
-        description_frame.pack(fill="x", pady=10, expand=True)
+        # Description frame (row 3 - fixed size, no scrolling needed)
+        description_frame = ttk.LabelFrame(main_container, text="Description", padding=10)
+        description_frame.grid(row=3, column=0, sticky="ew", pady=10)
         
+        # Add description text directly (no scrolling needed for this short text)
         description_text = ("Clips shorter than the minimum duration will be extended equally on both sides when imported.\n\n"
                            "If a clip cannot be extended to the full minimum duration due to reaching the start or end of "
                            "the source media, it will be extended as much as possible.")
         
-        ttk.Label(description_frame, text=description_text, wraplength=350, justify="left").pack(fill="both")
+        description_label = ttk.Label(description_frame, text=description_text, wraplength=350, justify="left")
+        description_label.pack(fill="both", padx=5, pady=5)
         
-        # Buttons frame
-        buttons_frame = ttk.Frame(settings_dialog)
-        buttons_frame.pack(fill="x", padx=15, pady=15)
+        # Separator (row 4 - fixed height)
+        separator = ttk.Separator(main_container, orient='horizontal')
+        separator.grid(row=4, column=0, sticky="ew", pady=(5, 10))
+        
+        # Buttons frame (row 5 - fixed height, always visible at bottom)
+        buttons_frame = ttk.Frame(main_container)
+        buttons_frame.grid(row=5, column=0, sticky="ew")
         
         # Cancel button
         def on_cancel():
@@ -4045,6 +4059,10 @@ except Exception as e:
             command=lambda: self._apply_settings(settings_dialog)
         )
         apply_btn.pack(side="right", padx=5)
+        
+        # Add invisible spacer row to absorb extra space when dialog is enlarged
+        spacer_frame = ttk.Frame(main_container)
+        spacer_frame.grid(row=6, column=0, sticky="nsew")
         
         # Dialog is already positioned correctly from creation
 
