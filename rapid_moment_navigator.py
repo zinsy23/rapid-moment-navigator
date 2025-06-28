@@ -4080,9 +4080,9 @@ except Exception as e:
                 if seconds < 0:
                     seconds = 0.0
                     self.min_duration_seconds_var.set("0.0")
-                elif seconds > 60:
-                    seconds = 60.0
-                    self.min_duration_seconds_var.set("60.0")
+                elif seconds > 10000:
+                    seconds = 10000.0
+                    self.min_duration_seconds_var.set("10000.0")
             except ValueError:
                 # If not a valid float, reset to default
                 seconds = 10.0
@@ -4117,9 +4117,9 @@ except Exception as e:
                 if seconds < 0:
                     seconds = 0.0
                     self.min_duration_seconds_var.set("0.0")
-                elif seconds > 60:
-                    seconds = 60.0
-                    self.min_duration_seconds_var.set("60.0")
+                elif seconds > 10000:
+                    seconds = 10000.0
+                    self.min_duration_seconds_var.set("10000.0")
             except ValueError:
                 # If not a valid float, reset to default
                 seconds = 10.0
