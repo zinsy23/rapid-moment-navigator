@@ -19,13 +19,16 @@ from threading import Lock
 # Constants
 PREFS_FILENAME = "rapid_navigator_prefs.json"
 RESOLVE_PATHS_FILENAME = "resolve_paths.json"
+
 DEFAULT_PREFS = {
     "directories": [],
     "exclude_current_dir": False,
     "selected_editor": "None",
     "min_duration_enabled": True,  # Changed from False to True
     "min_duration_seconds": 10.0,
-    "auto_cache_update": True  # Enable automatic cache updates when app gains focus
+    "auto_cache_update": True,  # Enable automatic cache updates when app gains focus
+    "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
+    "window_proportional_scaling": True  # Scale all windows proportionally when one is changed
 }
 
 # Global variable for DaVinci Resolve script module
@@ -181,9 +184,18 @@ class RapidMomentNavigator:
         self.root = root
         self.root.title("Rapid Moment Navigator")
         
-        # Calculate the centered position for the main window
-        window_width = 800
-        window_height = 600
+        # Debug mode setting
+        self.debug = debug
+        
+        # Store the script directory for preferences and other file operations (needed first)
+        self.script_dir = os.path.abspath(os.path.dirname(__file__))
+        self.debug_print(f"Script directory: {self.script_dir}")
+        
+        # Initialize preferences first
+        self.preferences = self.load_preferences()
+        
+        # Calculate the centered position for the main window using saved or default size
+        window_width, window_height = self.get_window_size("main_window")
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
         x = (screen_width - window_width) // 2
@@ -191,9 +203,6 @@ class RapidMomentNavigator:
         
         # Set both size and position in one geometry call
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
-        
-        # Debug mode setting
-        self.debug = debug
         
         # Initialize subtitle cache system
         self.subtitle_cache = {}  # Cache for subtitle items
@@ -228,12 +237,7 @@ class RapidMomentNavigator:
         # Setup exception handling for Tkinter
         self.setup_exception_handler()
         
-        # Store the script directory for relative path operations
-        self.script_dir = os.path.abspath(os.path.dirname(__file__))
-        self.debug_print(f"Script directory: {self.script_dir}")
-        
-        # Load preferences from file
-        self.preferences = self.load_preferences()
+        # Preferences and script directory already initialized earlier for window sizing
         
         # Map to store relationship between subtitle files and video files
         self.subtitle_to_video_map = {}
@@ -505,10 +509,11 @@ class RapidMomentNavigator:
             self.debug_print(f"Window size not initialized yet: {window_width}x{window_height}, forcing geometry")
             # Try to force the window to its requested size
             if hasattr(window, '_w') and window._w == '.':  # Main window
-                # For main window, use the initial geometry we set
-                window.geometry("800x600")
-                window_width = 800
-                window_height = 600
+                # For main window, use the saved or default size
+                main_width, main_height = self.get_window_size("main_window")
+                window.geometry(f"{main_width}x{main_height}")
+                window_width = main_width
+                window_height = main_height
             window.update_idletasks()
             window_width = window.winfo_width()
             window_height = window.winfo_height()
@@ -2355,6 +2360,67 @@ except Exception as e:
             self.debug_print(f"Error saving preferences: {e}")
             self.status_var.set(f"Error saving preferences: {e}")
     
+    def get_default_window_size(self, window_type):
+        """Get default window size for a specific window type"""
+        defaults = {
+            "main_window": (800, 600),
+            "settings_dialog": (400, 250),
+            "general_settings_dialog": (400, 300),
+            "editor_dialog": (600, 500),
+            "debug_window": (800, 425),
+            "window_sizing_dialog": (600, 700),
+            "resolve_paths_dialog": (600, 500),
+            "add_directory_dialog": (525, 450),
+            "guidance_dialog": (650, 600)
+        }
+        return defaults.get(window_type, (400, 300))
+    
+    def get_window_size(self, window_type):
+        """Get window size for a specific window type, with fallback to defaults"""
+        saved_sizes = self.preferences.get("window_sizes", {})
+        if window_type in saved_sizes:
+            return saved_sizes[window_type]["width"], saved_sizes[window_type]["height"]
+        else:
+            return self.get_default_window_size(window_type)
+    
+    def save_window_size(self, window_type, width, height):
+        """Save window size for a specific window type (only if different from default)"""
+        default_width, default_height = self.get_default_window_size(window_type)
+        
+        # Only save if different from default
+        if width != default_width or height != default_height:
+            if "window_sizes" not in self.preferences:
+                self.preferences["window_sizes"] = {}
+            self.preferences["window_sizes"][window_type] = {"width": width, "height": height}
+            self.save_preferences()
+        else:
+            # Remove from preferences if it matches default
+            if "window_sizes" in self.preferences and window_type in self.preferences["window_sizes"]:
+                del self.preferences["window_sizes"][window_type]
+                # Clean up empty window_sizes dict
+                if not self.preferences["window_sizes"]:
+                    del self.preferences["window_sizes"]
+                self.save_preferences()
+    
+    def apply_window_size(self, window, window_type):
+        """Apply saved window size to a window"""
+        width, height = self.get_window_size(window_type)
+        
+        # Apply special minimum size constraints for critical dialogs
+        if window_type == "window_sizing_dialog":
+            # Ensure the Window Sizing dialog is never smaller than its minimum usable size
+            width = max(width, 600)
+            height = max(height, 550)
+        
+        # Update the window geometry while preserving position if already set
+        current_geometry = window.geometry()
+        if '+' in current_geometry:
+            # Extract position from current geometry
+            size_part, pos_part = current_geometry.split('+', 1)
+            window.geometry(f"{width}x{height}+{pos_part}")
+        else:
+            window.geometry(f"{width}x{height}")
+    
     def get_current_directory(self):
         """Get the current directory with a consistent format"""
         return os.path.abspath(".")
@@ -2413,22 +2479,15 @@ except Exception as e:
     
     def add_directory(self):
         """Open file dialog to add directories to preferences"""
-        # Get main window position and size
-        root_x = self.root.winfo_x()
-        root_y = self.root.winfo_y()
-        root_width = self.root.winfo_width()
-        root_height = self.root.winfo_height()
-        
-        # Calculate centered position for the dialog relative to main window
-        dialog_width = 525
-        dialog_height = 450  # Increased height to accommodate the current directory status display
-        x = root_x + (root_width - dialog_width) // 2
-        y = root_y + (root_height - dialog_height) // 2
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("add_directory_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
         
         # Create dialog window
         root = tk.Toplevel(self.root)
         root.title("Add Media Directories")
-        root.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+        root.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         root.transient(self.root)
         root.grab_set()
         
@@ -2756,9 +2815,6 @@ except Exception as e:
         save_btn = ttk.Button(bottom_button_frame, text="Save and Close", command=save_and_close)
         save_btn.pack(side="right", padx=5)
         
-        # Log the position for debugging
-        self.debug_print(f"Created directory dialog at position ({x},{y}) with size {dialog_width}x{dialog_height}")
-        
         # Make the dialog modal
         root.transient(self.root)
         root.grab_set()
@@ -3036,9 +3092,14 @@ except Exception as e:
     def _show_resolve_paths_dialog(self, current_api, current_lib, default_api, default_lib, 
                                  default_api_valid, default_lib_valid, module_exists, lib_exists):
         """Show a dialog to get custom paths for DaVinci Resolve scripting"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("resolve_paths_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
         dialog = tk.Toplevel(self.root)
         dialog.title("DaVinci Resolve Scripting Setup")
-        dialog.geometry("600x500")
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         dialog.transient(self.root)
         dialog.grab_set()
         
@@ -3366,10 +3427,11 @@ except Exception as e:
 
     def _show_editor_dialog(self):
         """Show a dialog with editor settings"""
-        editor_width = 600
-        editor_height = 300
+        # Get saved size and calculate centered position BEFORE creating window
+        editor_width, editor_height = self.get_window_size("editor_dialog")
         editor_x = self.root.winfo_x() + (self.root.winfo_width() - editor_width) // 2
         editor_y = self.root.winfo_y() + (self.root.winfo_height() - editor_height) // 2
+        
         editor_dialog = tk.Toplevel(self.root)
         editor_dialog.title("Editor Navigator")
         editor_dialog.geometry(f"{editor_width}x{editor_height}+{editor_x}+{editor_y}")
@@ -3895,9 +3957,14 @@ except Exception as e:
     # Add a method to show the settings dialog
     def _show_settings_dialog(self):
         """Show a dialog with minimum duration settings"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("settings_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
         settings_dialog = tk.Toplevel(self.root)
         settings_dialog.title("Minimum Import Duration")
-        settings_dialog.geometry("400x250")
+        settings_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         settings_dialog.transient(self.root)
         settings_dialog.grab_set()
         
@@ -3967,11 +4034,7 @@ except Exception as e:
         )
         apply_btn.pack(side="right", padx=5)
         
-        # Center the dialog on the main window
-        settings_dialog.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() / 2) - (settings_dialog.winfo_width() / 2)
-        y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (settings_dialog.winfo_height() / 2)
-        settings_dialog.geometry(f"+{int(x)}+{int(y)}")
+        # Dialog is already positioned correctly from creation
 
     # Add a method to apply the settings
     def _apply_settings(self, dialog):
@@ -4014,9 +4077,14 @@ except Exception as e:
     # Add a new method for general settings
     def _show_general_settings_dialog(self):
         """Show a dialog with general application settings"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("general_settings_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
         settings_dialog = tk.Toplevel(self.root)
         settings_dialog.title("General Settings")
-        settings_dialog.geometry("400x300")
+        settings_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         settings_dialog.transient(self.root)
         settings_dialog.grab_set()
         
@@ -4051,11 +4119,431 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
         
-        # Center the dialog on the main window
-        settings_dialog.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() / 2) - (settings_dialog.winfo_width() / 2)
-        y = self.root.winfo_y() + (self.root.winfo_height() / 2) - (settings_dialog.winfo_height() / 2)
-        settings_dialog.geometry(f"+{int(x)}+{int(y)}")
+        # Dialog is already positioned correctly from creation
+
+    def _show_window_sizing_dialog(self):
+        """Show a dialog for configuring window sizes"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("window_sizing_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Window Sizing Settings")
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Set minimum window size to ensure all elements are always visible
+        # Calculate minimum height: title(30) + aspect(80) + canvas(150) + info(120) + separator(20) + buttons(40) + padding(60) = ~500
+        dialog.minsize(600, 550)
+        
+        # Make dialog modal
+        dialog.focus_set()
+        
+        # Create main container with grid layout for absolute control
+        main_container = ttk.Frame(dialog, padding=15)
+        main_container.pack(fill="both", expand=True)
+        
+        # Configure grid weights - only the sizes section will expand
+        main_container.grid_rowconfigure(2, weight=1)  # sizes_frame row
+        main_container.grid_columnconfigure(0, weight=1)
+        
+        # Title label (row 0 - fixed)
+        title_label = ttk.Label(main_container, text="Window Sizing Settings", 
+                               font=("TkDefaultFont", 12, "bold"))
+        title_label.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        
+        # Aspect ratio settings frame (row 1 - fixed height)
+        aspect_frame = ttk.LabelFrame(main_container, text="Aspect Ratio Settings", padding=10)
+        aspect_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        
+        # Individual window aspect ratio lock
+        self.aspect_lock_var = tk.BooleanVar(value=self.preferences.get("window_aspect_ratio_lock", True))
+        aspect_lock_cb = ttk.Checkbutton(
+            aspect_frame, 
+            text="Maintain aspect ratio when resizing individual windows", 
+            variable=self.aspect_lock_var
+        )
+        aspect_lock_cb.pack(anchor="w", pady=2)
+        
+        # Proportional scaling across all windows
+        self.proportional_scaling_var = tk.BooleanVar(value=self.preferences.get("window_proportional_scaling", True))
+        proportional_cb = ttk.Checkbutton(
+            aspect_frame, 
+            text="Scale all windows proportionally when one is changed", 
+            variable=self.proportional_scaling_var
+        )
+        proportional_cb.pack(anchor="w", pady=2)
+        
+        # Window sizes frame with scrollable area (row 2 - expandable)
+        sizes_frame = ttk.LabelFrame(main_container, text="Window Sizes", padding=10)
+        sizes_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        
+        # Create canvas for scrollable content with dynamic sizing
+        canvas = tk.Canvas(sizes_frame)
+        scrollbar = ttk.Scrollbar(sizes_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        # Configure scrolling
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Set initial canvas height and maintain minimum
+        canvas.configure(height=200)  # Set initial height
+        
+        # Bind canvas resize to maintain minimum height
+        def on_canvas_configure(event):
+            # Ensure canvas has a minimum height that allows scrolling
+            min_height = 150
+            if event.height < min_height:
+                canvas.configure(height=min_height)
+                
+        canvas.bind('<Configure>', on_canvas_configure)
+        
+        # Store references to entry widgets for later retrieval
+        self.size_entries = {}
+        
+        # Flag to prevent infinite loops during proportional scaling
+        self._updating_proportional_scaling = False
+        
+        # Create size controls for each window type
+        window_labels = {
+            "main_window": "Main Application Window",
+            "settings_dialog": "Settings Dialog",
+            "general_settings_dialog": "General Settings Dialog", 
+            "editor_dialog": "Editor Navigator Dialog",
+            "debug_window": "Debug Console Window",
+            "window_sizing_dialog": "Window Sizing Dialog (this dialog)",
+            "resolve_paths_dialog": "DaVinci Resolve Paths Dialog",
+            "add_directory_dialog": "Add Media Directories Dialog",
+            "guidance_dialog": "Welcome/Guidance Dialog"
+        }
+        
+        for window_type, label in window_labels.items():
+            # Get current size (saved or default)
+            current_width, current_height = self.get_window_size(window_type)
+            default_width, default_height = self.get_default_window_size(window_type)
+            
+            # Create frame for this window type
+            window_frame = ttk.Frame(scrollable_frame)
+            window_frame.pack(fill="x", pady=5)
+            
+            # Label
+            ttk.Label(window_frame, text=label, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+            
+            # Size controls frame
+            controls_frame = ttk.Frame(window_frame)
+            controls_frame.pack(fill="x", padx=20, pady=2)
+            
+            # Width control
+            ttk.Label(controls_frame, text="Width:").pack(side="left")
+            width_var = tk.StringVar(value=str(current_width))
+            width_entry = ttk.Entry(controls_frame, textvariable=width_var, width=8)
+            width_entry.pack(side="left", padx=5)
+            
+            # Height control
+            ttk.Label(controls_frame, text="Height:").pack(side="left", padx=(10, 0))
+            height_var = tk.StringVar(value=str(current_height))
+            height_entry = ttk.Entry(controls_frame, textvariable=height_var, width=8)
+            height_entry.pack(side="left", padx=5)
+            
+            # Default button
+            def reset_to_default(wtype=window_type, w_var=width_var, h_var=height_var):
+                default_w, default_h = self.get_default_window_size(wtype)
+                w_var.set(str(default_w))
+                h_var.set(str(default_h))
+            
+            default_btn = ttk.Button(controls_frame, text="Reset to Default", 
+                                   command=reset_to_default)
+            default_btn.pack(side="left", padx=10)
+            
+            # Show default size info
+            info_label = ttk.Label(controls_frame, 
+                                 text=f"(Default: {default_width}×{default_height})", 
+                                 font=("TkDefaultFont", 8))
+            info_label.pack(side="left", padx=5)
+            
+            # Store references
+            self.size_entries[window_type] = {
+                "width_var": width_var,
+                "height_var": height_var,
+                "width_entry": width_entry,
+                "height_entry": height_entry
+            }
+            
+            # Bind real-time scaling handlers
+            def on_width_change(event, wtype=window_type):
+                if self._updating_proportional_scaling:
+                    return  # Prevent infinite loops
+                if self.aspect_lock_var.get():
+                    self._maintain_aspect_ratio(wtype, "width")
+                if self.proportional_scaling_var.get():
+                    self._apply_proportional_scaling(wtype, "width")
+                    
+            def on_height_change(event, wtype=window_type):
+                if self._updating_proportional_scaling:
+                    return  # Prevent infinite loops
+                if self.aspect_lock_var.get():
+                    self._maintain_aspect_ratio(wtype, "height")
+                if self.proportional_scaling_var.get():
+                    self._apply_proportional_scaling(wtype, "height")
+                    
+            width_entry.bind("<KeyRelease>", on_width_change)
+            height_entry.bind("<KeyRelease>", on_height_change)
+        
+        # Description frame (row 3 - fixed height, always visible)
+        desc_frame = ttk.LabelFrame(main_container, text="Information", padding=10)
+        desc_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        
+        description_text = ("• Window sizes are only saved if different from defaults\n"
+                          "• Aspect ratio maintenance applies in real-time while typing\n"
+                          "• Proportional scaling updates all windows in real-time when one is changed\n"
+                          "• Changes take effect immediately when Apply is clicked")
+        
+        ttk.Label(desc_frame, text=description_text, justify="left").pack(anchor="w")
+        
+        # Separator (row 4 - fixed height)
+        separator = ttk.Separator(main_container, orient='horizontal')
+        separator.grid(row=4, column=0, sticky="ew", pady=(5, 10))
+        
+        # Buttons frame (row 5 - fixed height, always visible at bottom)
+        buttons_frame = ttk.Frame(main_container)
+        buttons_frame.grid(row=5, column=0, sticky="ew")
+        
+        # Cancel button
+        cancel_btn = ttk.Button(
+            buttons_frame, 
+            text="Cancel", 
+            command=dialog.destroy
+        )
+        cancel_btn.pack(side="right", padx=(5, 0))
+        
+        # Apply button
+        apply_btn = ttk.Button(
+            buttons_frame, 
+            text="Apply", 
+            command=lambda: self._apply_window_sizing_settings(dialog)
+        )
+        apply_btn.pack(side="right", padx=(5, 5))
+        
+        # Dialog is already positioned correctly from creation
+    
+    def _maintain_aspect_ratio(self, window_type, changed_dimension):
+        """Maintain aspect ratio when one dimension is changed"""
+        if not self.aspect_lock_var.get() or self._updating_proportional_scaling:
+            return
+            
+        try:
+            # Set flag to prevent conflicts with proportional scaling
+            was_updating = self._updating_proportional_scaling
+            self._updating_proportional_scaling = True
+            
+            entry_data = self.size_entries[window_type]
+            width_var = entry_data["width_var"]
+            height_var = entry_data["height_var"]
+            
+            # Get default aspect ratio
+            default_width, default_height = self.get_default_window_size(window_type)
+            default_ratio = default_width / default_height
+            
+            if changed_dimension == "width":
+                new_width = int(width_var.get())
+                new_height = int(new_width / default_ratio)
+                height_var.set(str(new_height))
+            else:  # height changed
+                new_height = int(height_var.get())
+                new_width = int(new_height * default_ratio)
+                width_var.set(str(new_width))
+                
+        except (ValueError, KeyError):
+            pass  # Ignore invalid input
+        finally:
+            # Restore the flag state
+            self._updating_proportional_scaling = was_updating
+
+    def _apply_proportional_scaling(self, changed_window_type, changed_dimension):
+        """Apply proportional scaling to all other windows when one is changed"""
+        if not self.proportional_scaling_var.get() or self._updating_proportional_scaling:
+            return
+            
+        try:
+            # Set flag to prevent infinite loops
+            self._updating_proportional_scaling = True
+            
+            # Get the changed window's current and original sizes
+            changed_entry = self.size_entries[changed_window_type]
+            changed_width = int(changed_entry["width_var"].get())
+            changed_height = int(changed_entry["height_var"].get())
+            
+            # Get the original size for this window
+            original_width, original_height = self.get_window_size(changed_window_type)
+            
+            # Calculate scaling ratios
+            width_ratio = changed_width / original_width if original_width > 0 else 1.0
+            height_ratio = changed_height / original_height if original_height > 0 else 1.0
+            
+            # Use the ratio from the dimension that was actually changed
+            if changed_dimension == "width":
+                scale_ratio = width_ratio
+            else:
+                scale_ratio = height_ratio
+            
+            # Only apply if the change is significant (more than 5%)
+            if abs(scale_ratio - 1.0) < 0.05:
+                return
+                
+            # Apply scaling to all other windows
+            for window_type, entries in self.size_entries.items():
+                if window_type == changed_window_type:
+                    continue  # Skip the window that was changed
+                    
+                # Get original size for this window
+                orig_w, orig_h = self.get_window_size(window_type)
+                
+                # Calculate new scaled sizes
+                new_w = int(orig_w * scale_ratio)
+                new_h = int(orig_h * scale_ratio)
+                
+                # Apply bounds
+                new_w = max(200, min(3000, new_w))
+                new_h = max(150, min(2000, new_h))
+                
+                # Update the UI entries
+                entries["width_var"].set(str(new_w))
+                entries["height_var"].set(str(new_h))
+                
+        except (ValueError, KeyError, ZeroDivisionError):
+            pass  # Ignore invalid input or calculation errors
+        finally:
+            # Always clear the flag
+            self._updating_proportional_scaling = False
+    
+    def _apply_window_sizing_settings(self, dialog):
+        """Apply window sizing settings"""
+        try:
+            # Update aspect ratio preferences
+            self.preferences["window_aspect_ratio_lock"] = self.aspect_lock_var.get()
+            self.preferences["window_proportional_scaling"] = self.proportional_scaling_var.get()
+            
+            # Collect all new sizes and calculate proportional changes if needed
+            old_sizes = {}
+            new_sizes = {}
+            
+            for window_type, entries in self.size_entries.items():
+                try:
+                    old_width, old_height = self.get_window_size(window_type)
+                    new_width = int(entries["width_var"].get())
+                    new_height = int(entries["height_var"].get())
+                    
+                    # Validate sizes
+                    if new_width < 200:
+                        new_width = 200
+                    if new_height < 150:
+                        new_height = 150
+                    if new_width > 3000:
+                        new_width = 3000
+                    if new_height > 2000:
+                        new_height = 2000
+                    
+                    old_sizes[window_type] = (old_width, old_height)
+                    new_sizes[window_type] = (new_width, new_height)
+                    
+                except ValueError:
+                    # Reset to current size if invalid
+                    current_width, current_height = self.get_window_size(window_type)
+                    entries["width_var"].set(str(current_width))
+                    entries["height_var"].set(str(current_height))
+                    new_sizes[window_type] = (current_width, current_height)
+            
+            # Apply proportional scaling if enabled
+            if self.proportional_scaling_var.get():
+                # Find the window with the biggest proportional change
+                max_change_ratio = 1.0
+                reference_window = None
+                
+                for window_type in new_sizes:
+                    old_w, old_h = old_sizes[window_type]
+                    new_w, new_h = new_sizes[window_type]
+                    
+                    width_ratio = new_w / old_w if old_w > 0 else 1.0
+                    height_ratio = new_h / old_h if old_h > 0 else 1.0
+                    avg_ratio = (width_ratio + height_ratio) / 2
+                    
+                    if abs(avg_ratio - 1.0) > abs(max_change_ratio - 1.0):
+                        max_change_ratio = avg_ratio
+                        reference_window = window_type
+                
+                # Apply proportional scaling to all windows if significant change detected
+                if reference_window and abs(max_change_ratio - 1.0) > 0.05:  # 5% threshold
+                    for window_type in new_sizes:
+                        if window_type != reference_window:
+                            old_w, old_h = old_sizes[window_type]
+                            scaled_w = int(old_w * max_change_ratio)
+                            scaled_h = int(old_h * max_change_ratio)
+                            
+                            # Apply bounds
+                            scaled_w = max(200, min(3000, scaled_w))
+                            scaled_h = max(150, min(2000, scaled_h))
+                            
+                            new_sizes[window_type] = (scaled_w, scaled_h)
+                            
+                            # Update the UI to reflect the change
+                            entries = self.size_entries[window_type]
+                            entries["width_var"].set(str(scaled_w))
+                            entries["height_var"].set(str(scaled_h))
+            
+            # Save all new sizes
+            for window_type, (width, height) in new_sizes.items():
+                self.save_window_size(window_type, width, height)
+            
+            # Apply sizes to currently open windows
+            self._apply_sizes_to_open_windows(new_sizes)
+            
+            self.debug_print("Window sizing settings applied successfully")
+            self.status_var.set("Window sizing settings updated successfully")
+            
+            # Close the dialog
+            dialog.destroy()
+            
+        except Exception as e:
+            self.debug_print(f"Error applying window sizing settings: {e}")
+            self.status_var.set(f"Error applying window sizing settings: {e}")
+    
+    def _apply_sizes_to_open_windows(self, new_sizes):
+        """Apply new sizes to currently open windows and re-center them"""
+        try:
+            # Apply to main window
+            if "main_window" in new_sizes:
+                width, height = new_sizes["main_window"]
+                self.root.geometry(f"{width}x{height}")
+                # Re-center the main window on screen
+                self.center_window(self.root)
+                self.debug_print(f"Resized and centered main window to {width}x{height}")
+            
+            # Apply to debug window if open
+            if hasattr(self, 'debug_window') and self.debug_window and self.debug_window.winfo_exists():
+                if "debug_window" in new_sizes:
+                    width, height = new_sizes["debug_window"]
+                    self.debug_window.window.geometry(f"{width}x{height}")
+                    # Re-center the debug window relative to the main window
+                    self.center_window(self.debug_window.window, self.root)
+                    self.debug_print(f"Resized and centered debug window to {width}x{height}")
+            
+            # Note: Other dialogs are typically modal and short-lived, 
+            # so they'll use the new sizes when next opened
+            
+        except Exception as e:
+            self.debug_print(f"Error applying sizes to open windows: {e}")
 
     def _delayed_show_guidance(self):
         """Show guidance dialog after initial rendering"""
@@ -4067,22 +4555,15 @@ except Exception as e:
         # Set flag to indicate dialog is showing
         self.guidance_dialog_showing = True
         
-        # Get main window position and size
-        root_x = self.root.winfo_x()
-        root_y = self.root.winfo_y()
-        root_width = self.root.winfo_width()
-        root_height = self.root.winfo_height()
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("guidance_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
         
-        # Calculate centered position for the dialog relative to main window
-        dialog_width = 600
-        dialog_height = 575
-        x = root_x + (root_width - dialog_width) // 2
-        y = root_y + (root_height - dialog_height) // 2
-        
-        # Create the dialog window with position already set
+        # Create the dialog window
         guidance_dialog = tk.Toplevel(self.root)
         guidance_dialog.title("Welcome to Rapid Moment Navigator")
-        guidance_dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+        guidance_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         guidance_dialog.transient(self.root)
         guidance_dialog.grab_set()
         
@@ -4238,9 +4719,6 @@ except Exception as e:
         # Ensure the dialog is visible and focused
         guidance_dialog.lift()
         guidance_dialog.focus_force()
-        
-        # Log the position for debugging
-        self.debug_print(f"Created guidance dialog at position ({x},{y}) with size {dialog_width}x{dialog_height}")
         
         # Force update the UI to ensure all elements are rendered
         guidance_dialog.update()
@@ -4760,19 +5238,25 @@ class DebugWindow:
         parent_width = parent.winfo_width()
         parent_height = parent.winfo_height()
         
-        # Set debug window dimensions
-        debug_width = 800
-        debug_height = 425  # Increased from 400 to 425 to show all buttons
-        
-        # Calculate position (centered relative to parent)
-        x = parent_x + (parent_width - debug_width) // 2
-        y = parent_y + (parent_height - debug_height) // 2
-        
-        # Create the window with position already set
+        # Create the window
         self.window = tk.Toplevel(parent)
         self.window.title("Debug Console")
-        self.window.geometry(f"{debug_width}x{debug_height}+{x}+{y}")
         self.window.transient(parent)
+        
+        # Apply saved size if the parent has the sizing methods (i.e., it's our main app)
+        if hasattr(parent, 'get_window_size'):
+            # Get saved size and calculate centered position BEFORE setting geometry
+            debug_width, debug_height = parent.get_window_size("debug_window")
+            x = parent_x + (parent_width - debug_width) // 2
+            y = parent_y + (parent_height - debug_height) // 2
+            self.window.geometry(f"{debug_width}x{debug_height}+{x}+{y}")
+        else:
+            # Fallback for cases where parent doesn't have sizing methods
+            debug_width = 800
+            debug_height = 425
+            x = parent_x + (parent_width - debug_width) // 2
+            y = parent_y + (parent_height - debug_height) // 2
+            self.window.geometry(f"{debug_width}x{debug_height}+{x}+{y}")
         
         # Create a frame for the text area and scrollbars
         frame = ttk.Frame(self.window)
@@ -4877,6 +5361,9 @@ if __name__ == "__main__":
                                  command=app._show_settings_dialog)
         settings_menu.add_command(label="General Settings...", 
                                  command=app._show_general_settings_dialog)
+        settings_menu.add_separator()
+        settings_menu.add_command(label="Window Sizing...", 
+                                 command=app._show_window_sizing_dialog)
         menu_bar.add_cascade(label="Settings", menu=settings_menu)
             
         # Add Editor Menu
