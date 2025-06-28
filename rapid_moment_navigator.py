@@ -2405,6 +2405,13 @@ except Exception as e:
     def apply_window_size(self, window, window_type):
         """Apply saved window size to a window"""
         width, height = self.get_window_size(window_type)
+        
+        # Apply special minimum size constraints for critical dialogs
+        if window_type == "window_sizing_dialog":
+            # Ensure the Window Sizing dialog is never smaller than its minimum usable size
+            width = max(width, 600)
+            height = max(height, 550)
+        
         # Update the window geometry while preserving position if already set
         current_geometry = window.geometry()
         if '+' in current_geometry:
@@ -4121,20 +4128,29 @@ except Exception as e:
         # Apply saved size or use default
         self.apply_window_size(dialog, "window_sizing_dialog")
         
+        # Set minimum window size to ensure all elements are always visible
+        # Calculate minimum height: title(30) + aspect(80) + canvas(150) + info(120) + separator(20) + buttons(40) + padding(60) = ~500
+        dialog.minsize(600, 550)
+        
         # Make dialog modal
         dialog.focus_set()
         
-        # Create main frame with padding
-        main_frame = ttk.Frame(dialog, padding=15)
-        main_frame.pack(fill="both", expand=True)
+        # Create main container with grid layout for absolute control
+        main_container = ttk.Frame(dialog, padding=15)
+        main_container.pack(fill="both", expand=True)
         
-        # Title label
-        ttk.Label(main_frame, text="Window Sizing Settings", 
-                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        # Configure grid weights - only the sizes section will expand
+        main_container.grid_rowconfigure(2, weight=1)  # sizes_frame row
+        main_container.grid_columnconfigure(0, weight=1)
         
-        # Aspect ratio settings frame
-        aspect_frame = ttk.LabelFrame(main_frame, text="Aspect Ratio Settings", padding=10)
-        aspect_frame.pack(fill="x", pady=(0, 10))
+        # Title label (row 0 - fixed)
+        title_label = ttk.Label(main_container, text="Window Sizing Settings", 
+                               font=("TkDefaultFont", 12, "bold"))
+        title_label.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        
+        # Aspect ratio settings frame (row 1 - fixed height)
+        aspect_frame = ttk.LabelFrame(main_container, text="Aspect Ratio Settings", padding=10)
+        aspect_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         
         # Individual window aspect ratio lock
         self.aspect_lock_var = tk.BooleanVar(value=self.preferences.get("window_aspect_ratio_lock", True))
@@ -4154,15 +4170,16 @@ except Exception as e:
         )
         proportional_cb.pack(anchor="w", pady=2)
         
-        # Window sizes frame with scrollable area
-        sizes_frame = ttk.LabelFrame(main_frame, text="Window Sizes", padding=10)
-        sizes_frame.pack(fill="both", expand=True, pady=(0, 10))
+        # Window sizes frame with scrollable area (row 2 - expandable)
+        sizes_frame = ttk.LabelFrame(main_container, text="Window Sizes", padding=10)
+        sizes_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
         
-        # Create canvas for scrollable content
-        canvas = tk.Canvas(sizes_frame, height=300)
+        # Create canvas for scrollable content with dynamic sizing
+        canvas = tk.Canvas(sizes_frame)
         scrollbar = ttk.Scrollbar(sizes_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
         
+        # Configure scrolling
         scrollable_frame.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
@@ -4171,8 +4188,21 @@ except Exception as e:
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         
+        # Pack canvas and scrollbar
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+        
+        # Set initial canvas height and maintain minimum
+        canvas.configure(height=200)  # Set initial height
+        
+        # Bind canvas resize to maintain minimum height
+        def on_canvas_configure(event):
+            # Ensure canvas has a minimum height that allows scrolling
+            min_height = 150
+            if event.height < min_height:
+                canvas.configure(height=min_height)
+                
+        canvas.bind('<Configure>', on_canvas_configure)
         
         # Store references to entry widgets for later retrieval
         self.size_entries = {}
@@ -4265,9 +4295,9 @@ except Exception as e:
             width_entry.bind("<KeyRelease>", on_width_change)
             height_entry.bind("<KeyRelease>", on_height_change)
         
-        # Description
-        desc_frame = ttk.LabelFrame(main_frame, text="Information", padding=10)
-        desc_frame.pack(fill="x", pady=(0, 10))
+        # Description frame (row 3 - fixed height, always visible)
+        desc_frame = ttk.LabelFrame(main_container, text="Information", padding=10)
+        desc_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         
         description_text = ("• Window sizes are only saved if different from defaults\n"
                           "• Aspect ratio maintenance applies in real-time while typing\n"
@@ -4276,9 +4306,13 @@ except Exception as e:
         
         ttk.Label(desc_frame, text=description_text, justify="left").pack(anchor="w")
         
-        # Buttons frame
-        buttons_frame = ttk.Frame(dialog)
-        buttons_frame.pack(fill="x", padx=15, pady=15)
+        # Separator (row 4 - fixed height)
+        separator = ttk.Separator(main_container, orient='horizontal')
+        separator.grid(row=4, column=0, sticky="ew", pady=(5, 10))
+        
+        # Buttons frame (row 5 - fixed height, always visible at bottom)
+        buttons_frame = ttk.Frame(main_container)
+        buttons_frame.grid(row=5, column=0, sticky="ew")
         
         # Cancel button
         cancel_btn = ttk.Button(
@@ -4286,7 +4320,7 @@ except Exception as e:
             text="Cancel", 
             command=dialog.destroy
         )
-        cancel_btn.pack(side="right", padx=5)
+        cancel_btn.pack(side="right", padx=(5, 0))
         
         # Apply button
         apply_btn = ttk.Button(
@@ -4294,7 +4328,7 @@ except Exception as e:
             text="Apply", 
             command=lambda: self._apply_window_sizing_settings(dialog)
         )
-        apply_btn.pack(side="right", padx=5)
+        apply_btn.pack(side="right", padx=(5, 5))
         
         # Center the dialog on the main window
         dialog.update_idletasks()
