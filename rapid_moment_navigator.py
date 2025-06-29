@@ -731,10 +731,20 @@ class RapidMomentNavigator:
                     """Simple global scroll handler based on which window should be active"""
                     try:
                         # Determine which canvas should receive scroll events
+                        # Priority order: settings dialogs > editor dialog > main canvas
                         target_canvas = None
                         
-                        # If editor dialog exists, route to editor canvas
-                        if hasattr(self, 'editor_dialog') and self.editor_dialog and hasattr(self, 'editor_results_canvas'):
+                        # Highest priority: Window sizing dialog canvas
+                        if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
+                            try:
+                                if self.window_sizing_canvas.winfo_exists():
+                                    target_canvas = self.window_sizing_canvas
+                                    self.debug_print("Routing scroll to window sizing canvas")
+                            except:
+                                pass
+                        
+                        # Second priority: Editor dialog canvas
+                        if not target_canvas and hasattr(self, 'editor_dialog') and self.editor_dialog and hasattr(self, 'editor_results_canvas'):
                             try:
                                 if self.editor_results_canvas.winfo_exists():
                                     target_canvas = self.editor_results_canvas
@@ -742,7 +752,7 @@ class RapidMomentNavigator:
                             except:
                                 pass
                         
-                        # Otherwise, route to main canvas
+                        # Lowest priority: Main canvas
                         if not target_canvas and hasattr(self, 'results_canvas'):
                             try:
                                 if self.results_canvas.winfo_exists():
@@ -4274,6 +4284,12 @@ except Exception as e:
                 
         canvas.bind('<Configure>', on_canvas_configure)
         
+        # Setup cross-platform mousewheel scrolling for window sizing dialog
+        self._setup_canvas_scrolling(canvas)
+        
+        # Store reference to the canvas for cleanup
+        self.window_sizing_canvas = canvas
+        
         # Store references to entry widgets for later retrieval
         self.size_entries = {}
         
@@ -4384,11 +4400,21 @@ except Exception as e:
         buttons_frame = ttk.Frame(main_container)
         buttons_frame.grid(row=5, column=0, sticky="ew")
         
+        # Setup dialog close handler for cleanup
+        def on_dialog_close():
+            # Clean up scroll bindings for window sizing canvas
+            if hasattr(self, 'window_sizing_canvas'):
+                self._cleanup_canvas_scrolling(self.window_sizing_canvas)
+                delattr(self, 'window_sizing_canvas')
+            dialog.destroy()
+        
+        dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
+        
         # Cancel button
         cancel_btn = ttk.Button(
             buttons_frame, 
             text="Cancel", 
-            command=dialog.destroy
+            command=on_dialog_close
         )
         cancel_btn.pack(side="right", padx=(5, 0))
         
@@ -4575,6 +4601,11 @@ except Exception as e:
             
             self.debug_print("Window sizing settings applied successfully")
             self.status_var.set("Window sizing settings updated successfully")
+            
+            # Clean up scroll bindings before closing
+            if hasattr(self, 'window_sizing_canvas'):
+                self._cleanup_canvas_scrolling(self.window_sizing_canvas)
+                delattr(self, 'window_sizing_canvas')
             
             # Close the dialog
             dialog.destroy()
