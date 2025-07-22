@@ -27,6 +27,7 @@ DEFAULT_PREFS = {
     "min_duration_enabled": True,  # Changed from False to True
     "min_duration_seconds": 10.0,
     "auto_cache_update": True,  # Enable automatic cache updates when app gains focus
+    "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
     "window_proportional_scaling": True  # Scale all windows proportionally when one is changed
 }
@@ -1451,44 +1452,84 @@ class RapidMomentNavigator:
         # Process each subtitle file
         for subtitle_file in sorted(subtitle_files):
             file_results = []
+            all_entries = []  # Collect all entries for consecutive search
             
             try:
                 with open(subtitle_file, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
                 
-                # Parse SRT format
+                # Parse SRT format and collect all entries
                 pattern = r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2},\d{3})\n((?:.+\n)+?)(?:\n|$)'
                 matches = re.finditer(pattern, content)
                 
+                # First pass: collect all entries
                 for match in matches:
                     subtitle_num = match.group(1)
                     start_time = match.group(2)
                     end_time = match.group(3)
                     text = match.group(4).strip()
                     
-                    # Remove HTML tags for searching
+                    # Remove HTML tags and normalize
                     clean_text = re.sub(r'<[^>]+>', '', text)
+                    normalized_text = clean_text.replace('\u2028', ' ').replace('\u2029', ' ').replace('\n', ' ').replace('\r', ' ')
+                    normalized_text = re.sub(r'\s+', ' ', normalized_text).strip()
                     
-                    if keyword.lower() in clean_text.lower():
+                    entry = {
+                        'num': subtitle_num,
+                        'start_time': start_time,
+                        'end_time': end_time,
+                        'text': text,
+                        'clean_text': clean_text,
+                        'normalized_text': normalized_text
+                    }
+                    all_entries.append(entry)
+                
+                # Second pass: individual search
+                for entry in all_entries:
+                    if keyword.lower() in entry['normalized_text'].lower():
                         # Convert comma separator to period for MPC
-                        mpc_start_time = start_time.replace(',', '.')
-                        
-                        # Store result with only the hh:mm:ss part (no milliseconds) for MPC
+                        mpc_start_time = entry['start_time'].replace(',', '.')
                         mpc_time_format = mpc_start_time.split('.')[0]
                         
-                        # Store result
                         result = {
                             'file': subtitle_file,
-                            'num': subtitle_num,
-                            'start_time': start_time,
-                            'end_time': end_time,
-                            'text': text,
+                            'num': entry['num'],
+                            'start_time': entry['start_time'],
+                            'end_time': entry['end_time'],
+                            'text': entry['text'],
                             'mpc_start_time': mpc_time_format,
-                            'clean_text': clean_text
+                            'clean_text': entry['clean_text'],
+                            'search_type': 'individual'
                         }
                         file_results.append(result)
                         self.search_results.append(result)
                         total_results += 1
+                
+                # Third pass: consecutive search (automatic fallback + optional always mode)
+                always_consecutive = self.preferences.get("always_consecutive_search", False)
+                
+                if len(all_entries) > 1:
+                    # Run consecutive search if:
+                    # 1. Always consecutive is enabled, OR
+                    # 2. No individual results were found (automatic fallback - no performance cost)
+                    should_run_consecutive = always_consecutive or len(file_results) == 0
+                    
+                    if should_run_consecutive:
+                        consecutive_results = self._search_consecutive_entries(all_entries, keyword)
+                        for result in consecutive_results:
+                            result['file'] = subtitle_file
+                            # Only add if it's not a duplicate of existing individual matches
+                            is_duplicate = False
+                            for existing in file_results:
+                                if (existing.get('search_type') == 'individual' and 
+                                    existing['num'] == result['num']):
+                                    is_duplicate = True
+                                    break
+                            
+                            if not is_duplicate:
+                                file_results.append(result)
+                                self.search_results.append(result)
+                                total_results += 1
             
             except Exception as e:
                 self.debug_print(f"Error processing {subtitle_file}: {e}")
@@ -2374,8 +2415,8 @@ except Exception as e:
         """Get default window size for a specific window type"""
         defaults = {
             "main_window": (800, 600),
-            "settings_dialog": (400, 250),
-            "general_settings_dialog": (400, 300),
+            "minimum_duration_dialog": (400, 380),
+            "general_settings_dialog": (520, 350),
             "editor_dialog": (600, 500),
             "debug_window": (800, 425),
             "window_sizing_dialog": (600, 700),
@@ -2500,6 +2541,15 @@ except Exception as e:
         root.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         root.transient(self.root)
         root.grab_set()
+        
+        # Set up close handler for X button
+        def on_dialog_close():
+            root.destroy()
+            # Only show guidance dialog if no shows exist and not already showing
+            if len(self.show_name_to_path_map) == 0 and not self.guidance_dialog_showing:
+                self.root.after(500, self._delayed_show_guidance)
+        
+        root.protocol("WM_DELETE_WINDOW", on_dialog_close)
         
         # Create frame to hold the listbox and buttons
         frame = ttk.Frame(root)
@@ -2783,7 +2833,7 @@ except Exception as e:
                         if add_anyway:
                             listbox.insert(tk.END, new_dir)
                             added_dirs.append(new_dir)
-                            self.debug_print(f"Added subdirectory despite warning: {new_dir}")
+                            self.debug_print(f"Added parent directory: {new_dir}")
                 else:
                     # No conflicts, add normally
                     listbox.insert(tk.END, new_dir)
@@ -3112,6 +3162,12 @@ except Exception as e:
         dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         dialog.transient(self.root)
         dialog.grab_set()
+        
+        # Set up close handler for X button
+        def on_dialog_close():
+            dialog.destroy()
+        
+        dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
         
         # Set the result
         result = {
@@ -3954,21 +4010,55 @@ except Exception as e:
 
     def _search_subtitle_items(self, subtitle_items, text_to_find, case_sensitive=False):
         matches = []
+        
+        # First pass: individual item search
         for item in subtitle_items:
+            # Normalize text by handling unicode line separators
+            normalized_text = item['text'].replace('\u2028', ' ').replace('\u2029', ' ').replace('\n', ' ').replace('\r', ' ')
+            normalized_text = re.sub(r'\s+', ' ', normalized_text).strip()
+            
             if case_sensitive:
-                if text_to_find in item['text']:
-                    matches.append(item)
+                if text_to_find in normalized_text:
+                    item_copy = item.copy()
+                    item_copy['search_type'] = 'individual'
+                    matches.append(item_copy)
             else:
-                if text_to_find.lower() in item['text'].lower():
-                    matches.append(item)
+                if text_to_find.lower() in normalized_text.lower():
+                    item_copy = item.copy()
+                    item_copy['search_type'] = 'individual'
+                    matches.append(item_copy)
+        
+        # Second pass: consecutive search (automatic fallback + optional always mode)
+        always_consecutive = self.preferences.get("always_consecutive_search", False)
+        
+        if len(subtitle_items) > 1:
+            # Run consecutive search if:
+            # 1. Always consecutive is enabled, OR
+            # 2. No individual results were found (automatic fallback - no performance cost)
+            should_run_consecutive = always_consecutive or len(matches) == 0
+            
+            if should_run_consecutive:
+                consecutive_matches = self._search_consecutive_editor_items(subtitle_items, text_to_find, case_sensitive)
                 
+                # Only add consecutive matches that don't duplicate individual matches
+                for consecutive_match in consecutive_matches:
+                    is_duplicate = False
+                    for existing_match in matches:
+                        if (existing_match.get('search_type') == 'individual' and 
+                            existing_match.get('recordId') == consecutive_match.get('recordId')):
+                            is_duplicate = True
+                            break
+                    
+                    if not is_duplicate:
+                        matches.append(consecutive_match)
+        
         return matches
 
     # Add a method to show the settings dialog
     def _show_settings_dialog(self):
         """Show a dialog with minimum duration settings"""
         # Get saved size and calculate centered position BEFORE creating window
-        dialog_width, dialog_height = self.get_window_size("settings_dialog")
+        dialog_width, dialog_height = self.get_window_size("minimum_duration_dialog")
         dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
         dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
         
@@ -3977,13 +4067,6 @@ except Exception as e:
         settings_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         settings_dialog.transient(self.root)
         settings_dialog.grab_set()
-        
-        # Setup dialog close handler to apply settings automatically
-        def on_dialog_close():
-            self._apply_settings_without_closing(settings_dialog)
-            settings_dialog.destroy()
-            
-        settings_dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
         
         # Set minimum window size to ensure all elements are always visible
         settings_dialog.minsize(400, 350)
@@ -4004,12 +4087,43 @@ except Exception as e:
                                font=("TkDefaultFont", 12, "bold"))
         title_label.grid(row=0, column=0, sticky="w", pady=(0, 10))
         
-        # Enable checkbox (row 1 - fixed)
+        # Auto-save functions
+        def on_checkbox_changed():
+            """Auto-save when checkbox changes"""
+            enabled = self.min_duration_var.get()
+            self.preferences["min_duration_enabled"] = enabled
+            self.save_preferences()
+            self.debug_print(f"Minimum duration enabled setting updated: {enabled}")
+        
+        def validate_and_save_seconds():
+            """Validate and auto-save seconds value"""
+            seconds_str = self.min_duration_seconds_var.get()
+            try:
+                seconds = float(seconds_str)
+                if seconds < 0:
+                    seconds = 0.0
+                    self.min_duration_seconds_var.set("0.0")
+                elif seconds > 10000:
+                    seconds = 10000.0
+                    self.min_duration_seconds_var.set("10000.0")
+                
+                self.preferences["min_duration_seconds"] = seconds
+                self.save_preferences()
+                self.debug_print(f"Minimum duration seconds updated: {seconds}")
+            except ValueError:
+                # If not a valid float, reset to default
+                self.min_duration_seconds_var.set("10.0")
+                self.preferences["min_duration_seconds"] = 10.0
+                self.save_preferences()
+                self.debug_print("Invalid seconds value, reset to 10.0")
+        
+        # Enable checkbox (row 1 - fixed) with auto-save
         self.min_duration_var = tk.BooleanVar(value=self.preferences.get("min_duration_enabled", True))
         min_duration_cb = ttk.Checkbutton(
             main_container, 
             text="Enable minimum duration for imported clips", 
-            variable=self.min_duration_var
+            variable=self.min_duration_var,
+            command=on_checkbox_changed
         )
         min_duration_cb.grid(row=1, column=0, sticky="w", pady=5)
         
@@ -4027,6 +4141,10 @@ except Exception as e:
         )
         min_duration_entry.pack(side="left", padx=5)
         
+        # Bind auto-save to entry changes (on focus out and Enter key)
+        min_duration_entry.bind('<FocusOut>', lambda e: validate_and_save_seconds())
+        min_duration_entry.bind('<Return>', lambda e: validate_and_save_seconds())
+        
         ttk.Label(duration_input_frame, text="seconds").pack(side="left")
         
         # Description frame (row 3 - fixed size, no scrolling needed)
@@ -4041,112 +4159,40 @@ except Exception as e:
         description_label = ttk.Label(description_frame, text=description_text, wraplength=350, justify="left")
         description_label.pack(fill="both", padx=5, pady=5)
         
-        # Separator (row 4 - fixed height)
+        # Note about auto-save (row 4)
+        note_label = ttk.Label(
+            main_container,
+            text="Settings are automatically saved when changed.",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        note_label.grid(row=4, column=0, sticky="w", pady=(10, 5))
+        
+        # Separator (row 5 - fixed height)
         separator = ttk.Separator(main_container, orient='horizontal')
-        separator.grid(row=4, column=0, sticky="ew", pady=(5, 10))
+        separator.grid(row=5, column=0, sticky="ew", pady=(5, 10))
         
-        # Buttons frame (row 5 - fixed height, always visible at bottom)
+        # Buttons frame (row 6 - fixed height, always visible at bottom)
         buttons_frame = ttk.Frame(main_container)
-        buttons_frame.grid(row=5, column=0, sticky="ew")
+        buttons_frame.grid(row=6, column=0, sticky="ew")
         
-        # Cancel button
-        def on_cancel():
-            # Close without applying settings by bypassing the close handler
-            settings_dialog.protocol("WM_DELETE_WINDOW", lambda: None)  # Remove close handler
-            settings_dialog.destroy()
-            
-        cancel_btn = ttk.Button(
+        # Close button (no save needed since auto-save)
+        close_btn = ttk.Button(
             buttons_frame, 
-            text="Cancel", 
-            command=on_cancel
+            text="Close", 
+            command=settings_dialog.destroy
         )
-        cancel_btn.pack(side="right", padx=5)
-        
-        # Apply button
-        apply_btn = ttk.Button(
-            buttons_frame, 
-            text="Apply", 
-            command=lambda: self._apply_settings(settings_dialog)
-        )
-        apply_btn.pack(side="right", padx=5)
+        close_btn.pack(side="right", padx=5)
         
         # Add invisible spacer row to absorb extra space when dialog is enlarged
         spacer_frame = ttk.Frame(main_container)
-        spacer_frame.grid(row=6, column=0, sticky="nsew")
-        
-        # Dialog is already positioned correctly from creation
+        spacer_frame.grid(row=7, column=0, sticky="nsew")
 
-    # Add a method to apply the settings
     def _apply_settings(self, dialog):
-        """Apply settings from the dialog"""
-        try:
-            # Get the minimum duration settings
-            enabled = self.min_duration_var.get()
-            
-            # Parse and validate seconds value
-            seconds_str = self.min_duration_seconds_var.get()
-            try:
-                seconds = float(seconds_str)
-                if seconds < 0:
-                    seconds = 0.0
-                    self.min_duration_seconds_var.set("0.0")
-                elif seconds > 10000:
-                    seconds = 10000.0
-                    self.min_duration_seconds_var.set("10000.0")
-            except ValueError:
-                # If not a valid float, reset to default
-                seconds = 10.0
-                self.min_duration_seconds_var.set("10.0")
-            
-            # Update preferences
-            self.preferences["min_duration_enabled"] = enabled
-            self.preferences["min_duration_seconds"] = seconds
-            self.save_preferences()
-            
-            self.debug_print(f"Minimum duration settings updated - enabled: {enabled}, seconds: {seconds}")
-            
-            # Close the dialog
-            dialog.destroy()
-            
-            # Update status
-            self.status_var.set("Settings updated successfully")
-        except Exception as e:
-            self.debug_print(f"Error updating settings: {e}")
-            self.status_var.set(f"Error updating settings: {e}")
+        pass  # Method removed - using auto-save functionality instead
 
     def _apply_settings_without_closing(self, dialog):
-        """Apply settings from the dialog without closing it"""
-        try:
-            # Get the minimum duration settings
-            enabled = self.min_duration_var.get()
-            
-            # Parse and validate seconds value
-            seconds_str = self.min_duration_seconds_var.get()
-            try:
-                seconds = float(seconds_str)
-                if seconds < 0:
-                    seconds = 0.0
-                    self.min_duration_seconds_var.set("0.0")
-                elif seconds > 10000:
-                    seconds = 10000.0
-                    self.min_duration_seconds_var.set("10000.0")
-            except ValueError:
-                # If not a valid float, reset to default
-                seconds = 10.0
-                self.min_duration_seconds_var.set("10.0")
-            
-            # Update preferences
-            self.preferences["min_duration_enabled"] = enabled
-            self.preferences["min_duration_seconds"] = seconds
-            self.save_preferences()
-            
-            self.debug_print(f"Minimum duration settings updated - enabled: {enabled}, seconds: {seconds}")
-            
-            # Update status
-            self.status_var.set("Settings updated successfully")
-        except Exception as e:
-            self.debug_print(f"Error updating settings: {e}")
-            self.status_var.set(f"Error updating settings: {e}")
+        pass  # Method removed - using auto-save functionality instead
 
     # Add a new method for general settings
     def _show_general_settings_dialog(self):
@@ -4173,27 +4219,56 @@ except Exception as e:
         ttk.Label(main_frame, text="General Application Settings", 
                  font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
         
-        # Placeholder for future general settings
-        placeholder_frame = ttk.LabelFrame(main_frame, text="Application Settings", padding=10)
-        placeholder_frame.pack(fill="both", expand=True, pady=10)
+        # Search Settings Frame
+        search_frame = ttk.LabelFrame(main_frame, text="Search Settings", padding=10)
+        search_frame.pack(fill="x", pady=10)
         
-        ttk.Label(placeholder_frame, 
-                 text="General application settings will be added in future updates.",
-                 wraplength=350, justify="center").pack(pady=20)
+        # Always Consecutive Search Setting with auto-save
+        always_consecutive_var = tk.BooleanVar(value=self.preferences.get("always_consecutive_search", False))
+        
+        def on_consecutive_changed():
+            """Auto-save when setting changes"""
+            self.preferences["always_consecutive_search"] = always_consecutive_var.get()
+            self.save_preferences()
+        
+        always_consecutive_check = ttk.Checkbutton(
+            search_frame, 
+            text="Always Use Consecutive Search",
+            variable=always_consecutive_var,
+            command=on_consecutive_changed
+        )
+        always_consecutive_check.pack(anchor="w", pady=(0, 5))
+        
+        # Add description for consecutive search
+        desc_label = ttk.Label(
+            search_frame,
+            text="When enabled, always searches across subtitle boundaries (slower but most comprehensive).\nWhen disabled, automatically falls back to consecutive search only if no results found.",
+            wraplength=450,
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        desc_label.pack(anchor="w", padx=(20, 0), pady=(0, 10))
+        
+        # Note about auto-save
+        note_label = ttk.Label(
+            main_frame,
+            text="Settings are automatically saved when changed.",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        note_label.pack(anchor="w", pady=(10, 0))
         
         # Buttons frame
         buttons_frame = ttk.Frame(settings_dialog)
         buttons_frame.pack(fill="x", padx=15, pady=15)
         
-        # Close button
+        # Close button (no save needed since auto-save)
         close_btn = ttk.Button(
             buttons_frame, 
             text="Close", 
             command=settings_dialog.destroy
         )
         close_btn.pack(side="right", padx=5)
-        
-        # Dialog is already positioned correctly from creation
 
     def _show_window_sizing_dialog(self):
         """Show a dialog for configuring window sizes"""
@@ -4299,7 +4374,7 @@ except Exception as e:
         # Create size controls for each window type
         window_labels = {
             "main_window": "Main Application Window",
-            "settings_dialog": "Settings Dialog",
+            "minimum_duration_dialog": "Minimum Duration Settings Dialog",
             "general_settings_dialog": "General Settings Dialog", 
             "editor_dialog": "Editor Navigator Dialog",
             "debug_window": "Debug Console Window",
@@ -5321,6 +5396,107 @@ except Exception as e:
         # Start the mapping in a background thread
         mapping_thread = threading.Thread(target=mapping_thread, daemon=True)
         mapping_thread.start()
+
+    def _search_consecutive_entries(self, entries, keyword):
+        """Search for text that spans across consecutive subtitle entries"""
+        results = []
+        
+        def clean_for_search(text):
+            """Clean text for more flexible searching - remove punctuation and normalize"""
+            # Remove common punctuation that might interfere
+            cleaned = re.sub(r'[^\w\s]', ' ', text)
+            # Normalize whitespace
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+            return cleaned.lower()
+        
+        keyword_cleaned = clean_for_search(keyword)
+        
+        # Look for consecutive matches
+        i = 0
+        while i < len(entries) - 1:
+            current = entries[i]
+            next_entry = entries[i + 1]
+            
+            # Clean both entries for searching
+            current_cleaned = clean_for_search(current['normalized_text'])
+            next_cleaned = clean_for_search(next_entry['normalized_text'])
+            
+            # Only proceed if the keyword is NOT found in either individual entry
+            if keyword_cleaned in current_cleaned or keyword_cleaned in next_cleaned:
+                i += 1
+                continue  # Skip if keyword exists fully in either entry
+            
+            # Try combining current with next entry
+            combined = current_cleaned + ' ' + next_cleaned
+            
+            if keyword_cleaned in combined:
+                # Found a true consecutive match - keyword spans across entries
+                mpc_start_time = current['start_time'].replace(',', '.')
+                mpc_time_format = mpc_start_time.split('.')[0]
+                
+                result = {
+                    'num': current['num'],
+                    'start_time': current['start_time'],
+                    'end_time': current['end_time'],  # Use original end time of first entry
+                    'text': current['text'] + ' [continues...]',  # Indicate it continues
+                    'mpc_start_time': mpc_time_format,
+                    'clean_text': current['clean_text'] + ' [spans to next entry]',
+                    'search_type': 'consecutive'
+                }
+                results.append(result)
+                # Skip the next entry to avoid overlapping consecutive matches
+                i += 2  # Skip both current and next entry
+            else:
+                i += 1
+        
+        return results
+
+    def _search_consecutive_editor_items(self, items, text_to_find, case_sensitive=False):
+        """Search for text spanning consecutive editor subtitle items"""
+        matches = []
+        
+        def clean_for_search(text):
+            """Clean text for more flexible searching"""
+            # Remove common punctuation that might interfere
+            cleaned = re.sub(r'[^\w\s]', ' ', text)
+            # Normalize whitespace and Unicode separators
+            cleaned = cleaned.replace('\u2028', ' ').replace('\u2029', ' ')
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+            return cleaned if case_sensitive else cleaned.lower()
+        
+        search_text = text_to_find if case_sensitive else text_to_find.lower()
+        search_text_cleaned = clean_for_search(search_text)
+        
+        # Look for consecutive matches
+        i = 0
+        while i < len(items) - 1:
+            current = items[i]
+            next_item = items[i + 1]
+            
+            # Clean and normalize both items
+            current_cleaned = clean_for_search(current['text'])
+            next_cleaned = clean_for_search(next_item['text'])
+            
+            # Only proceed if the keyword is NOT found in either individual item
+            if search_text_cleaned in current_cleaned or search_text_cleaned in next_cleaned:
+                i += 1
+                continue  # Skip if keyword exists fully in either item
+            
+            # Combine texts
+            combined = current_cleaned + ' ' + next_cleaned
+            
+            if search_text_cleaned in combined:
+                # Found a match - return the first item with indication it continues
+                consecutive_item = current.copy()
+                consecutive_item['text'] = current['text'] + ' [continues...]'
+                consecutive_item['search_type'] = 'consecutive'
+                matches.append(consecutive_item)
+                # Skip the next item to avoid overlapping consecutive matches
+                i += 2  # Skip both current and next item
+            else:
+                i += 1
+        
+        return matches
 
 class DebugWindow:
     """A debug window to display errors and debug information"""
