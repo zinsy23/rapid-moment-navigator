@@ -1468,8 +1468,11 @@ class RapidMomentNavigator:
                     
                     # Remove HTML tags for searching
                     clean_text = re.sub(r'<[^>]+>', '', text)
+                    # Normalize line separators (including Unicode ones like \u2028 from DaVinci Resolve)
+                    normalized_text = clean_text.replace('\u2028', ' ').replace('\u2029', ' ').replace('\n', ' ').replace('\r', ' ')
+                    normalized_text = re.sub(r'\s+', ' ', normalized_text).strip()
                     
-                    if keyword.lower() in clean_text.lower():
+                    if keyword.lower() in normalized_text.lower():
                         # Convert comma separator to period for MPC
                         mpc_start_time = start_time.replace(',', '.')
                         
@@ -3955,11 +3958,15 @@ except Exception as e:
     def _search_subtitle_items(self, subtitle_items, text_to_find, case_sensitive=False):
         matches = []
         for item in subtitle_items:
+            # Normalize text by handling unicode line separators
+            normalized_text = item['text'].replace('\u2028', ' ').replace('\u2029', ' ').replace('\n', ' ').replace('\r', ' ')
+            normalized_text = re.sub(r'\s+', ' ', normalized_text).strip()
+            
             if case_sensitive:
-                if text_to_find in item['text']:
+                if text_to_find in normalized_text:
                     matches.append(item)
             else:
-                if text_to_find.lower() in item['text'].lower():
+                if text_to_find.lower() in normalized_text.lower():
                     matches.append(item)
                 
         return matches
