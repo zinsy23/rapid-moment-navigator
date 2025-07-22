@@ -1451,44 +1451,64 @@ class RapidMomentNavigator:
         # Process each subtitle file
         for subtitle_file in sorted(subtitle_files):
             file_results = []
+            all_entries = []  # Collect all entries for consecutive search
             
             try:
                 with open(subtitle_file, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
                 
-                # Parse SRT format
+                # Parse SRT format and collect all entries
                 pattern = r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2},\d{3})\n((?:.+\n)+?)(?:\n|$)'
                 matches = re.finditer(pattern, content)
                 
+                # First pass: collect all entries
                 for match in matches:
                     subtitle_num = match.group(1)
                     start_time = match.group(2)
                     end_time = match.group(3)
                     text = match.group(4).strip()
                     
-                    # Remove HTML tags for searching
+                    # Remove HTML tags and normalize
                     clean_text = re.sub(r'<[^>]+>', '', text)
-                    # Normalize line separators (including Unicode ones like \u2028 from DaVinci Resolve)
                     normalized_text = clean_text.replace('\u2028', ' ').replace('\u2029', ' ').replace('\n', ' ').replace('\r', ' ')
                     normalized_text = re.sub(r'\s+', ' ', normalized_text).strip()
                     
-                    if keyword.lower() in normalized_text.lower():
+                    entry = {
+                        'num': subtitle_num,
+                        'start_time': start_time,
+                        'end_time': end_time,
+                        'text': text,
+                        'clean_text': clean_text,
+                        'normalized_text': normalized_text
+                    }
+                    all_entries.append(entry)
+                
+                # Second pass: individual search
+                for entry in all_entries:
+                    if keyword.lower() in entry['normalized_text'].lower():
                         # Convert comma separator to period for MPC
-                        mpc_start_time = start_time.replace(',', '.')
-                        
-                        # Store result with only the hh:mm:ss part (no milliseconds) for MPC
+                        mpc_start_time = entry['start_time'].replace(',', '.')
                         mpc_time_format = mpc_start_time.split('.')[0]
                         
-                        # Store result
                         result = {
                             'file': subtitle_file,
-                            'num': subtitle_num,
-                            'start_time': start_time,
-                            'end_time': end_time,
-                            'text': text,
+                            'num': entry['num'],
+                            'start_time': entry['start_time'],
+                            'end_time': entry['end_time'],
+                            'text': entry['text'],
                             'mpc_start_time': mpc_time_format,
-                            'clean_text': clean_text
+                            'clean_text': entry['clean_text'],
+                            'search_type': 'individual'
                         }
+                        file_results.append(result)
+                        self.search_results.append(result)
+                        total_results += 1
+                
+                # Third pass: consecutive search (only if no individual matches found)
+                if not file_results and len(all_entries) > 1:
+                    consecutive_results = self._search_consecutive_entries(all_entries, keyword)
+                    for result in consecutive_results:
+                        result['file'] = subtitle_file
                         file_results.append(result)
                         self.search_results.append(result)
                         total_results += 1
@@ -3957,6 +3977,8 @@ except Exception as e:
 
     def _search_subtitle_items(self, subtitle_items, text_to_find, case_sensitive=False):
         matches = []
+        
+        # First pass: individual item search
         for item in subtitle_items:
             # Normalize text by handling unicode line separators
             normalized_text = item['text'].replace('\u2028', ' ').replace('\u2029', ' ').replace('\n', ' ').replace('\r', ' ')
@@ -3964,10 +3986,19 @@ except Exception as e:
             
             if case_sensitive:
                 if text_to_find in normalized_text:
-                    matches.append(item)
+                    item_copy = item.copy()
+                    item_copy['search_type'] = 'individual'
+                    matches.append(item_copy)
             else:
                 if text_to_find.lower() in normalized_text.lower():
-                    matches.append(item)
+                    item_copy = item.copy()
+                    item_copy['search_type'] = 'individual'
+                    matches.append(item_copy)
+        
+        # Second pass: consecutive search (only if no individual matches)
+        if not matches and len(subtitle_items) > 1:
+            consecutive_matches = self._search_consecutive_editor_items(subtitle_items, text_to_find, case_sensitive)
+            matches.extend(consecutive_matches)
                 
         return matches
 
@@ -5328,6 +5359,91 @@ except Exception as e:
         # Start the mapping in a background thread
         mapping_thread = threading.Thread(target=mapping_thread, daemon=True)
         mapping_thread.start()
+
+    def _search_consecutive_entries(self, entries, keyword):
+        """Search for text that spans across consecutive subtitle entries"""
+        results = []
+        
+        def clean_for_search(text):
+            """Clean text for more flexible searching - remove punctuation and normalize"""
+            # Remove common punctuation that might interfere
+            cleaned = re.sub(r'[^\w\s]', ' ', text)
+            # Normalize whitespace
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+            return cleaned.lower()
+        
+        keyword_cleaned = clean_for_search(keyword)
+        
+        # Look for consecutive matches
+        for i in range(len(entries) - 1):
+            current = entries[i]
+            next_entry = entries[i + 1]
+            
+            # Clean both entries for searching
+            current_cleaned = clean_for_search(current['normalized_text'])
+            next_cleaned = clean_for_search(next_entry['normalized_text'])
+            
+            # Try combining current with next entry
+            combined = current_cleaned + ' ' + next_cleaned
+            
+            if keyword_cleaned in combined:
+                # Found a match spanning entries - return only the first entry
+                mpc_start_time = current['start_time'].replace(',', '.')
+                mpc_time_format = mpc_start_time.split('.')[0]
+                
+                result = {
+                    'num': current['num'],
+                    'start_time': current['start_time'],
+                    'end_time': current['end_time'],  # Use original end time of first entry
+                    'text': current['text'] + ' [continues...]',  # Indicate it continues
+                    'mpc_start_time': mpc_time_format,
+                    'clean_text': current['clean_text'] + ' [spans to next entry]',
+                    'search_type': 'consecutive'
+                }
+                results.append(result)
+                # Only find the first consecutive match to avoid duplicates
+                break
+        
+        return results
+
+    def _search_consecutive_editor_items(self, items, text_to_find, case_sensitive=False):
+        """Search for text spanning consecutive editor subtitle items"""
+        matches = []
+        
+        def clean_for_search(text):
+            """Clean text for more flexible searching"""
+            # Remove common punctuation that might interfere
+            cleaned = re.sub(r'[^\w\s]', ' ', text)
+            # Normalize whitespace and Unicode separators
+            cleaned = cleaned.replace('\u2028', ' ').replace('\u2029', ' ')
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+            return cleaned if case_sensitive else cleaned.lower()
+        
+        search_text = text_to_find if case_sensitive else text_to_find.lower()
+        search_text_cleaned = clean_for_search(search_text)
+        
+        # Look for consecutive matches
+        for i in range(len(items) - 1):
+            current = items[i]
+            next_item = items[i + 1]
+            
+            # Clean and normalize both items
+            current_cleaned = clean_for_search(current['text'])
+            next_cleaned = clean_for_search(next_item['text'])
+            
+            # Combine texts
+            combined = current_cleaned + ' ' + next_cleaned
+            
+            if search_text_cleaned in combined:
+                # Found a match - return the first item with indication it continues
+                consecutive_item = current.copy()
+                consecutive_item['text'] = current['text'] + ' [continues...]'
+                consecutive_item['search_type'] = 'consecutive'
+                matches.append(consecutive_item)
+                # Only find first match to avoid duplicates
+                break
+        
+        return matches
 
 class DebugWindow:
     """A debug window to display errors and debug information"""
