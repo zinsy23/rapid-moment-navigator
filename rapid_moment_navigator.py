@@ -27,7 +27,7 @@ DEFAULT_PREFS = {
     "min_duration_enabled": True,  # Changed from False to True
     "min_duration_seconds": 10.0,
     "auto_cache_update": True,  # Enable automatic cache updates when app gains focus
-    "consecutive_search_enabled": True,  # Enable smart consecutive search across subtitle boundaries (slower but more comprehensive)
+    "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
     "window_proportional_scaling": True  # Scale all windows proportionally when one is changed
 }
@@ -1505,23 +1505,31 @@ class RapidMomentNavigator:
                         self.search_results.append(result)
                         total_results += 1
                 
-                # Third pass: consecutive search (only if enabled in preferences)
-                if self.preferences.get("consecutive_search_enabled", True) and len(all_entries) > 1:
-                    consecutive_results = self._search_consecutive_entries(all_entries, keyword)
-                    for result in consecutive_results:
-                        result['file'] = subtitle_file
-                        # Only add if it's not a duplicate of existing individual matches
-                        is_duplicate = False
-                        for existing in file_results:
-                            if (existing.get('search_type') == 'individual' and 
-                                existing['num'] == result['num']):
-                                is_duplicate = True
-                                break
-                        
-                        if not is_duplicate:
-                            file_results.append(result)
-                            self.search_results.append(result)
-                            total_results += 1
+                # Third pass: consecutive search (automatic fallback + optional always mode)
+                always_consecutive = self.preferences.get("always_consecutive_search", False)
+                
+                if len(all_entries) > 1:
+                    # Run consecutive search if:
+                    # 1. Always consecutive is enabled, OR
+                    # 2. No individual results were found (automatic fallback - no performance cost)
+                    should_run_consecutive = always_consecutive or len(file_results) == 0
+                    
+                    if should_run_consecutive:
+                        consecutive_results = self._search_consecutive_entries(all_entries, keyword)
+                        for result in consecutive_results:
+                            result['file'] = subtitle_file
+                            # Only add if it's not a duplicate of existing individual matches
+                            is_duplicate = False
+                            for existing in file_results:
+                                if (existing.get('search_type') == 'individual' and 
+                                    existing['num'] == result['num']):
+                                    is_duplicate = True
+                                    break
+                            
+                            if not is_duplicate:
+                                file_results.append(result)
+                                self.search_results.append(result)
+                                total_results += 1
             
             except Exception as e:
                 self.debug_print(f"Error processing {subtitle_file}: {e}")
@@ -4005,21 +4013,30 @@ except Exception as e:
                     item_copy['search_type'] = 'individual'
                     matches.append(item_copy)
         
-        # Second pass: consecutive search (only if enabled in preferences)
+        # Second pass: consecutive search (smart fallback approach)
         if self.preferences.get("consecutive_search_enabled", True) and len(subtitle_items) > 1:
-            consecutive_matches = self._search_consecutive_editor_items(subtitle_items, text_to_find, case_sensitive)
+            consecutive_enabled = self.preferences.get("consecutive_search_enabled", True)
+            always_consecutive = self.preferences.get("always_consecutive_search", False)
             
-            # Only add consecutive matches that don't duplicate individual matches
-            for consecutive_match in consecutive_matches:
-                is_duplicate = False
-                for existing_match in matches:
-                    if (existing_match.get('search_type') == 'individual' and 
-                        existing_match.get('recordId') == consecutive_match.get('recordId')):
-                        is_duplicate = True
-                        break
+            # Run consecutive search if:
+            # 1. Always consecutive is enabled, OR
+            # 2. No individual results were found (fallback mode)
+            should_run_consecutive = always_consecutive or len(matches) == 0
+            
+            if should_run_consecutive:
+                consecutive_matches = self._search_consecutive_editor_items(subtitle_items, text_to_find, case_sensitive)
                 
-                if not is_duplicate:
-                    matches.append(consecutive_match)
+                # Only add consecutive matches that don't duplicate individual matches
+                for consecutive_match in consecutive_matches:
+                    is_duplicate = False
+                    for existing_match in matches:
+                        if (existing_match.get('search_type') == 'individual' and 
+                            existing_match.get('recordId') == consecutive_match.get('recordId')):
+                            is_duplicate = True
+                            break
+                    
+                    if not is_duplicate:
+                        matches.append(consecutive_match)
         
         return matches
 
@@ -4236,19 +4253,19 @@ except Exception as e:
         search_frame = ttk.LabelFrame(main_frame, text="Search Settings", padding=10)
         search_frame.pack(fill="x", pady=10)
         
-        # Consecutive Search Setting
-        consecutive_var = tk.BooleanVar(value=self.preferences.get("consecutive_search_enabled", True))
-        consecutive_check = ttk.Checkbutton(
+        # Always Consecutive Search Setting
+        always_consecutive_var = tk.BooleanVar(value=self.preferences.get("always_consecutive_search", False))
+        always_consecutive_check = ttk.Checkbutton(
             search_frame, 
-            text="Enable Consecutive Search",
-            variable=consecutive_var
+            text="Always Use Consecutive Search",
+            variable=always_consecutive_var
         )
-        consecutive_check.pack(anchor="w", pady=(0, 5))
+        always_consecutive_check.pack(anchor="w", pady=(0, 5))
         
         # Add description for consecutive search
         desc_label = ttk.Label(
             search_frame,
-            text="Finds text spanning across subtitle boundaries (e.g., words split between lines).\nDisabling speeds up search but may miss some results.",
+            text="When enabled, always searches across subtitle boundaries (slower but most comprehensive).\nWhen disabled, automatically falls back to consecutive search only if no results found.",
             wraplength=350,
             font=("TkDefaultFont", 8),
             foreground="gray"
@@ -4257,7 +4274,7 @@ except Exception as e:
         
         # Function to save settings
         def save_settings():
-            self.preferences["consecutive_search_enabled"] = consecutive_var.get()
+            self.preferences["always_consecutive_search"] = always_consecutive_var.get()
             self.save_preferences()
             settings_dialog.destroy()
         
