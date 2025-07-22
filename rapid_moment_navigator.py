@@ -27,6 +27,7 @@ DEFAULT_PREFS = {
     "min_duration_enabled": True,  # Changed from False to True
     "min_duration_seconds": 10.0,
     "auto_cache_update": True,  # Enable automatic cache updates when app gains focus
+    "consecutive_search_enabled": True,  # Enable smart consecutive search across subtitle boundaries (slower but more comprehensive)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
     "window_proportional_scaling": True  # Scale all windows proportionally when one is changed
 }
@@ -1504,8 +1505,8 @@ class RapidMomentNavigator:
                         self.search_results.append(result)
                         total_results += 1
                 
-                # Third pass: consecutive search (always run, regardless of individual matches)
-                if len(all_entries) > 1:
+                # Third pass: consecutive search (only if enabled in preferences)
+                if self.preferences.get("consecutive_search_enabled", True) and len(all_entries) > 1:
                     consecutive_results = self._search_consecutive_entries(all_entries, keyword)
                     for result in consecutive_results:
                         result['file'] = subtitle_file
@@ -4004,8 +4005,8 @@ except Exception as e:
                     item_copy['search_type'] = 'individual'
                     matches.append(item_copy)
         
-        # Second pass: consecutive search (always run, regardless of individual matches)
-        if len(subtitle_items) > 1:
+        # Second pass: consecutive search (only if enabled in preferences)
+        if self.preferences.get("consecutive_search_enabled", True) and len(subtitle_items) > 1:
             consecutive_matches = self._search_consecutive_editor_items(subtitle_items, text_to_find, case_sensitive)
             
             # Only add consecutive matches that don't duplicate individual matches
@@ -4230,6 +4231,55 @@ except Exception as e:
         # Title label
         ttk.Label(main_frame, text="General Application Settings", 
                  font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Search Settings Frame
+        search_frame = ttk.LabelFrame(main_frame, text="Search Settings", padding=10)
+        search_frame.pack(fill="x", pady=10)
+        
+        # Consecutive Search Setting
+        consecutive_var = tk.BooleanVar(value=self.preferences.get("consecutive_search_enabled", True))
+        consecutive_check = ttk.Checkbutton(
+            search_frame, 
+            text="Enable Consecutive Search",
+            variable=consecutive_var
+        )
+        consecutive_check.pack(anchor="w", pady=(0, 5))
+        
+        # Add description for consecutive search
+        desc_label = ttk.Label(
+            search_frame,
+            text="Finds text spanning across subtitle boundaries (e.g., words split between lines).\nDisabling speeds up search but may miss some results.",
+            wraplength=350,
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        desc_label.pack(anchor="w", padx=(20, 0), pady=(0, 10))
+        
+        # Function to save settings
+        def save_settings():
+            self.preferences["consecutive_search_enabled"] = consecutive_var.get()
+            self.save_preferences()
+            settings_dialog.destroy()
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(fill="x", padx=15, pady=15)
+        
+        # Save button
+        save_btn = ttk.Button(
+            buttons_frame, 
+            text="Save", 
+            command=save_settings
+        )
+        save_btn.pack(side="right", padx=5)
+        
+        # Close button
+        close_btn = ttk.Button(
+            buttons_frame, 
+            text="Cancel", 
+            command=settings_dialog.destroy
+        )
+        close_btn.pack(side="right", padx=5)
         
         # Placeholder for future general settings
         placeholder_frame = ttk.LabelFrame(main_frame, text="Application Settings", padding=10)
