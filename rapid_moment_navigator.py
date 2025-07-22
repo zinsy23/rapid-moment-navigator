@@ -1504,14 +1504,23 @@ class RapidMomentNavigator:
                         self.search_results.append(result)
                         total_results += 1
                 
-                # Third pass: consecutive search (only if no individual matches found)
-                if not file_results and len(all_entries) > 1:
+                # Third pass: consecutive search (always run, regardless of individual matches)
+                if len(all_entries) > 1:
                     consecutive_results = self._search_consecutive_entries(all_entries, keyword)
                     for result in consecutive_results:
                         result['file'] = subtitle_file
-                        file_results.append(result)
-                        self.search_results.append(result)
-                        total_results += 1
+                        # Only add if it's not a duplicate of existing individual matches
+                        is_duplicate = False
+                        for existing in file_results:
+                            if (existing.get('search_type') == 'individual' and 
+                                existing['num'] == result['num']):
+                                is_duplicate = True
+                                break
+                        
+                        if not is_duplicate:
+                            file_results.append(result)
+                            self.search_results.append(result)
+                            total_results += 1
             
             except Exception as e:
                 self.debug_print(f"Error processing {subtitle_file}: {e}")
@@ -3995,11 +4004,22 @@ except Exception as e:
                     item_copy['search_type'] = 'individual'
                     matches.append(item_copy)
         
-        # Second pass: consecutive search (only if no individual matches)
-        if not matches and len(subtitle_items) > 1:
+        # Second pass: consecutive search (always run, regardless of individual matches)
+        if len(subtitle_items) > 1:
             consecutive_matches = self._search_consecutive_editor_items(subtitle_items, text_to_find, case_sensitive)
-            matches.extend(consecutive_matches)
+            
+            # Only add consecutive matches that don't duplicate individual matches
+            for consecutive_match in consecutive_matches:
+                is_duplicate = False
+                for existing_match in matches:
+                    if (existing_match.get('search_type') == 'individual' and 
+                        existing_match.get('recordId') == consecutive_match.get('recordId')):
+                        is_duplicate = True
+                        break
                 
+                if not is_duplicate:
+                    matches.append(consecutive_match)
+        
         return matches
 
     # Add a method to show the settings dialog
@@ -5375,7 +5395,8 @@ except Exception as e:
         keyword_cleaned = clean_for_search(keyword)
         
         # Look for consecutive matches
-        for i in range(len(entries) - 1):
+        i = 0
+        while i < len(entries) - 1:
             current = entries[i]
             next_entry = entries[i + 1]
             
@@ -5383,11 +5404,16 @@ except Exception as e:
             current_cleaned = clean_for_search(current['normalized_text'])
             next_cleaned = clean_for_search(next_entry['normalized_text'])
             
+            # Only proceed if the keyword is NOT found in either individual entry
+            if keyword_cleaned in current_cleaned or keyword_cleaned in next_cleaned:
+                i += 1
+                continue  # Skip if keyword exists fully in either entry
+            
             # Try combining current with next entry
             combined = current_cleaned + ' ' + next_cleaned
             
             if keyword_cleaned in combined:
-                # Found a match spanning entries - return only the first entry
+                # Found a true consecutive match - keyword spans across entries
                 mpc_start_time = current['start_time'].replace(',', '.')
                 mpc_time_format = mpc_start_time.split('.')[0]
                 
@@ -5401,8 +5427,10 @@ except Exception as e:
                     'search_type': 'consecutive'
                 }
                 results.append(result)
-                # Only find the first consecutive match to avoid duplicates
-                break
+                # Skip the next entry to avoid overlapping consecutive matches
+                i += 2  # Skip both current and next entry
+            else:
+                i += 1
         
         return results
 
@@ -5423,13 +5451,19 @@ except Exception as e:
         search_text_cleaned = clean_for_search(search_text)
         
         # Look for consecutive matches
-        for i in range(len(items) - 1):
+        i = 0
+        while i < len(items) - 1:
             current = items[i]
             next_item = items[i + 1]
             
             # Clean and normalize both items
             current_cleaned = clean_for_search(current['text'])
             next_cleaned = clean_for_search(next_item['text'])
+            
+            # Only proceed if the keyword is NOT found in either individual item
+            if search_text_cleaned in current_cleaned or search_text_cleaned in next_cleaned:
+                i += 1
+                continue  # Skip if keyword exists fully in either item
             
             # Combine texts
             combined = current_cleaned + ' ' + next_cleaned
@@ -5440,8 +5474,10 @@ except Exception as e:
                 consecutive_item['text'] = current['text'] + ' [continues...]'
                 consecutive_item['search_type'] = 'consecutive'
                 matches.append(consecutive_item)
-                # Only find first match to avoid duplicates
-                break
+                # Skip the next item to avoid overlapping consecutive matches
+                i += 2  # Skip both current and next item
+            else:
+                i += 1
         
         return matches
 
