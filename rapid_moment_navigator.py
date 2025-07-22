@@ -4013,14 +4013,13 @@ except Exception as e:
                     item_copy['search_type'] = 'individual'
                     matches.append(item_copy)
         
-        # Second pass: consecutive search (smart fallback approach)
-        if self.preferences.get("consecutive_search_enabled", True) and len(subtitle_items) > 1:
-            consecutive_enabled = self.preferences.get("consecutive_search_enabled", True)
-            always_consecutive = self.preferences.get("always_consecutive_search", False)
-            
+        # Second pass: consecutive search (automatic fallback + optional always mode)
+        always_consecutive = self.preferences.get("always_consecutive_search", False)
+        
+        if len(subtitle_items) > 1:
             # Run consecutive search if:
             # 1. Always consecutive is enabled, OR
-            # 2. No individual results were found (fallback mode)
+            # 2. No individual results were found (automatic fallback - no performance cost)
             should_run_consecutive = always_consecutive or len(matches) == 0
             
             if should_run_consecutive:
