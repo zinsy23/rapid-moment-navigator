@@ -30,7 +30,7 @@ DEFAULT_PREFS = {
     "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
     "window_proportional_scaling": True,  # Scale all windows proportionally when one is changed
-    "current_media_player": "mpc"  # Default media player
+    # Note: current_media_player is dynamically set based on OS platform
 }
 
 media_players = {
@@ -75,6 +75,14 @@ media_players = {
         ]
     }
 }
+
+def get_default_media_player():
+    """Get the default media player for the current OS platform"""
+    platform = sys.platform
+    if platform in media_players and media_players[platform]:
+        # Return the first media player key for the current platform
+        return list(media_players[platform].keys())[0]
+    return None
 
 # Global variable for DaVinci Resolve script module
 dvr_script = None
@@ -1768,7 +1776,6 @@ class RapidMomentNavigator:
             self.debug_print(f"Error launching media player: {str(e)}")
             self.status_var.set(f"Error launching media player: {e}")
             
-            # TECHNICAL DEBT: Adjust fallback methods to work cross platform
             try:
                 # Try method 2: Using shell=True with space-separated arguments
                 self.debug_print("Trying alternate launch method with shell=True")
@@ -2442,13 +2449,27 @@ except Exception as e:
                     
                     prefs["directories"] = valid_dirs
                     
+                    # Validate media player setting for current platform
+                    if "current_media_player" not in prefs or prefs["current_media_player"] is None:
+                        # Not set, use default for current platform
+                        prefs["current_media_player"] = get_default_media_player()
+                        self.debug_print(f"Set default media player for platform: {prefs['current_media_player']}")
+                    elif sys.platform in media_players:
+                        # Check if saved player exists for current platform
+                        if prefs["current_media_player"] not in media_players[sys.platform]:
+                            self.debug_print(f"Saved media player '{prefs['current_media_player']}' not available on {sys.platform}, using default")
+                            prefs["current_media_player"] = get_default_media_player()
+                    
                     return prefs
         except Exception as e:
             self.debug_print(f"Error loading preferences: {e}")
             
         # Return default preferences if file doesn't exist or has errors
         self.debug_print("Using default preferences")
-        return DEFAULT_PREFS.copy()
+        default_prefs = DEFAULT_PREFS.copy()
+        # Set dynamic default media player
+        default_prefs["current_media_player"] = get_default_media_player()
+        return default_prefs
     
     def save_preferences(self):
         """Save preferences to file"""
@@ -2469,6 +2490,7 @@ except Exception as e:
             "main_window": (800, 600),
             "minimum_duration_dialog": (400, 380),
             "general_settings_dialog": (520, 350),
+            "media_player_dialog": (550, 400),
             "editor_dialog": (600, 500),
             "debug_window": (800, 425),
             "window_sizing_dialog": (600, 700),
@@ -4322,6 +4344,143 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
 
+    def _show_media_player_dialog(self):
+        """Show a dialog for selecting and configuring media players"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("media_player_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
+        settings_dialog = tk.Toplevel(self.root)
+        settings_dialog.title("Media Player Settings")
+        settings_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
+        settings_dialog.transient(self.root)
+        settings_dialog.grab_set()
+        
+        # Set minimum window size
+        settings_dialog.minsize(500, 300)
+        
+        # Make dialog modal
+        settings_dialog.focus_set()
+        
+        # Create main frame with padding
+        main_frame = ttk.Frame(settings_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title label
+        ttk.Label(main_frame, text="Media Player Settings", 
+                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Media Player Selection Frame
+        player_frame = ttk.LabelFrame(main_frame, text="Default Media Player", padding=10)
+        player_frame.pack(fill="x", pady=10)
+        
+        # Get available players for current platform
+        current_platform = sys.platform
+        available_players = []
+        if current_platform in media_players:
+            available_players = list(media_players[current_platform].keys())
+        
+        # Current selection
+        current_player = self.preferences.get("current_media_player", get_default_media_player())
+        
+        # Create dropdown for media player selection
+        player_label = ttk.Label(player_frame, text="Select Media Player:")
+        player_label.grid(row=0, column=0, sticky="w", pady=5)
+        
+        player_var = tk.StringVar(value=current_player if current_player else "")
+        
+        def on_player_changed(*args):
+            """Auto-save when media player selection changes"""
+            selected_player = player_var.get()
+            self.preferences["current_media_player"] = selected_player
+            self.save_preferences()
+            self.debug_print(f"Media player changed to: {selected_player}")
+            # Update the info label
+            update_player_info()
+        
+        player_dropdown = ttk.Combobox(
+            player_frame,
+            textvariable=player_var,
+            values=available_players,
+            state="readonly",
+            width=30
+        )
+        player_dropdown.grid(row=0, column=1, sticky="w", padx=(10, 0), pady=5)
+        player_var.trace_add("write", on_player_changed)
+        
+        # Info frame to show player details
+        info_frame = ttk.Frame(player_frame)
+        info_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        
+        info_label = ttk.Label(
+            info_frame,
+            text="",
+            wraplength=450,
+            font=("TkDefaultFont", 9),
+            foreground="gray"
+        )
+        info_label.pack(anchor="w")
+        
+        def update_player_info():
+            """Update the info label with current player details"""
+            selected_player = player_var.get()
+            if selected_player and current_platform in media_players and selected_player in media_players[current_platform]:
+                player_data = media_players[current_platform][selected_player]
+                # Get the start command (last item in the list)
+                start_cmd = player_data[-1]
+                # Get the paths (all items except the last)
+                paths = player_data[:-1]
+                
+                # Check which path exists
+                existing_path = None
+                for path in paths:
+                    if os.path.exists(path):
+                        existing_path = path
+                        break
+                
+                if existing_path:
+                    info_text = f"Player: {selected_player}\nPath: {existing_path}\nStart command: {start_cmd}"
+                else:
+                    info_text = f"Player: {selected_player}\nStart command: {start_cmd}\n⚠ Warning: Player executable not found at default locations"
+                
+                info_label.config(text=info_text)
+            else:
+                info_label.config(text="No player selected")
+        
+        # Initial info update
+        update_player_info()
+        
+        # Platform info
+        platform_label = ttk.Label(
+            main_frame,
+            text=f"Current Platform: {current_platform}\nAvailable players: {', '.join(available_players) if available_players else 'None'}",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        platform_label.pack(anchor="w", pady=(10, 0))
+        
+        # Note about auto-save
+        note_label = ttk.Label(
+            main_frame,
+            text="Settings are automatically saved when changed.",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        note_label.pack(anchor="w", pady=(5, 0))
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(fill="x", padx=15, pady=15)
+        
+        # Close button (no save needed since auto-save)
+        close_btn = ttk.Button(
+            buttons_frame, 
+            text="Close", 
+            command=settings_dialog.destroy
+        )
+        close_btn.pack(side="right", padx=5)
+
     def _show_window_sizing_dialog(self):
         """Show a dialog for configuring window sizes"""
         # Get saved size and calculate centered position BEFORE creating window
@@ -5684,6 +5843,8 @@ if __name__ == "__main__":
                                  command=app._show_settings_dialog)
         settings_menu.add_command(label="General Settings...", 
                                  command=app._show_general_settings_dialog)
+        settings_menu.add_command(label="Media Player...", 
+                                 command=app._show_media_player_dialog)
         settings_menu.add_separator()
         settings_menu.add_command(label="Window Sizing...", 
                                  command=app._show_window_sizing_dialog)
