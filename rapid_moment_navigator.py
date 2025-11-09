@@ -1773,20 +1773,26 @@ class RapidMomentNavigator:
                 # Try method 2: Using shell=True with space-separated arguments
                 self.debug_print("Trying alternate launch method with shell=True")
                 abs_video_path = self.get_absolute_path(video_file)
-                command = f'start "" "{media_player_path}" "{abs_video_path}" /startpos {start_time}'
+                if("=" in media_players[sys.platform][current_media_player][-1]):
+                    command = f'start "" "{media_player_path}" "{abs_video_path}" {media_players[sys.platform][current_media_player][-1]}{start_time}'
+                else:
+                    command = f'start "" "{media_player_path}" "{abs_video_path}" {media_players[sys.platform][current_media_player][-1]} {start_time}'
                 self.debug_print(f"Shell command: {command}")
                 subprocess.Popen(command, shell=True)
             except Exception as e2:
                 try:
                     # Try method 3: Using shell=True with parameter combined with value
                     self.debug_print("Trying another alternative launch method")
-                    command = f'start "" "{media_player_path}" "{abs_video_path}" /startpos={start_time}'
+                    if("=" in media_players[sys.platform][current_media_player][-1]):
+                        command = f'start "" "{media_player_path}" "{abs_video_path}" {media_players[sys.platform][current_media_player][-1]}={start_time}'
+                    else:
+                        command = f'start "" "{media_player_path}" "{abs_video_path}" {media_players[sys.platform][current_media_player][-1]} {start_time}'
                     self.debug_print(f"Shell command: {command}")
                     subprocess.Popen(command, shell=True)
                 except Exception as e3:
                     self.debug_print(f"Error with all launch methods, falling back to default player")
                     
-                    # Fall back to default player if MPC fails
+                    # Fall back to default player if default media player fails
                     try:
                         abs_video_path = self.get_absolute_path(video_file)
                         os.startfile(abs_video_path)
