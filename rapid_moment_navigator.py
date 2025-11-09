@@ -29,7 +29,51 @@ DEFAULT_PREFS = {
     "auto_cache_update": True,  # Enable automatic cache updates when app gains focus
     "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
-    "window_proportional_scaling": True  # Scale all windows proportionally when one is changed
+    "window_proportional_scaling": True,  # Scale all windows proportionally when one is changed
+    "current_media_player": "mpc"  # Default media player
+}
+
+media_players = {
+    "win": {
+        "mpc": [
+            "C:\\Program Files\\MPC-HC\\mpc-hc64.exe",
+            "C:\\Program Files (x86)\\MPC-HC\\mpc-hc.exe",
+            "C:\\Program Files (x86)\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe",
+            "C:\\Program Files\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe",
+            "/startpos"
+        ],
+        "vlc": [
+            "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
+            "C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe",
+            "C:\\Program Files (x86)\\K-Lite Codec Pack\\VLC\\vlc.exe",
+            "C:\\Program Files\\K-Lite Codec Pack\\VLC\\vlc.exe",
+            "--start-time="
+        ]
+    },
+    "darwin": {
+        "vlc": [
+            "/Applications/VLC.app/Contents/MacOS/VLC",
+            "--start-time="
+        ]
+    },
+    "linux": {
+        "mpv": [
+            "/usr/bin/mpv",
+            "--start="
+        ],
+        "celluloid": [
+            "/usr/bin/celluloid",
+            "--mpv-start="
+        ],
+        "vlc": [
+            "/usr/bin/vlc",
+            "--start-time="
+        ],
+        "smplayer": [
+            "/usr/bin/smplayer",
+            "-pos"
+        ]
+    }
 }
 
 # Global variable for DaVinci Resolve script module
@@ -1696,45 +1740,47 @@ class RapidMomentNavigator:
             
             # Construct the command for MPC-HC
             # Documentation says correct parameter is /startpos hh:mm:ss
-            mpc_path = "C:\\Program Files\\MPC-HC\\mpc-hc64.exe"
+            current_media_player = self.preferences["current_media_player"]
+            current_media_player_index = 0
+            media_player_path = media_players[sys.platform][current_media_player][current_media_player_index]
             
-            # Check if default MPC path exists
-            if not os.path.exists(mpc_path):
+            # Check if default media player path exists
+            while not os.path.exists(media_player_path):
                 # Try alternative paths
-                alternative_paths = [
-                    "C:\\Program Files (x86)\\MPC-HC\\mpc-hc.exe",
-                    "C:\\Program Files (x86)\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe",
-                    "C:\\Program Files\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe"
-                ]
-                
-                for path in alternative_paths:
-                    if os.path.exists(path):
-                        mpc_path = path
-                        break
+                current_media_player_index += 1
+                media_player_path = media_players[sys.platform][current_media_player][current_media_player_index]
+                if current_media_player_index >= len(media_players[sys.platform][current_media_player]) - 1:
+                    self.debug_print(f"No more media player paths to try for {current_media_player}")
+                    break
                         
-            self.debug_print(f"Using MPC path: {mpc_path}")
+            self.debug_print(f"Using media player path: {media_player_path}")
             
             # Try method 1: Using /startpos as a separate parameter
-            command = [mpc_path, abs_video_path, "/startpos", start_time]
+            if("=" in media_players[sys.platform][current_media_player][-1]):
+                command = [media_player_path, abs_video_path, f"{media_players[sys.platform][current_media_player][-1]}{start_time}"]
+            else:
+                command = [media_player_path, abs_video_path, media_players[sys.platform][current_media_player][-1], start_time]
+
             self.debug_print(f"Executing command: {command}")
             subprocess.Popen(command)
             
         except Exception as e:
-            self.debug_print(f"Error launching Media Player Classic: {str(e)}")
-            self.status_var.set(f"Error launching Media Player Classic: {e}")
+            self.debug_print(f"Error launching media player: {str(e)}")
+            self.status_var.set(f"Error launching media player: {e}")
             
+            # TECHNICAL DEBT: Adjust fallback methods to work cross platform
             try:
                 # Try method 2: Using shell=True with space-separated arguments
                 self.debug_print("Trying alternate launch method with shell=True")
                 abs_video_path = self.get_absolute_path(video_file)
-                command = f'start "" "{mpc_path}" "{abs_video_path}" /startpos {start_time}'
+                command = f'start "" "{media_player_path}" "{abs_video_path}" /startpos {start_time}'
                 self.debug_print(f"Shell command: {command}")
                 subprocess.Popen(command, shell=True)
             except Exception as e2:
                 try:
                     # Try method 3: Using shell=True with parameter combined with value
                     self.debug_print("Trying another alternative launch method")
-                    command = f'start "" "{mpc_path}" "{abs_video_path}" /startpos={start_time}'
+                    command = f'start "" "{media_player_path}" "{abs_video_path}" /startpos={start_time}'
                     self.debug_print(f"Shell command: {command}")
                     subprocess.Popen(command, shell=True)
                 except Exception as e3:
