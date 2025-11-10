@@ -4515,13 +4515,25 @@ except Exception as e:
         settings_dialog.transient(self.root)
         settings_dialog.grab_set()
         
-        # Set minimum window size
-        settings_dialog.minsize(500, 300)
+        # Set minimum window size to ensure Close button is always visible
+        settings_dialog.minsize(500, 500)
         
         # Make dialog modal
         settings_dialog.focus_set()
         
-        # Create main frame with padding
+        # Create buttons frame FIRST and pack at bottom (so it stays at bottom when resizing)
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(side="bottom", fill="x", padx=15, pady=15)
+        
+        # Close button (no save needed since auto-save)
+        close_btn = ttk.Button(
+            buttons_frame, 
+            text="Close", 
+            command=settings_dialog.destroy
+        )
+        close_btn.pack(side="right", padx=5)
+        
+        # Create main frame with padding (pack after buttons so it fills remaining space)
         main_frame = ttk.Frame(settings_dialog, padding=15)
         main_frame.pack(fill="both", expand=True)
         
@@ -4704,18 +4716,6 @@ except Exception as e:
             wraplength=450
         )
         custom_info.pack(anchor="w", pady=(10, 0))
-        
-        # Buttons frame
-        buttons_frame = ttk.Frame(settings_dialog)
-        buttons_frame.pack(fill="x", padx=15, pady=15)
-        
-        # Close button (no save needed since auto-save)
-        close_btn = ttk.Button(
-            buttons_frame, 
-            text="Close", 
-            command=settings_dialog.destroy
-        )
-        close_btn.pack(side="right", padx=5)
 
     def _show_add_edit_player_dialog(self, parent, platform, player_name, player_var, player_dropdown, info_callback):
         """Show dialog to add or edit a custom media player"""
@@ -4992,7 +4992,8 @@ except Exception as e:
         window_labels = {
             "main_window": "Main Application Window",
             "minimum_duration_dialog": "Minimum Duration Settings Dialog",
-            "general_settings_dialog": "General Settings Dialog", 
+            "general_settings_dialog": "General Settings Dialog",
+            "media_player_dialog": "Media Player Settings Dialog",
             "editor_dialog": "Editor Navigator Dialog",
             "debug_window": "Debug Console Window",
             "window_sizing_dialog": "Window Sizing Dialog (this dialog)",
