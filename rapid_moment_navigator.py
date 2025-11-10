@@ -34,44 +34,65 @@ DEFAULT_PREFS = {
 }
 
 media_players = {
-    "win": {
+    "win32": {
         "mpc": [
             "C:\\Program Files\\MPC-HC\\mpc-hc64.exe",
             "C:\\Program Files (x86)\\MPC-HC\\mpc-hc.exe",
             "C:\\Program Files (x86)\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe",
             "C:\\Program Files\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe",
-            "/startpos"
+            {
+                "requires_hms": True,
+                "command": "/startpos"
+            }
         ],
         "vlc": [
             "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
             "C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe",
             "C:\\Program Files (x86)\\K-Lite Codec Pack\\VLC\\vlc.exe",
             "C:\\Program Files\\K-Lite Codec Pack\\VLC\\vlc.exe",
-            "--start-time="
+            {
+                "requires_hms": False,
+                "command": "--start-time="
+            }
         ]
     },
     "darwin": {
         "vlc": [
             "/Applications/VLC.app/Contents/MacOS/VLC",
-            "--start-time="
+            {
+                "requires_hms": False,
+                "command": "--start-time="
+            }
         ]
     },
     "linux": {
         "mpv": [
             "/usr/bin/mpv",
-            "--start="
+            {
+                "requires_hms": False,
+                "command": "--start="
+            }
         ],
         "celluloid": [
             "/usr/bin/celluloid",
-            "--mpv-start="
+            {
+                "requires_hms": False,
+                "command": "--mpv-start="
+            }
         ],
         "vlc": [
             "/usr/bin/vlc",
-            "--start-time="
+            {
+                "requires_hms": False,
+                "command": "--start-time="
+            }
         ],
         "smplayer": [
             "/usr/bin/smplayer",
-            "-pos"
+            {
+                "requires_hms": False,
+                "command": "-pos"
+            }
         ]
     }
 }
@@ -1539,9 +1560,8 @@ class RapidMomentNavigator:
                 # Second pass: individual search
                 for entry in all_entries:
                     if keyword.lower() in entry['normalized_text'].lower():
-                        # Convert comma separator to period for MPC
-                        mpc_start_time = entry['start_time'].replace(',', '.')
-                        mpc_time_format = mpc_start_time.split('.')[0]
+                        # Convert start time to seconds for media player compatibility
+                        start_time_seconds = self._timecode_to_seconds(entry['start_time'])
                         
                         result = {
                             'file': subtitle_file,
@@ -1549,7 +1569,7 @@ class RapidMomentNavigator:
                             'start_time': entry['start_time'],
                             'end_time': entry['end_time'],
                             'text': entry['text'],
-                            'mpc_start_time': mpc_time_format,
+                            'start_time_seconds': start_time_seconds,
                             'clean_text': entry['clean_text'],
                             'search_type': 'individual'
                         }
@@ -1728,8 +1748,9 @@ class RapidMomentNavigator:
             video_info = self.subtitle_to_video_map[subtitle_file]
             video_file = video_info["path"]
             self.debug_print(f"Found matching video file: {video_file}")
-            self.play_video(video_file, result['mpc_start_time'])
-            self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['mpc_start_time']}")
+            start_time_seconds = result['start_time_seconds']
+            self.play_video(video_file, start_time_seconds)
+            self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['start_time']}")
         else:
             self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
             self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
@@ -1740,34 +1761,51 @@ class RapidMomentNavigator:
         self.debug_print(f"Converting relative path: {relative_path} to absolute: {abs_path}")
         return abs_path
     
-    def play_video(self, video_file, start_time):
-        """Launch Media Player Classic with the video at the specified time"""
+    def play_video(self, video_file, start_time_seconds):
+        """Launch media player with the video at the specified time (in seconds)"""
         try:
             # Convert the relative video path to absolute
             abs_video_path = self.get_absolute_path(video_file)
             
-            # Construct the command for MPC-HC
-            # Documentation says correct parameter is /startpos hh:mm:ss
+            # Get current media player configuration
             current_media_player = self.preferences["current_media_player"]
             current_media_player_index = 0
-            media_player_path = media_players[sys.platform][current_media_player][current_media_player_index]
+            player_config = media_players[sys.platform][current_media_player]
+            media_player_path = player_config[current_media_player_index]
             
             # Check if default media player path exists
             while not os.path.exists(media_player_path):
                 # Try alternative paths
                 current_media_player_index += 1
-                media_player_path = media_players[sys.platform][current_media_player][current_media_player_index]
-                if current_media_player_index >= len(media_players[sys.platform][current_media_player]) - 1:
+                media_player_path = player_config[current_media_player_index]
+                if current_media_player_index >= len(player_config) - 1:  # -1 because last item is config dict
                     self.debug_print(f"No more media player paths to try for {current_media_player}")
                     break
                         
             self.debug_print(f"Using media player path: {media_player_path}")
             
-            # Try method 1: Using /startpos as a separate parameter
-            if("=" in media_players[sys.platform][current_media_player][-1]):
-                command = [media_player_path, abs_video_path, f"{media_players[sys.platform][current_media_player][-1]}{start_time}"]
+            # Get configuration (last item in config list)
+            current_player_config = player_config[-1]
+            requires_hms = current_player_config["requires_hms"]
+            command_param = current_player_config["command"]
+            
+            # Format the start time based on player requirements
+            if requires_hms:
+                # Convert to HH:MM:SS format
+                start_time_str = self._seconds_to_timecode(start_time_seconds)
+                format_desc = "HH:MM:SS"
             else:
-                command = [media_player_path, abs_video_path, media_players[sys.platform][current_media_player][-1], start_time]
+                # Use numeric seconds (default)
+                start_time_str = str(int(start_time_seconds))
+                format_desc = "seconds"
+            
+            self.debug_print(f"Start time: {start_time_seconds}s formatted as '{start_time_str}' (format: {format_desc})")
+            
+            # Build command based on parameter format
+            if "=" in command_param:
+                command = [media_player_path, abs_video_path, f"{command_param}{start_time_str}"]
+            else:
+                command = [media_player_path, abs_video_path, command_param, start_time_str]
 
             self.debug_print(f"Executing command: {command}")
             subprocess.Popen(command)
@@ -1777,33 +1815,55 @@ class RapidMomentNavigator:
             self.status_var.set(f"Error launching media player: {e}")
             
             try:
-                # Try method 2: Using shell=True with space-separated arguments
+                # Try method 2: Using shell=True with space-separated arguments (Windows)
                 self.debug_print("Trying alternate launch method with shell=True")
                 abs_video_path = self.get_absolute_path(video_file)
-                if("=" in media_players[sys.platform][current_media_player][-1]):
-                    command = f'start "" "{media_player_path}" "{abs_video_path}" {media_players[sys.platform][current_media_player][-1]}{start_time}'
+                player_config = media_players[sys.platform][current_media_player]
+                current_player_config = player_config[-1]
+                requires_hms = current_player_config["requires_hms"]
+                command_param = current_player_config["command"]
+                
+                # Format time appropriately
+                if requires_hms:
+                    start_time_str = self._seconds_to_timecode(start_time_seconds)
                 else:
-                    command = f'start "" "{media_player_path}" "{abs_video_path}" {media_players[sys.platform][current_media_player][-1]} {start_time}'
+                    start_time_str = str(int(start_time_seconds))
+                
+                if "=" in command_param:
+                    command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param}{start_time_str}'
+                else:
+                    command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param} {start_time_str}'
                 self.debug_print(f"Shell command: {command}")
                 subprocess.Popen(command, shell=True)
             except Exception as e2:
                 try:
-                    # Try method 3: Using shell=True with parameter combined with value
+                    # Try method 3: Using shell=True with parameter combined with value (Windows)
                     self.debug_print("Trying another alternative launch method")
-                    if("=" in media_players[sys.platform][current_media_player][-1]):
-                        command = f'start "" "{media_player_path}" "{abs_video_path}" {media_players[sys.platform][current_media_player][-1]}={start_time}'
+                    if "=" in command_param:
+                        command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param}={start_time_str}'
                     else:
-                        command = f'start "" "{media_player_path}" "{abs_video_path}" {media_players[sys.platform][current_media_player][-1]} {start_time}'
+                        command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param} {start_time_str}'
                     self.debug_print(f"Shell command: {command}")
                     subprocess.Popen(command, shell=True)
                 except Exception as e3:
                     self.debug_print(f"Error with all launch methods, falling back to default player")
                     
-                    # Fall back to default player if default media player fails
+                    # Fall back to default player if default media player fails (cross-platform)
                     try:
                         abs_video_path = self.get_absolute_path(video_file)
-                        os.startfile(abs_video_path)
-                        self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                        
+                        if sys.platform == "win32":
+                            # Windows: use os.startfile
+                            os.startfile(abs_video_path)
+                            self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                        elif sys.platform == "darwin":
+                            # macOS: use 'open' command
+                            subprocess.Popen(["open", abs_video_path])
+                            self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                        else:
+                            # Linux: use 'xdg-open' command
+                            subprocess.Popen(["xdg-open", abs_video_path])
+                            self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
                     except Exception as e4:
                         self.debug_print(f"Error opening with default player: {str(e4)}")
                         self.status_var.set(f"Error opening video: {e4}")
@@ -4427,10 +4487,18 @@ except Exception as e:
             selected_player = player_var.get()
             if selected_player and current_platform in media_players and selected_player in media_players[current_platform]:
                 player_data = media_players[current_platform][selected_player]
-                # Get the start command (last item in the list)
-                start_cmd = player_data[-1]
-                # Get the paths (all items except the last)
+                # Get the configuration (last item in the list)
+                current_player_config = player_data[-1]
+                requires_hms = current_player_config["requires_hms"]
+                start_cmd = current_player_config["command"]
+                # Get the paths (all items except the last one)
                 paths = player_data[:-1]
+                
+                # Format description
+                if requires_hms:
+                    format_desc = "HH:MM:SS (required)"
+                else:
+                    format_desc = "seconds (default)"
                 
                 # Check which path exists
                 existing_path = None
@@ -4440,9 +4508,9 @@ except Exception as e:
                         break
                 
                 if existing_path:
-                    info_text = f"Player: {selected_player}\nPath: {existing_path}\nStart command: {start_cmd}"
+                    info_text = f"Player: {selected_player}\nPath: {existing_path}\nStart command: {start_cmd}\nTime format: {format_desc}"
                 else:
-                    info_text = f"Player: {selected_player}\nStart command: {start_cmd}\n⚠ Warning: Player executable not found at default locations"
+                    info_text = f"Player: {selected_player}\nStart command: {start_cmd}\nTime format: {format_desc}\n⚠ Warning: Player executable not found at default locations"
                 
                 info_label.config(text=info_text)
             else:
@@ -5642,15 +5710,15 @@ except Exception as e:
             
             if keyword_cleaned in combined:
                 # Found a true consecutive match - keyword spans across entries
-                mpc_start_time = current['start_time'].replace(',', '.')
-                mpc_time_format = mpc_start_time.split('.')[0]
+                # Convert start time to seconds for media player compatibility
+                start_time_seconds = self._timecode_to_seconds(current['start_time'])
                 
                 result = {
                     'num': current['num'],
                     'start_time': current['start_time'],
                     'end_time': current['end_time'],  # Use original end time of first entry
                     'text': current['text'] + ' [continues...]',  # Indicate it continues
-                    'mpc_start_time': mpc_time_format,
+                    'start_time_seconds': start_time_seconds,
                     'clean_text': current['clean_text'] + ' [spans to next entry]',
                     'search_type': 'consecutive'
                 }
