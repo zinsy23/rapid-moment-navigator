@@ -4722,9 +4722,23 @@ except Exception as e:
         is_edit = player_name is not None
         dialog_title = f"Edit Player: {player_name}" if is_edit else "Add Custom Player"
         
+        # Get parent window position and size for centering
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        
+        # Dialog size
+        dialog_width = 600
+        dialog_height = 500
+        
+        # Calculate centered position
+        dialog_x = parent_x + (parent_width - dialog_width) // 2
+        dialog_y = parent_y + (parent_height - dialog_height) // 2
+        
         dialog = tk.Toplevel(parent)
         dialog.title(dialog_title)
-        dialog.geometry("600x500")
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
         dialog.transient(parent)
         dialog.grab_set()
         
