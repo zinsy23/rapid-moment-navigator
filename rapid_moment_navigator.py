@@ -1896,42 +1896,18 @@ class RapidMomentNavigator:
             self.debug_print(f"Error launching media player: {str(e)}")
             self.status_var.set(f"Error launching media player: {e}")
             
-            try:
-                # Try method 2: Using shell=True with space-separated arguments (Windows)
-                self.debug_print("Trying alternate launch method with shell=True")
-                abs_video_path = self.get_absolute_path(video_file)
-                player_config = self.media_players[sys.platform][current_media_player]
-                current_player_config = player_config[-1]
-                requires_hms = current_player_config["requires_hms"]
-                command_param = current_player_config.get("command", "")
-                
-                # Check if start command is provided
-                if not command_param:
-                    self.debug_print(f"⚠ Warning: No start command configured for '{current_media_player}'")
-                    self.status_var.set(f"⚠ Opening video without timestamp - '{current_media_player}' has no start command configured")
-                    command = f'start "" "{media_player_path}" "{abs_video_path}"'
-                    self.debug_print(f"Shell command (no timestamp): {command}")
-                    subprocess.Popen(command, shell=True)
-                    return
-                
-                # Format time appropriately
-                if requires_hms:
-                    start_time_str = self._seconds_to_timecode(start_time_seconds)
-                else:
-                    start_time_str = str(int(start_time_seconds))
-                
-                if "=" in command_param:
-                    command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param}{start_time_str}'
-                else:
-                    command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param} {start_time_str}'
-                self.debug_print(f"Shell command: {command}")
-                subprocess.Popen(command, shell=True)
-            except Exception as e2:
+            # Fallback methods 2 and 3 are Windows-specific (use 'start' command)
+            if sys.platform == "win32":
                 try:
-                    # Try method 3: Using shell=True with parameter combined with value (Windows)
-                    self.debug_print("Trying another alternative launch method")
+                    # Try method 2: Using shell=True with space-separated arguments (Windows only)
+                    self.debug_print("Trying alternate launch method with shell=True (Windows)")
+                    abs_video_path = self.get_absolute_path(video_file)
+                    player_config = self.media_players[sys.platform][current_media_player]
+                    current_player_config = player_config[-1]
+                    requires_hms = current_player_config["requires_hms"]
+                    command_param = current_player_config.get("command", "")
                     
-                    # Check if start command is provided (use already retrieved command_param)
+                    # Check if start command is provided
                     if not command_param:
                         self.debug_print(f"⚠ Warning: No start command configured for '{current_media_player}'")
                         self.status_var.set(f"⚠ Opening video without timestamp - '{current_media_player}' has no start command configured")
@@ -1940,34 +1916,61 @@ class RapidMomentNavigator:
                         subprocess.Popen(command, shell=True)
                         return
                     
+                    # Format time appropriately
+                    if requires_hms:
+                        start_time_str = self._seconds_to_timecode(start_time_seconds)
+                    else:
+                        start_time_str = str(int(start_time_seconds))
+                    
                     if "=" in command_param:
-                        command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param}={start_time_str}'
+                        command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param}{start_time_str}'
                     else:
                         command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param} {start_time_str}'
                     self.debug_print(f"Shell command: {command}")
                     subprocess.Popen(command, shell=True)
-                except Exception as e3:
-                    self.debug_print(f"Error with all launch methods, falling back to default player")
-                    
-                    # Fall back to default player if default media player fails (cross-platform)
+                except Exception as e2:
                     try:
-                        abs_video_path = self.get_absolute_path(video_file)
+                        # Try method 3: Using shell=True with parameter combined with value (Windows only)
+                        self.debug_print("Trying another alternative launch method (Windows)")
                         
-                        if sys.platform == "win32":
-                            # Windows: use os.startfile
-                            os.startfile(abs_video_path)
-                            self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
-                        elif sys.platform == "darwin":
-                            # macOS: use 'open' command
-                            subprocess.Popen(["open", abs_video_path])
-                            self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                        # Check if start command is provided (use already retrieved command_param)
+                        if not command_param:
+                            self.debug_print(f"⚠ Warning: No start command configured for '{current_media_player}'")
+                            self.status_var.set(f"⚠ Opening video without timestamp - '{current_media_player}' has no start command configured")
+                            command = f'start "" "{media_player_path}" "{abs_video_path}"'
+                            self.debug_print(f"Shell command (no timestamp): {command}")
+                            subprocess.Popen(command, shell=True)
+                            return
+                        
+                        if "=" in command_param:
+                            command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param}={start_time_str}'
                         else:
-                            # Linux: use 'xdg-open' command
-                            subprocess.Popen(["xdg-open", abs_video_path])
-                            self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
-                    except Exception as e4:
-                        self.debug_print(f"Error opening with default player: {str(e4)}")
-                        self.status_var.set(f"Error opening video: {e4}")
+                            command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param} {start_time_str}'
+                        self.debug_print(f"Shell command: {command}")
+                        subprocess.Popen(command, shell=True)
+                    except Exception as e3:
+                        self.debug_print(f"Error with all Windows launch methods, falling back to default player")
+            
+            # Final fallback: Use system default player (cross-platform)
+            # This runs if: (1) not Windows, or (2) all Windows methods failed
+            try:
+                abs_video_path = self.get_absolute_path(video_file)
+                
+                if sys.platform == "win32":
+                    # Windows: use os.startfile
+                    os.startfile(abs_video_path)
+                    self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                elif sys.platform == "darwin":
+                    # macOS: use 'open' command
+                    subprocess.Popen(["open", abs_video_path])
+                    self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                else:
+                    # Linux: use 'xdg-open' command
+                    subprocess.Popen(["xdg-open", abs_video_path])
+                    self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+            except Exception as e4:
+                self.debug_print(f"Error opening with default player: {str(e4)}")
+                self.status_var.set(f"Error opening video: {e4}")
 
     def _ctrl_backspace_handler(self, event):
         """Handle Ctrl+Backspace to delete the word to the left of cursor"""
