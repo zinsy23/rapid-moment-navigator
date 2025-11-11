@@ -29,8 +29,129 @@ DEFAULT_PREFS = {
     "auto_cache_update": True,  # Enable automatic cache updates when app gains focus
     "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
-    "window_proportional_scaling": True  # Scale all windows proportionally when one is changed
+    "window_proportional_scaling": True,  # Scale all windows proportionally when one is changed
+    # Note: current_media_player is dynamically set based on OS platform
 }
+
+media_players = {
+    "win32": {
+        "mpc": [
+            "C:\\Program Files\\MPC-HC\\mpc-hc64.exe",
+            "C:\\Program Files (x86)\\MPC-HC\\mpc-hc.exe",
+            "C:\\Program Files (x86)\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe",
+            "C:\\Program Files\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe",
+            {
+                "requires_hms": True,
+                "command": "/startpos"
+            }
+        ],
+        "vlc": [
+            "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
+            "C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe",
+            "C:\\Program Files (x86)\\K-Lite Codec Pack\\VLC\\vlc.exe",
+            "C:\\Program Files\\K-Lite Codec Pack\\VLC\\vlc.exe",
+            {
+                "requires_hms": False,
+                "command": "--start-time="
+            }
+        ]
+    },
+    "darwin": {
+        "vlc": [
+            "/Applications/VLC.app/Contents/MacOS/VLC",
+            {
+                "requires_hms": False,
+                "command": "--start-time="
+            }
+        ]
+    },
+    "linux": {
+        "mpv": [
+            "/usr/bin/mpv",
+            {
+                "requires_hms": False,
+                "command": "--start="
+            }
+        ],
+        "celluloid": [
+            "/usr/bin/celluloid",
+            {
+                "requires_hms": False,
+                "command": "--mpv-start="
+            }
+        ],
+        "vlc": [
+            "/usr/bin/vlc",
+            {
+                "requires_hms": False,
+                "command": "--start-time="
+            }
+        ],
+        "smplayer": [
+            "/usr/bin/smplayer",
+            {
+                "requires_hms": False,
+                "command": "-pos"
+            }
+        ]
+    }
+}
+
+def get_merged_media_players(custom_players=None):
+    """
+    Merge default media players with custom ones from preferences.
+    Custom players override defaults for the same player name.
+    
+    Args:
+        custom_players (dict): Custom media players from preferences
+        
+    Returns:
+        dict: Merged media players configuration
+    """
+    # Start with a deep copy of defaults
+    import copy
+    merged = copy.deepcopy(media_players)
+    
+    if not custom_players:
+        return merged
+    
+    # Merge custom players for each platform
+    for platform, players in custom_players.items():
+        if platform not in merged:
+            merged[platform] = {}
+        
+        for player_name, player_config in players.items():
+            # Custom player overrides or adds to defaults
+            if player_name in merged[platform]:
+                # Override existing player
+                # Merge: use custom paths if provided, otherwise keep defaults
+                default_config = merged[platform][player_name]
+                custom_paths = player_config.get("paths", [])
+                
+                # Build merged config
+                merged_paths = custom_paths if custom_paths else default_config[:-1]
+                merged_settings = {
+                    "requires_hms": player_config.get("requires_hms", default_config[-1]["requires_hms"]),
+                    "command": player_config.get("command", default_config[-1]["command"])
+                }
+                
+                merged[platform][player_name] = merged_paths + [merged_settings]
+            else:
+                # New custom player
+                merged[platform][player_name] = player_config["paths"] + [{
+                    "requires_hms": player_config.get("requires_hms", False),
+                    "command": player_config.get("command", "")
+                }]
+    
+    return merged
+
+def get_default_media_player():
+    """Get the default media player for the current OS platform"""
+    platform = sys.platform
+    if platform in media_players and media_players[platform]:
+        # Return the first media player key for the current platform
+        return list(media_players[platform].keys())[0]
+    return None
 
 # Global variable for DaVinci Resolve script module
 dvr_script = None
@@ -194,6 +315,10 @@ class RapidMomentNavigator:
         
         # Initialize preferences first
         self.preferences = self.load_preferences()
+        
+        # Merge default and custom media players
+        custom_players = self.preferences.get("custom_media_players", {})
+        self.media_players = get_merged_media_players(custom_players)
         
         # Calculate the centered position for the main window using saved or default size
         window_width, window_height = self.get_window_size("main_window")
@@ -813,6 +938,18 @@ class RapidMomentNavigator:
             self.show_dropdown.current(0)
         
         # Force immediate update
+        self.root.update_idletasks()
+
+    def _refresh_media_player_dropdown(self, dropdown, platform, info_callback=None):
+        """Refresh media player dropdown with current available players"""
+        new_available = list(self.media_players[platform].keys()) if platform in self.media_players else []
+        dropdown['values'] = new_available
+        
+        # Update info display if callback provided
+        if info_callback:
+            info_callback()
+        
+        # Force immediate UI update
         self.root.update_idletasks()
 
     def filter_nested_directories(self, directories):
@@ -1487,9 +1624,8 @@ class RapidMomentNavigator:
                 # Second pass: individual search
                 for entry in all_entries:
                     if keyword.lower() in entry['normalized_text'].lower():
-                        # Convert comma separator to period for MPC
-                        mpc_start_time = entry['start_time'].replace(',', '.')
-                        mpc_time_format = mpc_start_time.split('.')[0]
+                        # Convert start time to seconds for media player compatibility
+                        start_time_seconds = self._timecode_to_seconds(entry['start_time'])
                         
                         result = {
                             'file': subtitle_file,
@@ -1497,7 +1633,7 @@ class RapidMomentNavigator:
                             'start_time': entry['start_time'],
                             'end_time': entry['end_time'],
                             'text': entry['text'],
-                            'mpc_start_time': mpc_time_format,
+                            'start_time_seconds': start_time_seconds,
                             'clean_text': entry['clean_text'],
                             'search_type': 'individual'
                         }
@@ -1676,8 +1812,9 @@ class RapidMomentNavigator:
             video_info = self.subtitle_to_video_map[subtitle_file]
             video_file = video_info["path"]
             self.debug_print(f"Found matching video file: {video_file}")
-            self.play_video(video_file, result['mpc_start_time'])
-            self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['mpc_start_time']}")
+            start_time_seconds = result['start_time_seconds']
+            self.play_video(video_file, start_time_seconds)
+            self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['start_time']}")
         else:
             self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
             self.status_var.set(f"No matching video file found for {os.path.basename(subtitle_file)}")
@@ -1688,66 +1825,152 @@ class RapidMomentNavigator:
         self.debug_print(f"Converting relative path: {relative_path} to absolute: {abs_path}")
         return abs_path
     
-    def play_video(self, video_file, start_time):
-        """Launch Media Player Classic with the video at the specified time"""
+    def play_video(self, video_file, start_time_seconds):
+        """Launch media player with the video at the specified time (in seconds)"""
         try:
             # Convert the relative video path to absolute
             abs_video_path = self.get_absolute_path(video_file)
             
-            # Construct the command for MPC-HC
-            # Documentation says correct parameter is /startpos hh:mm:ss
-            mpc_path = "C:\\Program Files\\MPC-HC\\mpc-hc64.exe"
+            # Get current media player configuration
+            current_media_player = self.preferences["current_media_player"]
             
-            # Check if default MPC path exists
-            if not os.path.exists(mpc_path):
+            # Validate that the selected player exists for this platform
+            if sys.platform not in self.media_players or current_media_player not in self.media_players[sys.platform]:
+                self.debug_print(f"Selected media player '{current_media_player}' not available on {sys.platform}, using default")
+                current_media_player = get_default_media_player()
+                self.preferences["current_media_player"] = current_media_player
+                self.save_preferences()
+            
+            current_media_player_index = 0
+            player_config = self.media_players[sys.platform][current_media_player]
+            media_player_path = player_config[current_media_player_index]
+            
+            # Check if default media player path exists
+            while not os.path.exists(media_player_path):
                 # Try alternative paths
-                alternative_paths = [
-                    "C:\\Program Files (x86)\\MPC-HC\\mpc-hc.exe",
-                    "C:\\Program Files (x86)\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe",
-                    "C:\\Program Files\\K-Lite Codec Pack\\MPC-HC64\\mpc-hc64.exe"
-                ]
-                
-                for path in alternative_paths:
-                    if os.path.exists(path):
-                        mpc_path = path
-                        break
+                current_media_player_index += 1
+                media_player_path = player_config[current_media_player_index]
+                if current_media_player_index >= len(player_config) - 1:  # -1 because last item is config dict
+                    self.debug_print(f"No more media player paths to try for {current_media_player}")
+                    break
                         
-            self.debug_print(f"Using MPC path: {mpc_path}")
+            self.debug_print(f"Using media player path: {media_player_path}")
             
-            # Try method 1: Using /startpos as a separate parameter
-            command = [mpc_path, abs_video_path, "/startpos", start_time]
+            # Get configuration (last item in config list)
+            current_player_config = player_config[-1]
+            requires_hms = current_player_config["requires_hms"]
+            command_param = current_player_config.get("command", "")
+            
+            # Check if start command is provided
+            if not command_param:
+                self.debug_print(f"⚠ Warning: No start command configured for '{current_media_player}'")
+                self.status_var.set(f"⚠ Opening video without timestamp - '{current_media_player}' has no start command configured")
+                # Open video without timestamp
+                command = [media_player_path, abs_video_path]
+                self.debug_print(f"Executing command (no timestamp): {command}")
+                subprocess.Popen(command)
+                return
+            
+            # Format the start time based on player requirements
+            if requires_hms:
+                # Convert to HH:MM:SS format
+                start_time_str = self._seconds_to_timecode(start_time_seconds)
+                format_desc = "HH:MM:SS"
+            else:
+                # Use numeric seconds (default)
+                start_time_str = str(int(start_time_seconds))
+                format_desc = "seconds"
+            
+            self.debug_print(f"Start time: {start_time_seconds}s formatted as '{start_time_str}' (format: {format_desc})")
+            
+            # Build command based on parameter format
+            if "=" in command_param:
+                command = [media_player_path, abs_video_path, f"{command_param}{start_time_str}"]
+            else:
+                command = [media_player_path, abs_video_path, command_param, start_time_str]
+
             self.debug_print(f"Executing command: {command}")
             subprocess.Popen(command)
             
         except Exception as e:
-            self.debug_print(f"Error launching Media Player Classic: {str(e)}")
-            self.status_var.set(f"Error launching Media Player Classic: {e}")
+            self.debug_print(f"Error launching media player: {str(e)}")
+            self.status_var.set(f"Error launching media player: {e}")
             
-            try:
-                # Try method 2: Using shell=True with space-separated arguments
-                self.debug_print("Trying alternate launch method with shell=True")
-                abs_video_path = self.get_absolute_path(video_file)
-                command = f'start "" "{mpc_path}" "{abs_video_path}" /startpos {start_time}'
-                self.debug_print(f"Shell command: {command}")
-                subprocess.Popen(command, shell=True)
-            except Exception as e2:
+            # Fallback methods 2 and 3 are Windows-specific (use 'start' command)
+            if sys.platform == "win32":
                 try:
-                    # Try method 3: Using shell=True with parameter combined with value
-                    self.debug_print("Trying another alternative launch method")
-                    command = f'start "" "{mpc_path}" "{abs_video_path}" /startpos={start_time}'
+                    # Try method 2: Using shell=True with space-separated arguments (Windows only)
+                    self.debug_print("Trying alternate launch method with shell=True (Windows)")
+                    abs_video_path = self.get_absolute_path(video_file)
+                    player_config = self.media_players[sys.platform][current_media_player]
+                    current_player_config = player_config[-1]
+                    requires_hms = current_player_config["requires_hms"]
+                    command_param = current_player_config.get("command", "")
+                    
+                    # Check if start command is provided
+                    if not command_param:
+                        self.debug_print(f"⚠ Warning: No start command configured for '{current_media_player}'")
+                        self.status_var.set(f"⚠ Opening video without timestamp - '{current_media_player}' has no start command configured")
+                        command = f'start "" "{media_player_path}" "{abs_video_path}"'
+                        self.debug_print(f"Shell command (no timestamp): {command}")
+                        subprocess.Popen(command, shell=True)
+                        return
+                    
+                    # Format time appropriately
+                    if requires_hms:
+                        start_time_str = self._seconds_to_timecode(start_time_seconds)
+                    else:
+                        start_time_str = str(int(start_time_seconds))
+                    
+                    if "=" in command_param:
+                        command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param}{start_time_str}'
+                    else:
+                        command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param} {start_time_str}'
                     self.debug_print(f"Shell command: {command}")
                     subprocess.Popen(command, shell=True)
-                except Exception as e3:
-                    self.debug_print(f"Error with all launch methods, falling back to default player")
-                    
-                    # Fall back to default player if MPC fails
+                except Exception as e2:
                     try:
-                        abs_video_path = self.get_absolute_path(video_file)
-                        os.startfile(abs_video_path)
-                        self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
-                    except Exception as e4:
-                        self.debug_print(f"Error opening with default player: {str(e4)}")
-                        self.status_var.set(f"Error opening video: {e4}")
+                        # Try method 3: Using shell=True with parameter combined with value (Windows only)
+                        self.debug_print("Trying another alternative launch method (Windows)")
+                        
+                        # Check if start command is provided (use already retrieved command_param)
+                        if not command_param:
+                            self.debug_print(f"⚠ Warning: No start command configured for '{current_media_player}'")
+                            self.status_var.set(f"⚠ Opening video without timestamp - '{current_media_player}' has no start command configured")
+                            command = f'start "" "{media_player_path}" "{abs_video_path}"'
+                            self.debug_print(f"Shell command (no timestamp): {command}")
+                            subprocess.Popen(command, shell=True)
+                            return
+                        
+                        if "=" in command_param:
+                            command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param}={start_time_str}'
+                        else:
+                            command = f'start "" "{media_player_path}" "{abs_video_path}" {command_param} {start_time_str}'
+                        self.debug_print(f"Shell command: {command}")
+                        subprocess.Popen(command, shell=True)
+                    except Exception as e3:
+                        self.debug_print(f"Error with all Windows launch methods, falling back to default player")
+            
+            # Final fallback: Use system default player (cross-platform)
+            # This runs if: (1) not Windows, or (2) all Windows methods failed
+            try:
+                abs_video_path = self.get_absolute_path(video_file)
+                
+                if sys.platform == "win32":
+                    # Windows: use os.startfile
+                    os.startfile(abs_video_path)
+                    self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                elif sys.platform == "darwin":
+                    # macOS: use 'open' command
+                    subprocess.Popen(["open", abs_video_path])
+                    self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+                else:
+                    # Linux: use 'xdg-open' command
+                    subprocess.Popen(["xdg-open", abs_video_path])
+                    self.status_var.set(f"Opened {os.path.basename(video_file)} with default player")
+            except Exception as e4:
+                self.debug_print(f"Error opening with default player: {str(e4)}")
+                self.status_var.set(f"Error opening video: {e4}")
 
     def _ctrl_backspace_handler(self, event):
         """Handle Ctrl+Backspace to delete the word to the left of cursor"""
@@ -2390,13 +2613,29 @@ except Exception as e:
                     
                     prefs["directories"] = valid_dirs
                     
+                    # Set default media player if not present or invalid for current platform
+                    # Note: We validate against default players only here. Custom players are merged later,
+                    # and further validation happens at runtime in play_video() and in the settings dialog.
+                    if "current_media_player" not in prefs or prefs["current_media_player"] is None:
+                        # Not set, use default for current platform
+                        prefs["current_media_player"] = get_default_media_player()
+                        self.debug_print(f"Set default media player for platform: {prefs['current_media_player']}")
+                    elif sys.platform in media_players and prefs["current_media_player"] not in media_players[sys.platform]:
+                        # Saved player doesn't exist for this platform (e.g., "mpc" on macOS)
+                        old_player = prefs["current_media_player"]
+                        prefs["current_media_player"] = get_default_media_player()
+                        self.debug_print(f"Media player '{old_player}' not available on {sys.platform}, using default: {prefs['current_media_player']}")
+                    
                     return prefs
         except Exception as e:
             self.debug_print(f"Error loading preferences: {e}")
             
         # Return default preferences if file doesn't exist or has errors
         self.debug_print("Using default preferences")
-        return DEFAULT_PREFS.copy()
+        default_prefs = DEFAULT_PREFS.copy()
+        # Set dynamic default media player
+        default_prefs["current_media_player"] = get_default_media_player()
+        return default_prefs
     
     def save_preferences(self):
         """Save preferences to file"""
@@ -2417,6 +2656,7 @@ except Exception as e:
             "main_window": (800, 600),
             "minimum_duration_dialog": (400, 380),
             "general_settings_dialog": (520, 350),
+            "media_player_dialog": (550, 400),
             "editor_dialog": (600, 500),
             "debug_window": (800, 425),
             "window_sizing_dialog": (600, 700),
@@ -4270,6 +4510,411 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
 
+    def _show_media_player_dialog(self):
+        """Show a dialog for selecting and configuring media players"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("media_player_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
+        settings_dialog = tk.Toplevel(self.root)
+        settings_dialog.title("Media Player Settings")
+        settings_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
+        settings_dialog.transient(self.root)
+        settings_dialog.grab_set()
+        
+        # Set minimum window size to ensure Close button is always visible
+        settings_dialog.minsize(500, 500)
+        
+        # Make dialog modal
+        settings_dialog.focus_set()
+        
+        # Create buttons frame FIRST and pack at bottom (so it stays at bottom when resizing)
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(side="bottom", fill="x", padx=15, pady=15)
+        
+        # Close button (no save needed since auto-save)
+        close_btn = ttk.Button(
+            buttons_frame, 
+            text="Close", 
+            command=settings_dialog.destroy
+        )
+        close_btn.pack(side="right", padx=5)
+        
+        # Create main frame with padding (pack after buttons so it fills remaining space)
+        main_frame = ttk.Frame(settings_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title label
+        ttk.Label(main_frame, text="Media Player Settings", 
+                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Media Player Selection Frame
+        player_frame = ttk.LabelFrame(main_frame, text="Default Media Player", padding=10)
+        player_frame.pack(fill="x", pady=10)
+        
+        # Get available players for current platform
+        current_platform = sys.platform
+        available_players = []
+        if current_platform in self.media_players:
+            available_players = list(self.media_players[current_platform].keys())
+        
+        # Current selection - validate it exists for this platform
+        current_player = self.preferences.get("current_media_player", get_default_media_player())
+        
+        # If saved player doesn't exist for this platform, use default
+        if current_player not in available_players:
+            current_player = get_default_media_player()
+            self.preferences["current_media_player"] = current_player
+            self.save_preferences()
+        
+        # Create dropdown for media player selection
+        player_label = ttk.Label(player_frame, text="Select Media Player:")
+        player_label.grid(row=0, column=0, sticky="w", pady=5)
+        
+        player_var = tk.StringVar(value=current_player if current_player else "")
+        
+        def on_player_changed(*args):
+            """Auto-save when media player selection changes"""
+            selected_player = player_var.get()
+            self.preferences["current_media_player"] = selected_player
+            self.save_preferences()
+            self.debug_print(f"Media player changed to: {selected_player}")
+            # Update the info label
+            update_player_info()
+        
+        player_dropdown = ttk.Combobox(
+            player_frame,
+            textvariable=player_var,
+            values=available_players,
+            state="readonly",
+            width=30
+        )
+        player_dropdown.grid(row=0, column=1, sticky="w", padx=(10, 0), pady=5)
+        player_var.trace_add("write", on_player_changed)
+        
+        # Info frame to show player details
+        info_frame = ttk.Frame(player_frame)
+        info_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        
+        info_label = ttk.Label(
+            info_frame,
+            text="",
+            wraplength=450,
+            font=("TkDefaultFont", 9),
+            foreground="gray"
+        )
+        info_label.pack(anchor="w")
+        
+        def update_player_info():
+            """Update the info label with current player details"""
+            selected_player = player_var.get()
+            if selected_player and current_platform in self.media_players and selected_player in self.media_players[current_platform]:
+                player_data = self.media_players[current_platform][selected_player]
+                # Get the configuration (last item in the list)
+                current_player_config = player_data[-1]
+                requires_hms = current_player_config["requires_hms"]
+                start_cmd = current_player_config["command"]
+                # Get the paths (all items except the last one)
+                paths = player_data[:-1]
+                
+                # Format description
+                if requires_hms:
+                    format_desc = "HH:MM:SS (required)"
+                else:
+                    format_desc = "seconds (default)"
+                
+                # Check which path exists
+                existing_path = None
+                for path in paths:
+                    if os.path.exists(path):
+                        existing_path = path
+                        break
+                
+                if existing_path:
+                    info_text = f"Player: {selected_player}\nPath: {existing_path}\nStart command: {start_cmd}\nTime format: {format_desc}"
+                else:
+                    info_text = f"Player: {selected_player}\nStart command: {start_cmd}\nTime format: {format_desc}\n⚠ Warning: Player executable not found at default locations"
+                
+                info_label.config(text=info_text)
+            else:
+                info_label.config(text="No player selected")
+        
+        # Initial info update
+        update_player_info()
+        
+        # Platform info
+        platform_label = ttk.Label(
+            main_frame,
+            text=f"Current Platform: {current_platform}\nAvailable players: {', '.join(available_players) if available_players else 'None'}",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        platform_label.pack(anchor="w", pady=(10, 0))
+        
+        # Note about auto-save
+        note_label = ttk.Label(
+            main_frame,
+            text="Settings are automatically saved when changed.",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        note_label.pack(anchor="w", pady=(5, 0))
+        
+        # Custom player management frame
+        custom_frame = ttk.LabelFrame(main_frame, text="Custom Players", padding=10)
+        custom_frame.pack(fill="x", pady=10)
+        
+        def is_custom_player(player_name):
+            """Check if a player is custom (not in defaults)"""
+            return player_name not in media_players.get(current_platform, {})
+        
+        def add_custom_player():
+            """Open dialog to add a new custom player"""
+            self._show_add_edit_player_dialog(settings_dialog, current_platform, None, player_var, player_dropdown, update_player_info)
+        
+        def edit_player():
+            """Open dialog to edit the selected player"""
+            selected = player_var.get()
+            if selected:
+                self._show_add_edit_player_dialog(settings_dialog, current_platform, selected, player_var, player_dropdown, update_player_info)
+        
+        def delete_custom_player():
+            """Delete the selected custom player"""
+            selected = player_var.get()
+            if selected and is_custom_player(selected):
+                if messagebox.askyesno("Confirm Delete", f"Delete custom player '{selected}'?"):
+                    # Remove from preferences
+                    if "custom_media_players" not in self.preferences:
+                        self.preferences["custom_media_players"] = {}
+                    if current_platform in self.preferences["custom_media_players"]:
+                        if selected in self.preferences["custom_media_players"][current_platform]:
+                            del self.preferences["custom_media_players"][current_platform][selected]
+                            self.save_preferences()
+                            
+                            # Reload merged players
+                            custom_players = self.preferences.get("custom_media_players", {})
+                            self.media_players = get_merged_media_players(custom_players)
+                            
+                            # Select first available player
+                            new_available = list(self.media_players[current_platform].keys()) if current_platform in self.media_players else []
+                            if new_available:
+                                player_var.set(new_available[0])
+                            else:
+                                player_var.set("")
+                            
+                            # Refresh dropdown
+                            self._refresh_media_player_dropdown(player_dropdown, current_platform, update_player_info)
+                            
+                            self.debug_print(f"Deleted custom player: {selected}")
+        
+        # Buttons in custom frame
+        btn_frame = ttk.Frame(custom_frame)
+        btn_frame.pack(fill="x")
+        
+        add_btn = ttk.Button(btn_frame, text="Add Custom Player", command=add_custom_player)
+        add_btn.pack(side="left", padx=5)
+        
+        edit_btn = ttk.Button(btn_frame, text="Edit Player", command=edit_player)
+        edit_btn.pack(side="left", padx=5)
+        
+        delete_btn = ttk.Button(btn_frame, text="Delete Custom Player", command=delete_custom_player)
+        delete_btn.pack(side="left", padx=5)
+        
+        # Info label for custom players
+        custom_info = ttk.Label(
+            custom_frame,
+            text="Add custom players or override default player settings for this platform.",
+            font=("TkDefaultFont", 8),
+            foreground="gray",
+            wraplength=450
+        )
+        custom_info.pack(anchor="w", pady=(10, 0))
+
+    def _show_add_edit_player_dialog(self, parent, platform, player_name, player_var, player_dropdown, info_callback):
+        """Show dialog to add or edit a custom media player"""
+        is_edit = player_name is not None
+        dialog_title = f"Edit Player: {player_name}" if is_edit else "Add Custom Player"
+        
+        # Get parent window position and size for centering
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        
+        # Dialog size
+        dialog_width = 600
+        dialog_height = 500
+        
+        # Calculate centered position
+        dialog_x = parent_x + (parent_width - dialog_width) // 2
+        dialog_y = parent_y + (parent_height - dialog_height) // 2
+        
+        dialog = tk.Toplevel(parent)
+        dialog.title(dialog_title)
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
+        dialog.transient(parent)
+        dialog.grab_set()
+        
+        # Main frame
+        main_frame = ttk.Frame(dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title
+        ttk.Label(main_frame, text=dialog_title, font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Player name
+        name_frame = ttk.Frame(main_frame)
+        name_frame.pack(fill="x", pady=5)
+        ttk.Label(name_frame, text="Player Name:", width=15).pack(side="left")
+        name_var = tk.StringVar(value=player_name if is_edit else "")
+        name_entry = ttk.Entry(name_frame, textvariable=name_var, width=40)
+        name_entry.pack(side="left", padx=5)
+        if is_edit:
+            name_entry.config(state="readonly")  # Can't rename existing players
+        
+        # Executable paths
+        paths_frame = ttk.LabelFrame(main_frame, text="Executable Paths", padding=10)
+        paths_frame.pack(fill="both", expand=True, pady=10)
+        
+        # Get existing paths if editing
+        existing_paths = []
+        if is_edit and platform in self.media_players and player_name in self.media_players[platform]:
+            player_data = self.media_players[platform][player_name]
+            existing_paths = player_data[:-1]  # All except config dict
+        
+        paths_list = tk.Listbox(paths_frame, height=6)
+        paths_list.pack(fill="both", expand=True, pady=(0, 5))
+        
+        for path in existing_paths:
+            paths_list.insert(tk.END, path)
+        
+        paths_btn_frame = ttk.Frame(paths_frame)
+        paths_btn_frame.pack(fill="x")
+        
+        def add_path():
+            path = filedialog.askopenfilename(title="Select Media Player Executable")
+            if path:
+                # Insert at beginning (index 0) so it becomes the default
+                paths_list.insert(0, path)
+                paths_list.selection_clear(0, tk.END)
+                paths_list.selection_set(0)  # Select the newly added path
+        
+        def remove_path():
+            selection = paths_list.curselection()
+            if selection:
+                paths_list.delete(selection[0])
+        
+        def set_as_default():
+            """Move selected path to the top of the list (making it the default)"""
+            selection = paths_list.curselection()
+            if selection:
+                idx = selection[0]
+                if idx > 0:  # Only move if not already at top
+                    path = paths_list.get(idx)
+                    paths_list.delete(idx)
+                    paths_list.insert(0, path)
+                    paths_list.selection_clear(0, tk.END)
+                    paths_list.selection_set(0)  # Keep it selected
+        
+        ttk.Button(paths_btn_frame, text="Add Path", command=add_path).pack(side="left", padx=2)
+        ttk.Button(paths_btn_frame, text="Set as Default", command=set_as_default).pack(side="left", padx=2)
+        ttk.Button(paths_btn_frame, text="Remove Selected", command=remove_path).pack(side="left", padx=2)
+        
+        # Help text for paths
+        paths_help = ttk.Label(
+            paths_frame,
+            text="First path in list is tried first. Add your preferred path or use 'Set as Default' to reorder.",
+            font=("TkDefaultFont", 8),
+            foreground="gray",
+            wraplength=550
+        )
+        paths_help.pack(anchor="w", pady=(5, 0))
+        
+        # Command parameter
+        cmd_frame = ttk.Frame(main_frame)
+        cmd_frame.pack(fill="x", pady=5)
+        ttk.Label(cmd_frame, text="Start Command:", width=15).pack(side="left")
+        
+        # Get existing command if editing
+        existing_cmd = ""
+        existing_hms = False
+        if is_edit and platform in self.media_players and player_name in self.media_players[platform]:
+            player_data = self.media_players[platform][player_name]
+            config = player_data[-1]
+            existing_cmd = config["command"]
+            existing_hms = config["requires_hms"]
+        
+        cmd_var = tk.StringVar(value=existing_cmd)
+        cmd_entry = ttk.Entry(cmd_frame, textvariable=cmd_var, width=40)
+        cmd_entry.pack(side="left", padx=5)
+        
+        # Requires HMS checkbox
+        hms_frame = ttk.Frame(main_frame)
+        hms_frame.pack(fill="x", pady=5)
+        hms_var = tk.BooleanVar(value=existing_hms)
+        hms_check = ttk.Checkbutton(hms_frame, text="Requires HH:MM:SS format (instead of seconds)", variable=hms_var)
+        hms_check.pack(anchor="w")
+        
+        # Help text
+        help_text = ttk.Label(
+            main_frame,
+            text="Examples:\n• Command with '=': --start-time=  (value concatenated)\n• Command without '=': /startpos  (value as separate argument)",
+            font=("TkDefaultFont", 8),
+            foreground="gray",
+            wraplength=550
+        )
+        help_text.pack(anchor="w", pady=(10, 0))
+        
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill="x", padx=15, pady=15)
+        
+        def save_player():
+            name = name_var.get().strip()
+            cmd = cmd_var.get().strip()
+            
+            if not name:
+                messagebox.showerror("Error", "Player name is required")
+                return
+            
+            if not cmd:
+                messagebox.showerror("Error", "Start command is required")
+                return
+            
+            paths = [paths_list.get(i) for i in range(paths_list.size())]
+            if not paths:
+                messagebox.showerror("Error", "At least one executable path is required")
+                return
+            
+            # Save to preferences
+            if "custom_media_players" not in self.preferences:
+                self.preferences["custom_media_players"] = {}
+            if platform not in self.preferences["custom_media_players"]:
+                self.preferences["custom_media_players"][platform] = {}
+            
+            self.preferences["custom_media_players"][platform][name] = {
+                "paths": paths,
+                "requires_hms": hms_var.get(),
+                "command": cmd
+            }
+            
+            self.save_preferences()
+            
+            # Reload merged players
+            custom_players = self.preferences.get("custom_media_players", {})
+            self.media_players = get_merged_media_players(custom_players)
+            
+            # Update parent dialog dropdown
+            player_var.set(name)  # Select the newly added/edited player
+            self._refresh_media_player_dropdown(player_dropdown, platform, info_callback)
+            
+            self.debug_print(f"Saved custom player: {name}")
+            dialog.destroy()
+        
+        ttk.Button(btn_frame, text="Save", command=save_player).pack(side="right", padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=5)
+
     def _show_window_sizing_dialog(self):
         """Show a dialog for configuring window sizes"""
         # Get saved size and calculate centered position BEFORE creating window
@@ -4375,7 +5020,8 @@ except Exception as e:
         window_labels = {
             "main_window": "Main Application Window",
             "minimum_duration_dialog": "Minimum Duration Settings Dialog",
-            "general_settings_dialog": "General Settings Dialog", 
+            "general_settings_dialog": "General Settings Dialog",
+            "media_player_dialog": "Media Player Settings Dialog",
             "editor_dialog": "Editor Navigator Dialog",
             "debug_window": "Debug Console Window",
             "window_sizing_dialog": "Window Sizing Dialog (this dialog)",
@@ -5431,15 +6077,15 @@ except Exception as e:
             
             if keyword_cleaned in combined:
                 # Found a true consecutive match - keyword spans across entries
-                mpc_start_time = current['start_time'].replace(',', '.')
-                mpc_time_format = mpc_start_time.split('.')[0]
+                # Convert start time to seconds for media player compatibility
+                start_time_seconds = self._timecode_to_seconds(current['start_time'])
                 
                 result = {
                     'num': current['num'],
                     'start_time': current['start_time'],
                     'end_time': current['end_time'],  # Use original end time of first entry
                     'text': current['text'] + ' [continues...]',  # Indicate it continues
-                    'mpc_start_time': mpc_time_format,
+                    'start_time_seconds': start_time_seconds,
                     'clean_text': current['clean_text'] + ' [spans to next entry]',
                     'search_type': 'consecutive'
                 }
@@ -5632,6 +6278,8 @@ if __name__ == "__main__":
                                  command=app._show_settings_dialog)
         settings_menu.add_command(label="General Settings...", 
                                  command=app._show_general_settings_dialog)
+        settings_menu.add_command(label="Media Player...", 
+                                 command=app._show_media_player_dialog)
         settings_menu.add_separator()
         settings_menu.add_command(label="Window Sizing...", 
                                  command=app._show_window_sizing_dialog)
