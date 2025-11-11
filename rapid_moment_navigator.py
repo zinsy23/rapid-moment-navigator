@@ -2610,13 +2610,18 @@ except Exception as e:
                     
                     prefs["directories"] = valid_dirs
                     
-                    # Set default media player if not present
-                    # Note: We don't validate against available players here because custom players
-                    # haven't been merged yet. Validation happens at runtime in play_video().
+                    # Set default media player if not present or invalid for current platform
+                    # Note: We validate against default players only here. Custom players are merged later,
+                    # and further validation happens at runtime in play_video() and in the settings dialog.
                     if "current_media_player" not in prefs or prefs["current_media_player"] is None:
                         # Not set, use default for current platform
                         prefs["current_media_player"] = get_default_media_player()
                         self.debug_print(f"Set default media player for platform: {prefs['current_media_player']}")
+                    elif sys.platform in media_players and prefs["current_media_player"] not in media_players[sys.platform]:
+                        # Saved player doesn't exist for this platform (e.g., "mpc" on macOS)
+                        old_player = prefs["current_media_player"]
+                        prefs["current_media_player"] = get_default_media_player()
+                        self.debug_print(f"Media player '{old_player}' not available on {sys.platform}, using default: {prefs['current_media_player']}")
                     
                     return prefs
         except Exception as e:
@@ -4551,8 +4556,14 @@ except Exception as e:
         if current_platform in self.media_players:
             available_players = list(self.media_players[current_platform].keys())
         
-        # Current selection
+        # Current selection - validate it exists for this platform
         current_player = self.preferences.get("current_media_player", get_default_media_player())
+        
+        # If saved player doesn't exist for this platform, use default
+        if current_player not in available_players:
+            current_player = get_default_media_player()
+            self.preferences["current_media_player"] = current_player
+            self.save_preferences()
         
         # Create dropdown for media player selection
         player_label = ttk.Label(player_frame, text="Select Media Player:")
