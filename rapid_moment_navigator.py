@@ -33,6 +33,61 @@ DEFAULT_PREFS = {
     # Note: current_media_player is dynamically set based on OS platform
 }
 
+# Default keyboard shortcuts
+# Each action can have multiple key bindings
+DEFAULT_KEYBOARD_SHORTCUTS = {
+    "show_fuzzy_search": {
+        "description": "Open fuzzy search for shows",
+        "category": "Navigation",
+        "keys": ["<Control-o>"]
+    },
+    "focus_search": {
+        "description": "Focus search bar",
+        "category": "Navigation",
+        "keys": ["<Control-f>"]
+    },
+    "escape_search": {
+        "description": "Unfocus/escape search bar",
+        "category": "Navigation",
+        "keys": ["<Escape>", "<Control-Shift-c>"]
+    },
+    "result_next": {
+        "description": "Navigate to next result",
+        "category": "Results Navigation",
+        "keys": ["<Down>", "j"]
+    },
+    "result_previous": {
+        "description": "Navigate to previous result",
+        "category": "Results Navigation",
+        "keys": ["<Up>", "k"]
+    },
+    "result_activate": {
+        "description": "Activate selected result (play at timecode)",
+        "category": "Results Actions",
+        "keys": ["<Return>"]
+    },
+    "result_import_media": {
+        "description": "Import media for selected result",
+        "category": "Results Actions",
+        "keys": ["<Control-i>"]
+    },
+    "result_import_clip": {
+        "description": "Import clip for selected result",
+        "category": "Results Actions",
+        "keys": ["<Control-Shift-i>"]
+    },
+    "scroll_half_page_down": {
+        "description": "Scroll down half a page",
+        "category": "Scrolling",
+        "keys": ["d"]
+    },
+    "scroll_half_page_up": {
+        "description": "Scroll up half a page",
+        "category": "Scrolling",
+        "keys": ["u"]
+    }
+}
+
 media_players = {
     "win32": {
         "mpc": [
@@ -2662,7 +2717,8 @@ except Exception as e:
             "window_sizing_dialog": (600, 700),
             "resolve_paths_dialog": (600, 500),
             "add_directory_dialog": (525, 450),
-            "guidance_dialog": (650, 600)
+            "guidance_dialog": (650, 600),
+            "keyboard_shortcuts_dialog": (700, 600)
         }
         return defaults.get(window_type, (400, 300))
     
@@ -5022,6 +5078,7 @@ except Exception as e:
             "minimum_duration_dialog": "Minimum Duration Settings Dialog",
             "general_settings_dialog": "General Settings Dialog",
             "media_player_dialog": "Media Player Settings Dialog",
+            "keyboard_shortcuts_dialog": "Keyboard Shortcuts Dialog",
             "editor_dialog": "Editor Navigator Dialog",
             "debug_window": "Debug Console Window",
             "window_sizing_dialog": "Window Sizing Dialog (this dialog)",
@@ -5360,6 +5417,588 @@ except Exception as e:
             
         except Exception as e:
             self.debug_print(f"Error applying sizes to open windows: {e}")
+
+    def _show_keyboard_shortcuts_dialog(self):
+        """Show a dialog for configuring keyboard shortcuts"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("keyboard_shortcuts_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Keyboard Shortcuts")
+        dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Set minimum window size
+        dialog.minsize(650, 500)
+        
+        # Make dialog modal
+        dialog.focus_set()
+        
+        # Setup dialog close handler for cleanup
+        def on_dialog_close():
+            # Clean up scroll bindings for keyboard shortcuts canvas
+            if hasattr(self, 'keyboard_shortcuts_canvas'):
+                self._cleanup_canvas_scrolling(self.keyboard_shortcuts_canvas)
+                delattr(self, 'keyboard_shortcuts_canvas')
+            dialog.destroy()
+        
+        dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
+        
+        # Create main container
+        main_container = ttk.Frame(dialog, padding=15)
+        main_container.pack(fill="both", expand=True)
+        
+        # Configure grid weights
+        main_container.grid_rowconfigure(1, weight=1)  # shortcuts_frame row
+        main_container.grid_columnconfigure(0, weight=1)
+        
+        # Title label
+        title_label = ttk.Label(main_container, text="Keyboard Shortcuts Configuration", 
+                               font=("TkDefaultFont", 12, "bold"))
+        title_label.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        
+        # Shortcuts frame with scrollable area
+        shortcuts_frame = ttk.LabelFrame(main_container, text="Shortcuts", padding=10)
+        shortcuts_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        
+        # Create canvas for scrollable content
+        canvas = tk.Canvas(shortcuts_frame)
+        scrollbar = ttk.Scrollbar(shortcuts_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        # Configure scrolling
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Setup cross-platform mousewheel scrolling
+        self._setup_canvas_scrolling(canvas)
+        
+        # Store reference to the canvas for cleanup
+        self.keyboard_shortcuts_canvas = canvas
+        
+        # Load current shortcuts from preferences or use defaults
+        current_shortcuts = self.preferences.get("keyboard_shortcuts", DEFAULT_KEYBOARD_SHORTCUTS.copy())
+        
+        # Group shortcuts by category
+        categories = {}
+        for action_id, action_data in DEFAULT_KEYBOARD_SHORTCUTS.items():
+            category = action_data["category"]
+            if category not in categories:
+                categories[category] = []
+            
+            # Get current keys for this action (from prefs or default)
+            if action_id in current_shortcuts:
+                current_keys = current_shortcuts[action_id].get("keys", action_data["keys"])
+            else:
+                current_keys = action_data["keys"]
+            
+            categories[category].append({
+                "id": action_id,
+                "description": action_data["description"],
+                "keys": current_keys.copy()
+            })
+        
+        # Store references to key entry widgets for later access
+        self.shortcut_entries = {}
+        
+        # Create UI for each category
+        for category_name in sorted(categories.keys()):
+            # Category header
+            category_label = ttk.Label(scrollable_frame, text=category_name, 
+                                      font=("TkDefaultFont", 10, "bold"))
+            category_label.pack(anchor="w", pady=(10, 5))
+            
+            # Separator
+            separator = ttk.Separator(scrollable_frame, orient="horizontal")
+            separator.pack(fill="x", pady=(0, 10))
+            
+            # Actions in this category
+            for action in categories[category_name]:
+                action_frame = ttk.Frame(scrollable_frame)
+                action_frame.pack(fill="x", pady=5)
+                
+                # Description label
+                desc_label = ttk.Label(action_frame, text=action["description"], width=35, anchor="w")
+                desc_label.pack(side="left", padx=(0, 10))
+                
+                # Keys display frame
+                keys_frame = ttk.Frame(action_frame)
+                keys_frame.pack(side="left", fill="x", expand=True)
+                
+                # Store reference to this action's keys frame
+                self.shortcut_entries[action["id"]] = {
+                    "keys_frame": keys_frame,
+                    "keys": action["keys"].copy()
+                }
+                
+                # Display current keys
+                self._display_shortcut_keys(action["id"], keys_frame)
+                
+                # Add/Edit button
+                edit_btn = ttk.Button(action_frame, text="Edit", width=8,
+                                     command=lambda aid=action["id"]: self._edit_shortcut_keys(aid, dialog))
+                edit_btn.pack(side="left", padx=5)
+        
+        # Info text (row 2 - fixed)
+        info_frame = ttk.Frame(main_container)
+        info_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        
+        info_text = ttk.Label(
+            info_frame,
+            text="Note: Changes will be saved when you click 'Save'. Multiple key bindings are supported for each action.",
+            font=("TkDefaultFont", 8),
+            foreground="gray",
+            wraplength=650
+        )
+        info_text.pack(anchor="w")
+        
+        # Buttons frame (row 3 - fixed)
+        buttons_frame = ttk.Frame(main_container)
+        buttons_frame.grid(row=3, column=0, sticky="ew")
+        
+        def save_shortcuts():
+            """Save shortcuts to preferences"""
+            # Build shortcuts dictionary from current entries
+            shortcuts_to_save = {}
+            for action_id, entry_data in self.shortcut_entries.items():
+                # Get the default data for this action
+                default_data = DEFAULT_KEYBOARD_SHORTCUTS[action_id]
+                shortcuts_to_save[action_id] = {
+                    "description": default_data["description"],
+                    "category": default_data["category"],
+                    "keys": entry_data["keys"].copy()
+                }
+            
+            # Save to preferences
+            self.preferences["keyboard_shortcuts"] = shortcuts_to_save
+            self.save_preferences()
+            
+            self.debug_print("Keyboard shortcuts saved successfully")
+            self.status_var.set("Keyboard shortcuts updated successfully")
+            
+            # Clean up scroll bindings before closing
+            if hasattr(self, 'keyboard_shortcuts_canvas'):
+                self._cleanup_canvas_scrolling(self.keyboard_shortcuts_canvas)
+                delattr(self, 'keyboard_shortcuts_canvas')
+            
+            dialog.destroy()
+        
+        def reset_to_defaults():
+            """Reset all shortcuts to defaults"""
+            if messagebox.askyesno("Reset to Defaults", 
+                                   "Are you sure you want to reset all keyboard shortcuts to their default values?",
+                                   parent=dialog):
+                # Reset all entries to defaults
+                for action_id in self.shortcut_entries:
+                    default_keys = DEFAULT_KEYBOARD_SHORTCUTS[action_id]["keys"]
+                    self.shortcut_entries[action_id]["keys"] = default_keys.copy()
+                    self._display_shortcut_keys(action_id, self.shortcut_entries[action_id]["keys_frame"])
+        
+        # Buttons
+        ttk.Button(buttons_frame, text="Reset to Defaults", command=reset_to_defaults).pack(side="left", padx=5)
+        ttk.Button(buttons_frame, text="Save", command=save_shortcuts).pack(side="right", padx=5)
+        ttk.Button(buttons_frame, text="Cancel", command=on_dialog_close).pack(side="right", padx=5)
+    
+    def _display_shortcut_keys(self, action_id, keys_frame):
+        """Display the current keys for a shortcut action"""
+        # Clear existing widgets
+        for widget in keys_frame.winfo_children():
+            widget.destroy()
+        
+        # Get current keys
+        keys = self.shortcut_entries[action_id]["keys"]
+        
+        if not keys:
+            ttk.Label(keys_frame, text="(no shortcuts)", foreground="gray").pack(side="left")
+        else:
+            for i, key in enumerate(keys):
+                if i > 0:
+                    ttk.Label(keys_frame, text=" or ").pack(side="left")
+                
+                # Create a mini frame for this key with its edit button
+                key_container = ttk.Frame(keys_frame)
+                key_container.pack(side="left", padx=2)
+                
+                # Format key for display (remove angle brackets, make it look nicer)
+                display_key = self._format_key_for_display(key)
+                key_label = ttk.Label(key_container, text=display_key, 
+                                     relief="solid", borderwidth=1, padding=(5, 2))
+                key_label.pack(side="left")
+                
+                # Add small edit button next to this specific key
+                edit_key_btn = ttk.Button(key_container, text="✎", width=2,
+                                         command=lambda aid=action_id, idx=i: self._edit_single_key(aid, idx))
+                edit_key_btn.pack(side="left", padx=(2, 0))
+    
+    def _format_key_for_display(self, key):
+        """Format a key binding for display"""
+        # Remove angle brackets
+        display = key.strip("<>")
+        
+        # Replace common modifiers with symbols or better names
+        replacements = {
+            "Control": "Ctrl",
+            "Shift": "Shift",
+            "Alt": "Alt",
+            "Command": "Cmd",
+            "Return": "Enter",
+            "Escape": "Esc"
+        }
+        
+        for old, new in replacements.items():
+            display = display.replace(old, new)
+        
+        return display
+    
+    def _edit_single_key(self, action_id, key_index):
+        """Edit a single key binding directly"""
+        current_key = self.shortcut_entries[action_id]["keys"][key_index]
+        action_desc = DEFAULT_KEYBOARD_SHORTCUTS[action_id]["description"]
+        
+        # Create edit dialog
+        edit_dialog = tk.Toplevel(self.root)
+        edit_dialog.title(f"Edit Key Binding")
+        edit_dialog.geometry("450x250")
+        edit_dialog.transient(self.root)
+        edit_dialog.grab_set()
+        
+        # Center the dialog
+        edit_dialog.update_idletasks()
+        screen_width = edit_dialog.winfo_screenwidth()
+        screen_height = edit_dialog.winfo_screenheight()
+        x = (screen_width - edit_dialog.winfo_width()) // 2
+        y = (screen_height - edit_dialog.winfo_height()) // 2
+        edit_dialog.geometry(f"+{x}+{y}")
+        
+        # Main frame
+        main_frame = ttk.Frame(edit_dialog, padding=20)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title
+        ttk.Label(main_frame, text=f"Edit key binding for:", 
+                 font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        ttk.Label(main_frame, text=action_desc, 
+                 font=("TkDefaultFont", 10)).pack(anchor="w", pady=(0, 5))
+        
+        # Current key display
+        ttk.Label(main_frame, text="Current key:", 
+                 font=("TkDefaultFont", 9)).pack(anchor="w", pady=(10, 5))
+        current_display = ttk.Label(main_frame, text=self._format_key_for_display(current_key),
+                                    relief="solid", borderwidth=1, padding=(10, 5),
+                                    font=("TkDefaultFont", 11))
+        current_display.pack(anchor="w", pady=(0, 15))
+        
+        # Instruction
+        ttk.Label(main_frame, text="Press the new key combination:", 
+                 font=("TkDefaultFont", 10)).pack(pady=(10, 5))
+        
+        # Captured key display
+        captured_key = tk.StringVar(value="(press a key)")
+        key_display = ttk.Label(main_frame, textvariable=captured_key, 
+                               font=("TkDefaultFont", 12, "bold"),
+                               relief="solid", borderwidth=2, padding=15,
+                               background="#f0f0f0")
+        key_display.pack(pady=10, fill="x")
+        
+        captured_binding = [None]  # Use list to allow modification in nested function
+        
+        def capture_key(event):
+            # Build the key binding string
+            modifiers = []
+            if event.state & 0x0004:  # Control
+                modifiers.append("Control")
+            if event.state & 0x0001:  # Shift
+                modifiers.append("Shift")
+            if event.state & 0x0008 or event.state & 0x0080:  # Alt
+                modifiers.append("Alt")
+            
+            # Get the key symbol
+            key = event.keysym
+            
+            # Build the binding string
+            if modifiers:
+                binding = "<" + "-".join(modifiers) + "-" + key + ">"
+            else:
+                binding = key
+            
+            captured_binding[0] = binding
+            captured_key.set(self._format_key_for_display(binding))
+        
+        edit_dialog.bind("<Key>", capture_key)
+        
+        def save_key():
+            if captured_binding[0]:
+                # Check if this key already exists for this action at a different index
+                existing_keys = self.shortcut_entries[action_id]["keys"]
+                if captured_binding[0] in existing_keys and existing_keys.index(captured_binding[0]) != key_index:
+                    messagebox.showwarning("Duplicate", 
+                                         "This key binding already exists for this action at another position.",
+                                         parent=edit_dialog)
+                    return
+                
+                # Update the key at the specific index
+                self.shortcut_entries[action_id]["keys"][key_index] = captured_binding[0]
+                self._display_shortcut_keys(action_id, self.shortcut_entries[action_id]["keys_frame"])
+                edit_dialog.destroy()
+        
+        # Buttons
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(pady=(15, 0))
+        ttk.Button(btn_frame, text="Save", command=save_key).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=edit_dialog.destroy).pack(side="left", padx=5)
+    
+    def _edit_shortcut_keys(self, action_id, parent_dialog):
+        """Open a dialog to edit keys for a specific action"""
+        # Get current keys
+        current_keys = self.shortcut_entries[action_id]["keys"].copy()
+        action_desc = DEFAULT_KEYBOARD_SHORTCUTS[action_id]["description"]
+        
+        # Create edit dialog
+        edit_dialog = tk.Toplevel(parent_dialog)
+        edit_dialog.title(f"Edit Shortcut: {action_desc}")
+        edit_dialog.geometry("500x400")
+        edit_dialog.transient(parent_dialog)
+        edit_dialog.grab_set()
+        
+        # Center the dialog
+        edit_dialog.update_idletasks()
+        x = parent_dialog.winfo_x() + (parent_dialog.winfo_width() - edit_dialog.winfo_width()) // 2
+        y = parent_dialog.winfo_y() + (parent_dialog.winfo_height() - edit_dialog.winfo_height()) // 2
+        edit_dialog.geometry(f"+{x}+{y}")
+        
+        # Main frame
+        main_frame = ttk.Frame(edit_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title
+        ttk.Label(main_frame, text=f"Edit shortcuts for:", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        ttk.Label(main_frame, text=action_desc, font=("TkDefaultFont", 10)).pack(anchor="w", pady=(0, 10))
+        
+        # Current keys frame
+        keys_list_frame = ttk.LabelFrame(main_frame, text="Current Key Bindings", padding=10)
+        keys_list_frame.pack(fill="both", expand=True, pady=(0, 10))
+        
+        # Listbox for keys
+        keys_listbox = tk.Listbox(keys_list_frame, height=8)
+        keys_listbox.pack(side="left", fill="both", expand=True)
+        
+        keys_scrollbar = ttk.Scrollbar(keys_list_frame, orient="vertical", command=keys_listbox.yview)
+        keys_scrollbar.pack(side="right", fill="y")
+        keys_listbox.configure(yscrollcommand=keys_scrollbar.set)
+        
+        # Populate listbox with current keys
+        def refresh_keys_list():
+            keys_listbox.delete(0, tk.END)
+            for key in current_keys:
+                display_key = self._format_key_for_display(key)
+                keys_listbox.insert(tk.END, display_key)
+        
+        refresh_keys_list()
+        
+        # Buttons frame for key management
+        key_buttons_frame = ttk.Frame(main_frame)
+        key_buttons_frame.pack(fill="x", pady=(0, 10))
+        
+        def add_key():
+            """Add a new key binding"""
+            add_key_dialog = tk.Toplevel(edit_dialog)
+            add_key_dialog.title("Add Key Binding")
+            add_key_dialog.geometry("400x200")
+            add_key_dialog.transient(edit_dialog)
+            add_key_dialog.grab_set()
+            
+            # Center the dialog
+            add_key_dialog.update_idletasks()
+            x = edit_dialog.winfo_x() + (edit_dialog.winfo_width() - add_key_dialog.winfo_width()) // 2
+            y = edit_dialog.winfo_y() + (edit_dialog.winfo_height() - add_key_dialog.winfo_height()) // 2
+            add_key_dialog.geometry(f"+{x}+{y}")
+            
+            frame = ttk.Frame(add_key_dialog, padding=15)
+            frame.pack(fill="both", expand=True)
+            
+            ttk.Label(frame, text="Press the key combination you want to add:", 
+                     font=("TkDefaultFont", 10)).pack(pady=(0, 10))
+            
+            captured_key = tk.StringVar(value="(press a key combination)")
+            key_display = ttk.Label(frame, textvariable=captured_key, 
+                                   font=("TkDefaultFont", 12, "bold"),
+                                   relief="solid", borderwidth=1, padding=10)
+            key_display.pack(pady=10)
+            
+            captured_binding = [None]  # Use list to allow modification in nested function
+            
+            def capture_key(event):
+                # Build the key binding string
+                modifiers = []
+                if event.state & 0x0004:  # Control
+                    modifiers.append("Control")
+                if event.state & 0x0001:  # Shift
+                    modifiers.append("Shift")
+                if event.state & 0x0008 or event.state & 0x0080:  # Alt
+                    modifiers.append("Alt")
+                
+                # Get the key symbol
+                key = event.keysym
+                
+                # Build the binding string
+                if modifiers:
+                    binding = "<" + "-".join(modifiers) + "-" + key + ">"
+                else:
+                    binding = key
+                
+                captured_binding[0] = binding
+                captured_key.set(self._format_key_for_display(binding))
+            
+            add_key_dialog.bind("<Key>", capture_key)
+            
+            def save_key():
+                if captured_binding[0] and captured_binding[0] not in current_keys:
+                    current_keys.append(captured_binding[0])
+                    refresh_keys_list()
+                    add_key_dialog.destroy()
+                elif captured_binding[0] in current_keys:
+                    messagebox.showwarning("Duplicate", "This key binding already exists for this action.",
+                                         parent=add_key_dialog)
+            
+            btn_frame = ttk.Frame(frame)
+            btn_frame.pack(pady=10)
+            ttk.Button(btn_frame, text="Add", command=save_key).pack(side="left", padx=5)
+            ttk.Button(btn_frame, text="Cancel", command=add_key_dialog.destroy).pack(side="left", padx=5)
+        
+        def edit_selected_key():
+            """Edit the selected key binding"""
+            selection = keys_listbox.curselection()
+            if not selection:
+                messagebox.showinfo("No Selection", "Please select a key binding to edit.", parent=edit_dialog)
+                return
+            
+            index = selection[0]
+            current_key = current_keys[index]
+            
+            # Create edit key dialog
+            edit_key_dialog = tk.Toplevel(edit_dialog)
+            edit_key_dialog.title("Edit Key Binding")
+            edit_key_dialog.geometry("450x250")
+            edit_key_dialog.transient(edit_dialog)
+            edit_key_dialog.grab_set()
+            
+            # Center the dialog
+            edit_key_dialog.update_idletasks()
+            x = edit_dialog.winfo_x() + (edit_dialog.winfo_width() - edit_key_dialog.winfo_width()) // 2
+            y = edit_dialog.winfo_y() + (edit_dialog.winfo_height() - edit_key_dialog.winfo_height()) // 2
+            edit_key_dialog.geometry(f"+{x}+{y}")
+            
+            frame = ttk.Frame(edit_key_dialog, padding=20)
+            frame.pack(fill="both", expand=True)
+            
+            # Current key display
+            ttk.Label(frame, text="Current key:", 
+                     font=("TkDefaultFont", 9)).pack(anchor="w", pady=(0, 5))
+            current_display = ttk.Label(frame, text=self._format_key_for_display(current_key),
+                                        relief="solid", borderwidth=1, padding=(10, 5),
+                                        font=("TkDefaultFont", 11))
+            current_display.pack(anchor="w", pady=(0, 15))
+            
+            ttk.Label(frame, text="Press the new key combination:", 
+                     font=("TkDefaultFont", 10)).pack(pady=(10, 5))
+            
+            captured_key = tk.StringVar(value="(press a key)")
+            key_display = ttk.Label(frame, textvariable=captured_key, 
+                                   font=("TkDefaultFont", 12, "bold"),
+                                   relief="solid", borderwidth=2, padding=15,
+                                   background="#f0f0f0")
+            key_display.pack(pady=10, fill="x")
+            
+            captured_binding = [None]
+            
+            def capture_key(event):
+                # Build the key binding string
+                modifiers = []
+                if event.state & 0x0004:  # Control
+                    modifiers.append("Control")
+                if event.state & 0x0001:  # Shift
+                    modifiers.append("Shift")
+                if event.state & 0x0008 or event.state & 0x0080:  # Alt
+                    modifiers.append("Alt")
+                
+                # Get the key symbol
+                key = event.keysym
+                
+                # Build the binding string
+                if modifiers:
+                    binding = "<" + "-".join(modifiers) + "-" + key + ">"
+                else:
+                    binding = key
+                
+                captured_binding[0] = binding
+                captured_key.set(self._format_key_for_display(binding))
+            
+            edit_key_dialog.bind("<Key>", capture_key)
+            
+            def save_edited_key():
+                if captured_binding[0]:
+                    # Check if this key already exists at a different position
+                    if captured_binding[0] in current_keys and current_keys.index(captured_binding[0]) != index:
+                        messagebox.showwarning("Duplicate", 
+                                             "This key binding already exists for this action at another position.",
+                                             parent=edit_key_dialog)
+                        return
+                    
+                    # Update the key at the specific index
+                    current_keys[index] = captured_binding[0]
+                    refresh_keys_list()
+                    # Re-select the edited item
+                    keys_listbox.selection_set(index)
+                    edit_key_dialog.destroy()
+            
+            btn_frame = ttk.Frame(frame)
+            btn_frame.pack(pady=(15, 0))
+            ttk.Button(btn_frame, text="Save", command=save_edited_key).pack(side="left", padx=5)
+            ttk.Button(btn_frame, text="Cancel", command=edit_key_dialog.destroy).pack(side="left", padx=5)
+        
+        def remove_key():
+            """Remove selected key binding"""
+            selection = keys_listbox.curselection()
+            if selection:
+                index = selection[0]
+                if len(current_keys) > 0:
+                    del current_keys[index]
+                    refresh_keys_list()
+        
+        ttk.Button(key_buttons_frame, text="Add Key", command=add_key).pack(side="left", padx=5)
+        ttk.Button(key_buttons_frame, text="Edit Selected", command=edit_selected_key).pack(side="left", padx=5)
+        ttk.Button(key_buttons_frame, text="Remove Selected", command=remove_key).pack(side="left", padx=5)
+        
+        # Info text
+        info_label = ttk.Label(main_frame, 
+                              text="Tip: You can have multiple key bindings for the same action.",
+                              font=("TkDefaultFont", 8), foreground="gray")
+        info_label.pack(anchor="w", pady=(0, 10))
+        
+        # Bottom buttons
+        bottom_buttons = ttk.Frame(main_frame)
+        bottom_buttons.pack(fill="x")
+        
+        def save_changes():
+            """Save changes to the action's keys"""
+            self.shortcut_entries[action_id]["keys"] = current_keys.copy()
+            self._display_shortcut_keys(action_id, self.shortcut_entries[action_id]["keys_frame"])
+            edit_dialog.destroy()
+        
+        ttk.Button(bottom_buttons, text="OK", command=save_changes).pack(side="right", padx=5)
+        ttk.Button(bottom_buttons, text="Cancel", command=edit_dialog.destroy).pack(side="right", padx=5)
 
     def _delayed_show_guidance(self):
         """Show guidance dialog after initial rendering"""
@@ -6280,6 +6919,8 @@ if __name__ == "__main__":
                                  command=app._show_general_settings_dialog)
         settings_menu.add_command(label="Media Player...", 
                                  command=app._show_media_player_dialog)
+        settings_menu.add_command(label="Keyboard Shortcuts...", 
+                                 command=app._show_keyboard_shortcuts_dialog)
         settings_menu.add_separator()
         settings_menu.add_command(label="Window Sizing...", 
                                  command=app._show_window_sizing_dialog)
