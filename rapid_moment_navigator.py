@@ -3896,8 +3896,12 @@ except Exception as e:
     def find_text_in_editor(self):
         """Find text in the currently selected editor"""
         text_to_find = self.editor_search_var.get()
-        self.debug_print(f"Searching for text: {text_to_find}")
-        self.status_var.set(f"Searching for text: {text_to_find}")
+        
+        # Log search request (status will be set by the specific editor method)
+        if not text_to_find or text_to_find.strip() == "":
+            self.debug_print("Empty search term - requesting all items")
+        else:
+            self.debug_print(f"Searching for text: {text_to_find}")
 
         # Clear previous search results
         for widget in self.editor_results_container.winfo_children():
@@ -3965,13 +3969,23 @@ except Exception as e:
                 
                 if cached_items:
                     self.debug_print(f"Using cached subtitle data for search ({len(cached_items)} items)")
-                    self.root.after(0, lambda: self.status_var.set("Searching cached subtitle data..."))
                     
-                    # Search cached items
+                    # Check if this is an empty search (show all items)
+                    is_empty_search = not text_to_find or text_to_find.strip() == ""
+                    
+                    if is_empty_search:
+                        self.root.after(0, lambda: self.status_var.set("Loading all cached items..."))
+                    else:
+                        self.root.after(0, lambda: self.status_var.set("Searching cached subtitle data..."))
+                    
+                    # Search cached items (or get all if empty search)
                     matches = self._search_subtitle_items(cached_items, text_to_find)
                     if matches:
                         self.root.after(0, lambda: self._display_search_results(matches, timeline_id))
-                        self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches in editor"))
+                        if is_empty_search:
+                            self.root.after(0, lambda: self.status_var.set(f"Showing all {len(matches)} items from cache"))
+                        else:
+                            self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches in editor"))
                     else:
                         self.debug_print("No matches found in cached data")
                         self.root.after(0, lambda: self.status_var.set("No matches found"))
@@ -4023,8 +4037,14 @@ except Exception as e:
                 return []
 
             # If we made it this far, start searching for the text via API
-            self.debug_print("Searching for text in editor via API")
-            self.root.after(0, lambda: self.status_var.set("Searching for text in editor via API..."))
+            is_empty_search = not text_to_find or text_to_find.strip() == ""
+            
+            if is_empty_search:
+                self.debug_print("Loading all items from editor via API")
+                self.root.after(0, lambda: self.status_var.set("Loading all items from editor via API..."))
+            else:
+                self.debug_print("Searching for text in editor via API")
+                self.root.after(0, lambda: self.status_var.set("Searching for text in editor via API..."))
 
             try:
                 # Get all subtitle items from the timeline
@@ -4034,7 +4054,7 @@ except Exception as e:
                     self.root.after(0, lambda: self.status_var.set("No subtitle track found"))
                     return []
 
-                # Search for the text in the subtitle items
+                # Search for the text in the subtitle items (or get all if empty)
                 matches = self._search_subtitle_items(subtitle_track, text_to_find)
                 if not matches:
                     self.debug_print("No matches found")
@@ -4043,7 +4063,10 @@ except Exception as e:
 
                 # Display results using timeline from API
                 self.root.after(0, lambda: self._display_search_results(matches, timeline_id, timeline))
-                self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches via API"))
+                if is_empty_search:
+                    self.root.after(0, lambda: self.status_var.set(f"Showing all {len(matches)} items via API"))
+                else:
+                    self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches via API"))
 
             except Exception as e:
                 self.debug_print(f"Error searching text in editor: {e}")
@@ -4250,6 +4273,15 @@ except Exception as e:
 
     def _search_subtitle_items(self, subtitle_items, text_to_find, case_sensitive=False):
         matches = []
+        
+        # If search term is empty, return all items
+        if not text_to_find or text_to_find.strip() == "":
+            self.debug_print(f"Empty search term - returning all {len(subtitle_items)} items")
+            for item in subtitle_items:
+                item_copy = item.copy()
+                item_copy['search_type'] = 'all'
+                matches.append(item_copy)
+            return matches
         
         # First pass: individual item search
         for item in subtitle_items:
