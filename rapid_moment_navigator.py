@@ -28,6 +28,7 @@ DEFAULT_PREFS = {
     "min_duration_seconds": 10.0,
     "auto_cache_update": True,  # Enable automatic cache updates when app gains focus
     "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
+    "enable_pagination": True,  # Enable pagination for search results (improves performance with many results)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
     "window_proportional_scaling": True,  # Scale all windows proportionally when one is changed
     "editor_settings": {
@@ -527,6 +528,9 @@ class RapidMomentNavigator:
         self.status_var = tk.StringVar()
         self.status_bar = ttk.Label(self.main_frame, textvariable=self.status_var, relief="sunken", anchor="w")
         self.status_bar.pack(fill="x", padx=5, pady=5)
+        
+        # Initialize pagination visibility based on preference
+        self._update_pagination_visibility()
         
         # Initialize the application
         self.debug_print("Initializing shows and mapping...")
@@ -1739,17 +1743,34 @@ class RapidMomentNavigator:
         # Store all results for pagination
         self.main_all_results = self.search_results.copy()
         
-        # Calculate total pages
-        if self.main_all_results:
+        # Check if pagination is enabled
+        pagination_enabled = self.preferences.get("enable_pagination", True)
+        
+        if pagination_enabled and self.main_all_results:
+            # Calculate total pages
             self.main_total_pages = (len(self.main_all_results) + self.main_items_per_page - 1) // self.main_items_per_page
             self.main_current_page = 1
             
             # Display first page
             self._display_main_current_page()
         else:
-            # No results
+            # Display all results at once (no pagination)
             self.main_total_pages = 0
             self.main_current_page = 1
+            
+            if self.main_all_results:
+                # Group results by file
+                results_by_file = {}
+                for result in self.main_all_results:
+                    file_path = result['file']
+                    if file_path not in results_by_file:
+                        results_by_file[file_path] = []
+                    results_by_file[file_path].append(result)
+                
+                # Render each file's results
+                for subtitle_file, file_results in results_by_file.items():
+                    self._render_main_file_results(subtitle_file, file_results)
+            
             self._update_main_pagination_controls()
         
         # Update status
@@ -2017,6 +2038,26 @@ class RapidMomentNavigator:
         # Update button states
         self.main_prev_btn.config(state="normal" if self.main_current_page > 1 else "disabled")
         self.main_next_btn.config(state="normal" if self.main_current_page < self.main_total_pages else "disabled")
+    
+    def _update_pagination_visibility(self):
+        """Update visibility of pagination controls based on preference"""
+        pagination_enabled = self.preferences.get("enable_pagination", True)
+        
+        # Update main navigator pagination visibility
+        if hasattr(self, 'main_prev_btn'):
+            parent_frame = self.main_prev_btn.master
+            if pagination_enabled:
+                parent_frame.pack(fill="x", padx=5, pady=5)
+            else:
+                parent_frame.pack_forget()
+        
+        # Update editor dialog pagination visibility if dialog exists
+        if hasattr(self, 'editor_dialog') and self.editor_dialog and self.editor_dialog.winfo_exists():
+            if hasattr(self, 'pagination_frame'):
+                if pagination_enabled:
+                    self.pagination_frame.pack(fill="x", padx=5, pady=5)
+                else:
+                    self.pagination_frame.pack_forget()
     
     def _restore_subtitle_line_breaks(self, text):
         """Restore line breaks in subtitle text from DaVinci Resolve API"""
@@ -4164,6 +4205,9 @@ except Exception as e:
         # Set focus to search entry after dialog is fully created
         self.root.after(100, lambda: self.editor_search_entry.focus_set())
         
+        # Update pagination visibility based on preference
+        self._update_pagination_visibility()
+        
         # Show appropriate status and start background preparation
         current_editor = self.editor_var.get()
         if current_editor == "DaVinci Resolve":
@@ -4423,11 +4467,21 @@ except Exception as e:
             self._current_timeline_id = timeline_id
             self._current_timeline = timeline
             
-            # Reset to first page
-            self.current_page = 1
+            # Check if pagination is enabled
+            pagination_enabled = self.preferences.get("enable_pagination", True)
             
-            # Display first page
-            self._display_current_page()
+            if pagination_enabled:
+                # Reset to first page
+                self.current_page = 1
+                
+                # Display first page
+                self._display_current_page()
+            else:
+                # Display all results at once (no pagination)
+                self.current_page = 1
+                self.total_pages = 1
+                self._render_results(matches, timeline_id, timeline)
+                self._update_pagination_controls()
             
         except Exception as e:
             self.debug_print(f"Error displaying search results: {e}")
@@ -4936,6 +4990,34 @@ except Exception as e:
             foreground="gray"
         )
         desc_label.pack(anchor="w", padx=(20, 0), pady=(0, 10))
+        
+        # Enable Pagination Setting with auto-save
+        enable_pagination_var = tk.BooleanVar(value=self.preferences.get("enable_pagination", True))
+        
+        def on_pagination_changed():
+            """Auto-save when setting changes"""
+            self.preferences["enable_pagination"] = enable_pagination_var.get()
+            self.save_preferences()
+            # Update pagination visibility
+            self._update_pagination_visibility()
+        
+        enable_pagination_check = ttk.Checkbutton(
+            search_frame, 
+            text="Enable Pagination",
+            variable=enable_pagination_var,
+            command=on_pagination_changed
+        )
+        enable_pagination_check.pack(anchor="w", pady=(0, 5))
+        
+        # Add description for pagination
+        pagination_desc_label = ttk.Label(
+            search_frame,
+            text="When enabled, search results are displayed in pages (improves performance with many results).\nWhen disabled, all results are shown at once (may be slower with large result sets).",
+            wraplength=450,
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        pagination_desc_label.pack(anchor="w", padx=(20, 0), pady=(0, 10))
         
         # Note about auto-save
         note_label = ttk.Label(
