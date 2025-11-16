@@ -4909,13 +4909,15 @@ except Exception as e:
             note_label.pack(anchor="w", pady=(10, 0))
         
         # Bind editor dropdown change to update UI
-        def on_editor_changed(event=None):
-            """When editor changes in dialog, update the UI and sync with main dropdown"""
+        def on_editor_changed_in_dialog(event=None):
+            """When editor changes in dialog, update the UI and use the main handler"""
+            # First, call the main editor change handler to handle all the standard logic
+            # (saves preferences, updates import buttons, etc.)
+            self._on_editor_changed(event)
+            # Then update the marker settings UI for the new editor
             update_settings_ui()
-            # Sync with main editor dropdown
-            self.editor_var.set(dialog_editor_var.get())
         
-        editor_combo.bind("<<ComboboxSelected>>", on_editor_changed)
+        editor_combo.bind("<<ComboboxSelected>>", on_editor_changed_in_dialog)
         
         # Initial UI population
         update_settings_ui()
