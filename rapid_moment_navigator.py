@@ -30,8 +30,21 @@ DEFAULT_PREFS = {
     "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
     "window_proportional_scaling": True,  # Scale all windows proportionally when one is changed
-    "marker_color": "Blue",  # Default marker color for Shift+Click in editor
-    "marker_name": "Marker",  # Default marker name for Shift+Click in editor
+    "editor_settings": {
+        "DaVinci Resolve": {
+            "marker_color": "Blue",  # Default marker color for Shift+Click
+            "marker_name": "Marker",  # Default marker name for Shift+Click
+            "available_colors": ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", 
+                               "Fuchsia", "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", 
+                               "Cocoa", "Cream"]  # Resolve's 16 marker colors
+        }
+        # Future editors can be added here:
+        # "Adobe Premiere": {
+        #     "marker_color": "Blue",
+        #     "marker_name": "Marker",
+        #     "available_colors": ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", "Orange"]
+        # }
+    },
     # Note: current_media_player is dynamically set based on OS platform
 }
 
@@ -2652,6 +2665,21 @@ except Exception as e:
             self.debug_print(f"Error saving preferences: {e}")
             self.status_var.set(f"Error saving preferences: {e}")
     
+    def get_editor_setting(self, editor_name, setting_key, default=None):
+        """Get a setting for a specific editor"""
+        editor_settings = self.preferences.get("editor_settings", {})
+        editor_prefs = editor_settings.get(editor_name, {})
+        return editor_prefs.get(setting_key, default)
+    
+    def set_editor_setting(self, editor_name, setting_key, value):
+        """Set a setting for a specific editor"""
+        if "editor_settings" not in self.preferences:
+            self.preferences["editor_settings"] = {}
+        if editor_name not in self.preferences["editor_settings"]:
+            self.preferences["editor_settings"][editor_name] = {}
+        self.preferences["editor_settings"][editor_name][setting_key] = value
+        self.save_preferences()
+    
     def get_default_window_size(self, window_type):
         """Get default window size for a specific window type"""
         defaults = {
@@ -4244,18 +4272,18 @@ except Exception as e:
             shift_held = event and (event.state & 0x0001)  # 0x0001 is the Shift modifier mask
             
             # Always jump to the frame first
-            self._jump_to_frame(start_frame, timeline, item_ref)
+            self._resolve_jump_to_frame(start_frame, timeline, item_ref)
             
             # If Shift was held, also create a marker at that frame
             if shift_held:
                 # Use the same frame we jumped to for the marker
-                self._create_marker_at_frame(start_frame, timeline)
+                self._resolve_create_marker_at_frame(start_frame, timeline)
         else:
             # Future editors can be handled here
             self.debug_print(f"Timecode navigation not implemented for {current_editor}")
 
-    def _jump_to_frame(self, frame, timeline, item_ref=None):
-        """Jump to a specific frame in the timeline."""
+    def _resolve_jump_to_frame(self, frame, timeline, item_ref=None):
+        """Jump to a specific frame in the DaVinci Resolve timeline."""
         # Try different methods to set the current position
         try:
             # Try SetCurrentFramePosition first
@@ -4303,17 +4331,18 @@ except Exception as e:
             logging.error(f"Error using timeline navigation methods: {str(e)}")
             return False
     
-    def _create_marker_at_frame(self, frame, timeline):
-        """Create a marker at the specified frame in the timeline"""
+    def _resolve_create_marker_at_frame(self, frame, timeline):
+        """Create a marker at the specified frame in the DaVinci Resolve timeline"""
         try:
-            # Get marker settings from preferences
-            color = self.preferences.get("marker_color", "Blue")
-            name = self.preferences.get("marker_name", "Marker")
+            # Get Resolve-specific marker settings from preferences
+            color = self.get_editor_setting("DaVinci Resolve", "marker_color", "Blue")
+            name = self.get_editor_setting("DaVinci Resolve", "marker_name", "Marker")
             
-            # Verify the color is valid
-            valid_colors = ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", 
-                          "Fuchsia", "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", 
-                          "Cocoa", "Cream"]
+            # Get valid colors for Resolve
+            valid_colors = self.get_editor_setting("DaVinci Resolve", "available_colors", 
+                                                   ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", 
+                                                    "Fuchsia", "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", 
+                                                    "Cocoa", "Cream"])
             if color not in valid_colors:
                 self.debug_print(f"⚠️ Invalid color '{color}' - using 'Blue' instead")
                 color = "Blue"
@@ -4752,80 +4781,144 @@ except Exception as e:
         main_frame.pack(fill="both", expand=True)
         
         # Title label
-        ttk.Label(main_frame, text="Marker Settings", 
-                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        title_label = ttk.Label(main_frame, text="Marker Settings", 
+                 font=("TkDefaultFont", 12, "bold"))
+        title_label.pack(anchor="w", pady=(0, 10))
         
-        # Description
+        # Editor selection frame
+        editor_frame = ttk.Frame(main_frame)
+        editor_frame.pack(fill="x", pady=(0, 10))
+        
+        ttk.Label(editor_frame, text="Editor:", width=10).pack(side="left", padx=(0, 10))
+        
+        # Create a local editor variable that syncs with the main one
+        dialog_editor_var = tk.StringVar(value=self.editor_var.get())
+        
+        # Get list of editors from registry
+        available_editors = list(self.EDITOR_REGISTRY.keys())
+        available_editors.insert(0, "None")
+        
+        editor_combo = ttk.Combobox(editor_frame, textvariable=dialog_editor_var,
+                                    values=available_editors, width=20, state="readonly")
+        editor_combo.pack(side="left", padx=5)
+        
+        # Description label (will be updated based on editor)
         desc_label = ttk.Label(
             main_frame,
-            text="Configure default settings for markers created with Shift+Click in the Editor Navigator.",
+            text="",
             wraplength=450,
             font=("TkDefaultFont", 9),
             foreground="gray"
         )
         desc_label.pack(anchor="w", pady=(0, 15))
         
-        # Marker Settings Frame
-        marker_frame = ttk.LabelFrame(main_frame, text="Marker Defaults", padding=10)
-        marker_frame.pack(fill="x", pady=10)
+        # Container for marker settings (will be dynamically populated)
+        settings_container = ttk.Frame(main_frame)
+        settings_container.pack(fill="both", expand=True)
         
-        # Marker Color Setting
-        color_frame = ttk.Frame(marker_frame)
-        color_frame.pack(fill="x", pady=5)
+        # Variables to hold current widgets
+        marker_color_var = tk.StringVar()
+        marker_name_var = tk.StringVar()
         
-        ttk.Label(color_frame, text="Marker Color:", width=15).pack(side="left", padx=(0, 10))
+        def update_settings_ui():
+            """Update the settings UI based on the selected editor"""
+            # Clear existing widgets
+            for widget in settings_container.winfo_children():
+                widget.destroy()
+            
+            current_editor = dialog_editor_var.get()
+            
+            # Update description based on editor
+            if current_editor == "None" or current_editor not in self.EDITOR_REGISTRY:
+                desc_label.config(text="Please select an editor to configure marker settings.")
+                return
+            
+            # Check if editor has marker settings
+            editor_prefs = self.preferences.get("editor_settings", {}).get(current_editor, {})
+            if "marker_color" not in editor_prefs and "marker_color" not in DEFAULT_PREFS.get("editor_settings", {}).get(current_editor, {}):
+                desc_label.config(text=f"Marker settings are not yet implemented for {current_editor}.")
+                return
+            
+            desc_label.config(text=f"Configure default settings for {current_editor} markers created with Shift+Click in the Editor Navigator.")
+            
+            # Marker Settings Frame
+            marker_frame = ttk.LabelFrame(settings_container, text="Marker Defaults", padding=10)
+            marker_frame.pack(fill="x", pady=10)
+            
+            # Marker Color Setting
+            color_frame = ttk.Frame(marker_frame)
+            color_frame.pack(fill="x", pady=5)
+            
+            ttk.Label(color_frame, text="Marker Color:", width=15).pack(side="left", padx=(0, 10))
+            
+            # Get current settings and available colors from preferences
+            current_color = self.get_editor_setting(current_editor, "marker_color", "Blue")
+            marker_colors = self.get_editor_setting(current_editor, "available_colors", ["Blue"])
+            
+            marker_color_var.set(current_color)
+            
+            def on_color_changed(event=None):
+                """Auto-save when color changes"""
+                self.set_editor_setting(current_editor, "marker_color", marker_color_var.get())
+                # Sync with main editor dropdown if they match
+                if self.editor_var.get() == current_editor:
+                    self.editor_var.set(current_editor)  # Trigger any listeners
+            
+            marker_color_combo = ttk.Combobox(color_frame, textvariable=marker_color_var,
+                                             values=marker_colors, width=15, state="readonly")
+            marker_color_combo.pack(side="left", padx=5)
+            marker_color_combo.bind("<<ComboboxSelected>>", on_color_changed)
+            
+            # Marker Name Setting
+            name_frame = ttk.Frame(marker_frame)
+            name_frame.pack(fill="x", pady=5)
+            
+            ttk.Label(name_frame, text="Marker Name:", width=15).pack(side="left", padx=(0, 10))
+            
+            current_name = self.get_editor_setting(current_editor, "marker_name", "Marker")
+            marker_name_var.set(current_name)
+            
+            def on_name_changed(*args):
+                """Auto-save when name changes"""
+                name = marker_name_var.get().strip()
+                if name:  # Only save if not empty
+                    self.set_editor_setting(current_editor, "marker_name", name)
+            
+            marker_name_entry = ttk.Entry(name_frame, textvariable=marker_name_var, width=30)
+            marker_name_entry.pack(side="left", padx=5)
+            marker_name_var.trace_add("write", on_name_changed)
+            
+            # Add editor-specific notes
+            if current_editor == "DaVinci Resolve":
+                name_desc_label = ttk.Label(
+                    marker_frame,
+                    text="Note: Marker name cannot be empty (required by DaVinci Resolve API).",
+                    wraplength=450,
+                    font=("TkDefaultFont", 8),
+                    foreground="gray"
+                )
+                name_desc_label.pack(anchor="w", padx=(20, 0), pady=(5, 0))
+            
+            # Note about auto-save
+            note_label = ttk.Label(
+                settings_container,
+                text="Settings are automatically saved when changed.",
+                font=("TkDefaultFont", 8),
+                foreground="gray"
+            )
+            note_label.pack(anchor="w", pady=(10, 0))
         
-        marker_color_var = tk.StringVar(value=self.preferences.get("marker_color", "Blue"))
-        marker_colors = ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", "Fuchsia", 
-                        "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", "Cocoa", "Cream"]
+        # Bind editor dropdown change to update UI
+        def on_editor_changed(event=None):
+            """When editor changes in dialog, update the UI and sync with main dropdown"""
+            update_settings_ui()
+            # Sync with main editor dropdown
+            self.editor_var.set(dialog_editor_var.get())
         
-        def on_color_changed(event=None):
-            """Auto-save when color changes"""
-            self.preferences["marker_color"] = marker_color_var.get()
-            self.save_preferences()
+        editor_combo.bind("<<ComboboxSelected>>", on_editor_changed)
         
-        marker_color_combo = ttk.Combobox(color_frame, textvariable=marker_color_var,
-                                         values=marker_colors, width=15, state="readonly")
-        marker_color_combo.pack(side="left", padx=5)
-        marker_color_combo.bind("<<ComboboxSelected>>", on_color_changed)
-        
-        # Marker Name Setting
-        name_frame = ttk.Frame(marker_frame)
-        name_frame.pack(fill="x", pady=5)
-        
-        ttk.Label(name_frame, text="Marker Name:", width=15).pack(side="left", padx=(0, 10))
-        
-        marker_name_var = tk.StringVar(value=self.preferences.get("marker_name", "Marker"))
-        
-        def on_name_changed(*args):
-            """Auto-save when name changes"""
-            name = marker_name_var.get().strip()
-            if name:  # Only save if not empty
-                self.preferences["marker_name"] = name
-                self.save_preferences()
-        
-        marker_name_entry = ttk.Entry(name_frame, textvariable=marker_name_var, width=30)
-        marker_name_entry.pack(side="left", padx=5)
-        marker_name_var.trace_add("write", on_name_changed)
-        
-        # Add description for marker name
-        name_desc_label = ttk.Label(
-            marker_frame,
-            text="Note: Marker name cannot be empty (required by DaVinci Resolve API).",
-            wraplength=450,
-            font=("TkDefaultFont", 8),
-            foreground="gray"
-        )
-        name_desc_label.pack(anchor="w", padx=(20, 0), pady=(5, 0))
-        
-        # Note about auto-save
-        note_label = ttk.Label(
-            main_frame,
-            text="Settings are automatically saved when changed.",
-            font=("TkDefaultFont", 8),
-            foreground="gray"
-        )
-        note_label.pack(anchor="w", pady=(10, 0))
+        # Initial UI population
+        update_settings_ui()
 
     def _show_media_player_dialog(self):
         """Show a dialog for selecting and configuring media players"""
