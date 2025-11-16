@@ -4628,11 +4628,9 @@ except Exception as e:
             color = self.get_editor_setting("DaVinci Resolve", "marker_color", "Blue")
             name = self.get_editor_setting("DaVinci Resolve", "marker_name", "Marker")
             
-            # Get valid colors for Resolve
-            valid_colors = self.get_editor_setting("DaVinci Resolve", "available_colors", 
-                                                   ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", 
-                                                    "Fuchsia", "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", 
-                                                    "Cocoa", "Cream"])
+            # Get valid colors for Resolve from DEFAULT_PREFS
+            default_colors = DEFAULT_PREFS["editor_settings"]["DaVinci Resolve"]["available_colors"]
+            valid_colors = self.get_editor_setting("DaVinci Resolve", "available_colors", default_colors)
             if color not in valid_colors:
                 self.debug_print(f"⚠️ Invalid color '{color}' - using 'Blue' instead")
                 color = "Blue"
@@ -5169,9 +5167,21 @@ except Exception as e:
             
             ttk.Label(color_frame, text="Marker Color:", width=15).pack(side="left", padx=(0, 10))
             
+            # Get default values from DEFAULT_PREFS for this editor
+            default_editor_settings = DEFAULT_PREFS.get("editor_settings", {}).get(current_editor, {})
+            if default_editor_settings:
+                default_color = default_editor_settings["marker_color"]
+                default_colors = default_editor_settings["available_colors"]
+                default_name = default_editor_settings["marker_name"]
+            else:
+                # Fallback for editors not yet in DEFAULT_PREFS
+                default_color = "Blue"
+                default_colors = ["Blue"]
+                default_name = "Marker"
+            
             # Get current settings and available colors from preferences
-            current_color = self.get_editor_setting(current_editor, "marker_color", "Blue")
-            marker_colors = self.get_editor_setting(current_editor, "available_colors", ["Blue"])
+            current_color = self.get_editor_setting(current_editor, "marker_color", default_color)
+            marker_colors = self.get_editor_setting(current_editor, "available_colors", default_colors)
             
             marker_color_var.set(current_color)
             
@@ -5193,7 +5203,8 @@ except Exception as e:
             
             ttk.Label(name_frame, text="Marker Name:", width=15).pack(side="left", padx=(0, 10))
             
-            current_name = self.get_editor_setting(current_editor, "marker_name", "Marker")
+            # Get current name (default_name already retrieved above)
+            current_name = self.get_editor_setting(current_editor, "marker_name", default_name)
             marker_name_var.set(current_name)
             
             def on_name_changed(*args):
