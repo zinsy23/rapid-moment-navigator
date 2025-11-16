@@ -28,8 +28,24 @@ DEFAULT_PREFS = {
     "min_duration_seconds": 10.0,
     "auto_cache_update": True,  # Enable automatic cache updates when app gains focus
     "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
+    "enable_pagination": True,  # Enable pagination for search results (improves performance with many results)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
     "window_proportional_scaling": True,  # Scale all windows proportionally when one is changed
+    "editor_settings": {
+        "DaVinci Resolve": {
+            "marker_color": "Blue",  # Default marker color for Shift+Click
+            "marker_name": "Marker",  # Default marker name for Shift+Click
+            "available_colors": ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", 
+                               "Fuchsia", "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", 
+                               "Cocoa", "Cream"]  # Resolve's 16 marker colors
+        }
+        # Future editors can be added here:
+        # "Adobe Premiere": {
+        #     "marker_color": "Blue",
+        #     "marker_name": "Marker",
+        #     "available_colors": ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", "Orange"]
+        # }
+    },
     # Note: current_media_player is dynamically set based on OS platform
 }
 
@@ -192,8 +208,8 @@ class ClickableEditorTimecode(Label):
         self.config(font=("TkDefaultFont", 10, "underline"))
         
     def _on_click(self, event):
-        """Handle click event"""
-        self.callback(self.timeline, self.start_frame, self.item_ref)
+        """Handle click event - pass event to callback for modifier key detection"""
+        self.callback(self.timeline, self.start_frame, self.item_ref, event)
 
 # Keep the old names for backward compatibility
 ClickableTimecodeLink = ClickableEditorTimecode  # New alias
@@ -473,10 +489,48 @@ class RapidMomentNavigator:
             self.current_scroll_canvas = self.results_canvas
             self.debug_print("Main canvas immediately activated for Mac scrolling")
         
+        # Pagination controls for main navigator
+        pagination_frame = ttk.Frame(self.main_frame)
+        pagination_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Pagination state for main navigator
+        self.main_current_page = 1
+        self.main_items_per_page = 50
+        self.main_total_pages = 0
+        self.main_all_results = []  # Store all results for pagination
+        
+        # Previous button
+        self.main_prev_btn = ttk.Button(pagination_frame, text="◄ Previous", command=self._main_prev_page, state="disabled")
+        self.main_prev_btn.pack(side="left", padx=5)
+        
+        # Page info label
+        self.main_page_label = ttk.Label(pagination_frame, text="Page 0 of 0")
+        self.main_page_label.pack(side="left", padx=10)
+        
+        # Next button
+        self.main_next_btn = ttk.Button(pagination_frame, text="Next ►", command=self._main_next_page, state="disabled")
+        self.main_next_btn.pack(side="left", padx=5)
+        
+        # Items per page selector
+        ttk.Label(pagination_frame, text="Items per page:").pack(side="left", padx=(20, 5))
+        self.main_items_per_page_var = tk.StringVar(value="50")
+        main_items_combo = ttk.Combobox(
+            pagination_frame,
+            textvariable=self.main_items_per_page_var,
+            values=["25", "50", "100", "200", "500"],
+            state="readonly",
+            width=8
+        )
+        main_items_combo.pack(side="left", padx=5)
+        main_items_combo.bind("<<ComboboxSelected>>", self._on_main_items_per_page_changed)
+        
         # Status bar
         self.status_var = tk.StringVar()
         self.status_bar = ttk.Label(self.main_frame, textvariable=self.status_var, relief="sunken", anchor="w")
         self.status_bar.pack(fill="x", padx=5, pady=5)
+        
+        # Initialize pagination visibility based on preference
+        self._update_pagination_visibility()
         
         # Initialize the application
         self.debug_print("Initializing shows and mapping...")
@@ -1187,6 +1241,7 @@ class RapidMomentNavigator:
     
     def map_subtitles_to_videos(self):
         """Map subtitle files to their corresponding video files"""
+        self.debug_print("Mapping subtitle files to videos...")
         self.status_var.set("Mapping subtitle files to videos...")
         
         # Clear previous mappings
@@ -1523,15 +1578,18 @@ class RapidMomentNavigator:
         selected_show_name = self.show_var.get()
         
         if not keyword:
+            self.debug_print("Search attempted with empty keyword")
             self.status_var.set("Please enter a search keyword.")
             return
             
         if not selected_show_name:
+            self.debug_print("Search attempted with no show selected")
             self.status_var.set("Please select a show.")
             return
         
         # Get the full path for the selected show
         if selected_show_name not in self.show_name_to_path_map:
+            self.debug_print(f"Show path not found for: {selected_show_name}")
             self.status_var.set(f"Show path not found for: {selected_show_name}")
             return
             
@@ -1542,6 +1600,12 @@ class RapidMomentNavigator:
             widget.destroy()
         
         self.search_results = []
+        
+        # Reset pagination state
+        self.main_all_results = []
+        self.main_current_page = 1
+        self.main_total_pages = 0
+        self._update_main_pagination_controls()
         
         self.debug_print(f"Searching for '{keyword}' in {selected_show_name} ({selected_show_path})")
         
@@ -1578,6 +1642,7 @@ class RapidMomentNavigator:
             return
         
         if not subtitle_files:
+            self.debug_print(f"No subtitle files found in {show_name}")
             self.status_var.set(f"No subtitle files found in {show_name}")
             return
             
@@ -1671,15 +1736,50 @@ class RapidMomentNavigator:
                 self.debug_print(f"Error processing {subtitle_file}: {e}")
                 self.status_var.set(f"Error processing {subtitle_file}: {e}")
                 continue
-            
-            # If there are results for this file, display them in the UI
-            if file_results:
-                # Use main thread to update the UI
-                self.root.after(0, self._update_results_ui, subtitle_file, file_results)
         
         # Update status
         self.debug_print(f"Found {total_results} matches in {show_name}")
-        self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {show_name}"))
+        
+        # Store all results and display with pagination
+        self.root.after(0, self._finalize_main_search_results, total_results, show_name)
+    
+    def _finalize_main_search_results(self, total_results, show_name):
+        """Finalize search results and set up pagination"""
+        # Store all results for pagination
+        self.main_all_results = self.search_results.copy()
+        
+        # Check if pagination is enabled
+        pagination_enabled = self.preferences.get("enable_pagination", True)
+        
+        if pagination_enabled and self.main_all_results:
+            # Calculate total pages
+            self.main_total_pages = (len(self.main_all_results) + self.main_items_per_page - 1) // self.main_items_per_page
+            self.main_current_page = 1
+            
+            # Display first page
+            self._display_main_current_page()
+        else:
+            # Display all results at once (no pagination)
+            self.main_total_pages = 0
+            self.main_current_page = 1
+            
+            if self.main_all_results:
+                # Group results by file
+                results_by_file = {}
+                for result in self.main_all_results:
+                    file_path = result['file']
+                    if file_path not in results_by_file:
+                        results_by_file[file_path] = []
+                    results_by_file[file_path].append(result)
+                
+                # Render each file's results
+                for subtitle_file, file_results in results_by_file.items():
+                    self._render_main_file_results(subtitle_file, file_results)
+            
+            self._update_main_pagination_controls()
+        
+        # Update status
+        self.status_var.set(f"Found {total_results} matches in {show_name}")
     
     def _update_results_ui(self, subtitle_file, file_results):
         """Update the UI with search results (called from main thread)"""
@@ -1781,6 +1881,189 @@ class RapidMomentNavigator:
         
         self.debug_print(f"UI updated with {len(file_results)} results from {file_basename}")
     
+    def _main_prev_page(self):
+        """Navigate to previous page in main navigator"""
+        if self.main_current_page > 1:
+            self.main_current_page -= 1
+            self._display_main_current_page()
+    
+    def _main_next_page(self):
+        """Navigate to next page in main navigator"""
+        if self.main_current_page < self.main_total_pages:
+            self.main_current_page += 1
+            self._display_main_current_page()
+    
+    def _on_main_items_per_page_changed(self, event=None):
+        """Handle change in items per page for main navigator"""
+        try:
+            self.main_items_per_page = int(self.main_items_per_page_var.get())
+            # Recalculate total pages
+            if self.main_all_results:
+                self.main_total_pages = (len(self.main_all_results) + self.main_items_per_page - 1) // self.main_items_per_page
+                # Reset to page 1 when changing items per page
+                self.main_current_page = 1
+                self._display_main_current_page()
+        except ValueError:
+            pass
+    
+    def _display_main_current_page(self):
+        """Display the current page of results in main navigator"""
+        if not self.main_all_results:
+            return
+        
+        # Calculate slice indices
+        start_idx = (self.main_current_page - 1) * self.main_items_per_page
+        end_idx = start_idx + self.main_items_per_page
+        
+        # Get results for current page
+        page_results = self.main_all_results[start_idx:end_idx]
+        
+        # Clear the results container
+        for widget in self.results_container.winfo_children():
+            widget.destroy()
+        
+        # Group results by file
+        results_by_file = {}
+        for result in page_results:
+            file_path = result['file']
+            if file_path not in results_by_file:
+                results_by_file[file_path] = []
+            results_by_file[file_path].append(result)
+        
+        # Render each file's results
+        for subtitle_file, file_results in results_by_file.items():
+            self._render_main_file_results(subtitle_file, file_results)
+        
+        # Update pagination controls
+        self._update_main_pagination_controls()
+        
+        # Scroll to top
+        self.results_canvas.yview_moveto(0)
+    
+    def _render_main_file_results(self, subtitle_file, file_results):
+        """Render results for a single file in main navigator"""
+        # Add file header
+        file_basename = os.path.basename(subtitle_file)
+        
+        # Find the show name this subtitle belongs to
+        show_path = None
+        for show_name, path in self.show_name_to_path_map.items():
+            if subtitle_file.startswith(path):
+                show_path = path
+                break
+        
+        # Get relative path from show root if possible
+        if show_path:
+            relative_path = os.path.relpath(subtitle_file, show_path)
+            header_text = f"File: {relative_path}"
+        else:
+            header_text = f"File: {file_basename}"
+        
+        # Create a frame for the file header
+        header_frame = ttk.Frame(self.results_container)
+        header_frame.pack(fill="x", padx=5, pady=2)
+        
+        # Add file header label
+        file_header = ttk.Label(
+            header_frame, 
+            text=header_text, 
+            font=("TkDefaultFont", 10, "bold"), 
+            foreground="green"
+        )
+        file_header.pack(side="left", anchor="w")
+        
+        # Check if we should show import buttons
+        selected_editor = self.editor_var.get()
+        show_import_buttons = selected_editor != "None"
+        
+        # Add each result
+        for result in file_results:
+            # Create a frame for this result
+            result_frame = ttk.Frame(self.results_container)
+            result_frame.pack(fill="x", padx=5, pady=2, anchor="w")
+            
+            # Create import buttons frame at the top right
+            import_buttons_frame = ttk.Frame(result_frame)
+            # Store reference to the import buttons frame for later visibility updates
+            result_frame.import_buttons_frame = import_buttons_frame
+            
+            # Always create the import buttons, but only show the frame if editor is selected
+            if show_import_buttons:
+                import_buttons_frame.pack(side="right", padx=5, anchor="ne")
+            
+            # Add Import Media button (always create, will be visible only if frame is visible)
+            import_media_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Media", 
+                result, 
+                self._handle_import_media_click,
+                tooltip="Import the entire video file to the DaVinci Resolve timeline"
+            )
+            import_media_btn.pack(side="left", padx=5)
+            
+            # Add Import Clip button (always create, will be visible only if frame is visible)
+            import_clip_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Clip", 
+                result, 
+                self._handle_import_clip_click,
+                tooltip="Import only the time range from this subtitle entry to the DaVinci Resolve timeline"
+            )
+            import_clip_btn.pack(side="left", padx=5)
+            
+            # Create content frame (with timecode and text) that fills the remaining space
+            content_frame = ttk.Frame(result_frame)
+            content_frame.pack(side="left", fill="both", expand=True, anchor="w")
+            
+            # Create clickable timecode label
+            timecode_text = f"{result['start_time']} --> {result['end_time']}"
+            timecode_label = ClickableTimecode(
+                content_frame, 
+                timecode_text, 
+                result, 
+                self._handle_timecode_click
+            )
+            timecode_label.pack(anchor="w")
+            
+            # Add text label
+            subtitle_label = ttk.Label(content_frame, text=result['clean_text'], wraplength=700)
+            subtitle_label.pack(anchor="w", padx=10)
+            
+            # Add some space after each result
+            ttk.Separator(self.results_container, orient="horizontal").pack(fill="x", pady=5)
+    
+    def _update_main_pagination_controls(self):
+        """Update pagination controls state for main navigator"""
+        # Update page label
+        if self.main_total_pages > 0:
+            self.main_page_label.config(text=f"Page {self.main_current_page} of {self.main_total_pages} ({len(self.main_all_results)} total results)")
+        else:
+            self.main_page_label.config(text="Page 0 of 0")
+        
+        # Update button states
+        self.main_prev_btn.config(state="normal" if self.main_current_page > 1 else "disabled")
+        self.main_next_btn.config(state="normal" if self.main_current_page < self.main_total_pages else "disabled")
+    
+    def _update_pagination_visibility(self):
+        """Update visibility of pagination controls based on preference"""
+        pagination_enabled = self.preferences.get("enable_pagination", True)
+        
+        # Update main navigator pagination visibility
+        if hasattr(self, 'main_prev_btn'):
+            parent_frame = self.main_prev_btn.master
+            if pagination_enabled:
+                parent_frame.pack(fill="x", padx=5, pady=5)
+            else:
+                parent_frame.pack_forget()
+        
+        # Update editor dialog pagination visibility if dialog exists
+        if hasattr(self, 'editor_dialog') and self.editor_dialog and self.editor_dialog.winfo_exists():
+            if hasattr(self, 'pagination_frame'):
+                if pagination_enabled:
+                    self.pagination_frame.pack(fill="x", padx=5, pady=5)
+                else:
+                    self.pagination_frame.pack_forget()
+    
     def _restore_subtitle_line_breaks(self, text):
         """Restore line breaks in subtitle text from DaVinci Resolve API"""
         if not text:
@@ -1814,6 +2097,7 @@ class RapidMomentNavigator:
             self.debug_print(f"Found matching video file: {video_file}")
             start_time_seconds = result['start_time_seconds']
             self.play_video(video_file, start_time_seconds)
+            self.debug_print(f"Opening {os.path.basename(video_file)} at {result['start_time']}")
             self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['start_time']}")
         else:
             self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
@@ -2650,6 +2934,21 @@ except Exception as e:
             self.debug_print(f"Error saving preferences: {e}")
             self.status_var.set(f"Error saving preferences: {e}")
     
+    def get_editor_setting(self, editor_name, setting_key, default=None):
+        """Get a setting for a specific editor"""
+        editor_settings = self.preferences.get("editor_settings", {})
+        editor_prefs = editor_settings.get(editor_name, {})
+        return editor_prefs.get(setting_key, default)
+    
+    def set_editor_setting(self, editor_name, setting_key, value):
+        """Set a setting for a specific editor"""
+        if "editor_settings" not in self.preferences:
+            self.preferences["editor_settings"] = {}
+        if editor_name not in self.preferences["editor_settings"]:
+            self.preferences["editor_settings"][editor_name] = {}
+        self.preferences["editor_settings"][editor_name][setting_key] = value
+        self.save_preferences()
+    
     def get_default_window_size(self, window_type):
         """Get default window size for a specific window type"""
         defaults = {
@@ -2658,6 +2957,7 @@ except Exception as e:
             "general_settings_dialog": (520, 350),
             "media_player_dialog": (550, 400),
             "editor_dialog": (600, 500),
+            "marker_settings_dialog": (500, 300),
             "debug_window": (800, 425),
             "window_sizing_dialog": (600, 700),
             "resolve_paths_dialog": (600, 500),
@@ -3125,6 +3425,7 @@ except Exception as e:
         selected_indices = self.dir_listbox.curselection()
         
         if not selected_indices:
+            self.debug_print("Remove directory attempted with no selection")
             self.status_var.set("No directory selected")
             return
         
@@ -3184,6 +3485,7 @@ except Exception as e:
                 # If no shows are found, show the guidance dialog
                 self.root.after(500, self._delayed_show_guidance)
         else:
+            self.debug_print(f"Directory not found in preferences: {selected_dir}")
             self.status_var.set("Directory not found in preferences")
 
     def _setup_resolve_paths(self):
@@ -3880,8 +4182,39 @@ except Exception as e:
         # Note: Canvas scrolling is now handled automatically by the global position-based handler
         # No platform-specific activation needed
         
+        # Pagination controls
+        self.pagination_frame = ttk.Frame(self.editor_main_frame)
+        self.pagination_frame.pack(fill="x", pady=5)
+        
+        # Initialize pagination state
+        self.current_page = 1
+        self.items_per_page = 100
+        self.total_pages = 1
+        self.all_matches = []  # Store all results for pagination
+        
+        # Pagination buttons
+        self.prev_button = ttk.Button(self.pagination_frame, text="← Previous", command=self._prev_page, state="disabled")
+        self.prev_button.pack(side="left", padx=5)
+        
+        self.page_label = ttk.Label(self.pagination_frame, text="Page 1 of 1")
+        self.page_label.pack(side="left", padx=10)
+        
+        self.next_button = ttk.Button(self.pagination_frame, text="Next →", command=self._next_page, state="disabled")
+        self.next_button.pack(side="left", padx=5)
+        
+        # Items per page selector
+        ttk.Label(self.pagination_frame, text="Items per page:").pack(side="left", padx=(20, 5))
+        self.items_per_page_var = tk.StringVar(value="100")
+        items_per_page_combo = ttk.Combobox(self.pagination_frame, textvariable=self.items_per_page_var, 
+                                            values=["50", "100", "200", "500"], width=8, state="readonly")
+        items_per_page_combo.pack(side="left", padx=5)
+        items_per_page_combo.bind("<<ComboboxSelected>>", self._on_items_per_page_changed)
+        
         # Set focus to search entry after dialog is fully created
         self.root.after(100, lambda: self.editor_search_entry.focus_set())
+        
+        # Update pagination visibility based on preference
+        self._update_pagination_visibility()
         
         # Show appropriate status and start background preparation
         current_editor = self.editor_var.get()
@@ -3893,11 +4226,63 @@ except Exception as e:
         else:
             self.debug_print("Editor dialog opened - ready for use")
             
+    def _prev_page(self):
+        """Go to previous page of results"""
+        if self.current_page > 1:
+            self.current_page -= 1
+            self._display_current_page()
+    
+    def _next_page(self):
+        """Go to next page of results"""
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self._display_current_page()
+    
+    def _on_items_per_page_changed(self, event=None):
+        """Handle change in items per page"""
+        self.items_per_page = int(self.items_per_page_var.get())
+        self.current_page = 1  # Reset to first page
+        self._display_current_page()
+    
+    def _display_current_page(self):
+        """Display the current page of results"""
+        if not self.all_matches:
+            return
+        
+        # Calculate pagination
+        self.total_pages = max(1, (len(self.all_matches) + self.items_per_page - 1) // self.items_per_page)
+        start_idx = (self.current_page - 1) * self.items_per_page
+        end_idx = min(start_idx + self.items_per_page, len(self.all_matches))
+        page_matches = self.all_matches[start_idx:end_idx]
+        
+        # Get timeline info (stored from original search)
+        timeline_id = getattr(self, '_current_timeline_id', None)
+        timeline = getattr(self, '_current_timeline', None)
+        
+        # Display this page
+        self._render_results(page_matches, timeline_id, timeline)
+        
+        # Update pagination controls
+        self._update_pagination_controls()
+    
+    def _update_pagination_controls(self):
+        """Update the pagination button states and labels"""
+        if not hasattr(self, 'page_label'):
+            return
+            
+        self.page_label.config(text=f"Page {self.current_page} of {self.total_pages} ({len(self.all_matches)} total results)")
+        self.prev_button.config(state="normal" if self.current_page > 1 else "disabled")
+        self.next_button.config(state="normal" if self.current_page < self.total_pages else "disabled")
+    
     def find_text_in_editor(self):
         """Find text in the currently selected editor"""
         text_to_find = self.editor_search_var.get()
-        self.debug_print(f"Searching for text: {text_to_find}")
-        self.status_var.set(f"Searching for text: {text_to_find}")
+        
+        # Log search request (status will be set by the specific editor method)
+        if not text_to_find or text_to_find.strip() == "":
+            self.debug_print("Empty search term - requesting all items")
+        else:
+            self.debug_print(f"Searching for text: {text_to_find}")
 
         # Clear previous search results
         for widget in self.editor_results_container.winfo_children():
@@ -3965,13 +4350,27 @@ except Exception as e:
                 
                 if cached_items:
                     self.debug_print(f"Using cached subtitle data for search ({len(cached_items)} items)")
-                    self.root.after(0, lambda: self.status_var.set("Searching cached subtitle data..."))
                     
-                    # Search cached items
+                    # Check if this is an empty search (show all items)
+                    is_empty_search = not text_to_find or text_to_find.strip() == ""
+                    
+                    if is_empty_search:
+                        self.debug_print("Loading all cached items (empty search)")
+                        self.root.after(0, lambda: self.status_var.set("Loading all cached items..."))
+                    else:
+                        self.debug_print("Searching cached subtitle data")
+                        self.root.after(0, lambda: self.status_var.set("Searching cached subtitle data..."))
+                    
+                    # Search cached items (or get all if empty search)
                     matches = self._search_subtitle_items(cached_items, text_to_find)
                     if matches:
                         self.root.after(0, lambda: self._display_search_results(matches, timeline_id))
-                        self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches in editor"))
+                        if is_empty_search:
+                            self.debug_print(f"Showing all {len(matches)} items from cache")
+                            self.root.after(0, lambda: self.status_var.set(f"Showing all {len(matches)} items from cache"))
+                        else:
+                            self.debug_print(f"Found {len(matches)} matches in editor (cache)")
+                            self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches in editor"))
                     else:
                         self.debug_print("No matches found in cached data")
                         self.root.after(0, lambda: self.status_var.set("No matches found"))
@@ -4023,8 +4422,14 @@ except Exception as e:
                 return []
 
             # If we made it this far, start searching for the text via API
-            self.debug_print("Searching for text in editor via API")
-            self.root.after(0, lambda: self.status_var.set("Searching for text in editor via API..."))
+            is_empty_search = not text_to_find or text_to_find.strip() == ""
+            
+            if is_empty_search:
+                self.debug_print("Loading all items from editor via API")
+                self.root.after(0, lambda: self.status_var.set("Loading all items from editor via API..."))
+            else:
+                self.debug_print("Searching for text in editor via API")
+                self.root.after(0, lambda: self.status_var.set("Searching for text in editor via API..."))
 
             try:
                 # Get all subtitle items from the timeline
@@ -4034,7 +4439,7 @@ except Exception as e:
                     self.root.after(0, lambda: self.status_var.set("No subtitle track found"))
                     return []
 
-                # Search for the text in the subtitle items
+                # Search for the text in the subtitle items (or get all if empty)
                 matches = self._search_subtitle_items(subtitle_track, text_to_find)
                 if not matches:
                     self.debug_print("No matches found")
@@ -4043,7 +4448,12 @@ except Exception as e:
 
                 # Display results using timeline from API
                 self.root.after(0, lambda: self._display_search_results(matches, timeline_id, timeline))
-                self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches via API"))
+                if is_empty_search:
+                    self.debug_print(f"Showing all {len(matches)} items via API")
+                    self.root.after(0, lambda: self.status_var.set(f"Showing all {len(matches)} items via API"))
+                else:
+                    self.debug_print(f"Found {len(matches)} matches via API")
+                    self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches via API"))
 
             except Exception as e:
                 self.debug_print(f"Error searching text in editor: {e}")
@@ -4056,7 +4466,43 @@ except Exception as e:
             return []
 
     def _display_search_results(self, matches, timeline_id, timeline=None):
-        """Display search results in the editor dialog"""
+        """Display search results in the editor dialog with pagination"""
+        try:
+            if not matches:
+                self.status_var.set("No matches found in current timeline")
+                self.all_matches = []
+                self.current_page = 1
+                self.total_pages = 1
+                self._update_pagination_controls()
+                return
+
+            # Store all matches and timeline info for pagination
+            self.all_matches = matches
+            self._current_timeline_id = timeline_id
+            self._current_timeline = timeline
+            
+            # Check if pagination is enabled
+            pagination_enabled = self.preferences.get("enable_pagination", True)
+            
+            if pagination_enabled:
+                # Reset to first page
+                self.current_page = 1
+                
+                # Display first page
+                self._display_current_page()
+            else:
+                # Display all results at once (no pagination)
+                self.current_page = 1
+                self.total_pages = 1
+                self._render_results(matches, timeline_id, timeline)
+                self._update_pagination_controls()
+            
+        except Exception as e:
+            self.debug_print(f"Error displaying search results: {e}")
+            self.status_var.set(f"Error displaying search results: {e}")
+    
+    def _render_results(self, matches, timeline_id, timeline=None):
+        """Render a specific set of results (used for pagination)"""
         global dvr_script
         try:
             if not matches:
@@ -4107,18 +4553,27 @@ except Exception as e:
             self.debug_print(f"Error displaying search results: {e}")
             self.status_var.set(f"Error displaying search results: {e}")
 
-    def _handle_editor_timecode_click(self, timeline, start_frame, item_ref=None):
+    def _handle_editor_timecode_click(self, timeline, start_frame, item_ref=None, event=None):
         """Handle clicks on editor timecode results - generic handler"""
         current_editor = self.editor_var.get()
         
         if current_editor == "DaVinci Resolve":
-            self._jump_to_frame(start_frame, timeline, item_ref)
+            # Check if Shift key was held during click
+            shift_held = event and (event.state & 0x0001)  # 0x0001 is the Shift modifier mask
+            
+            # Always jump to the frame first
+            self._resolve_jump_to_frame(start_frame, timeline, item_ref)
+            
+            # If Shift was held, also create a marker at that frame
+            if shift_held:
+                # Use the same frame we jumped to for the marker
+                self._resolve_create_marker_at_frame(start_frame, timeline)
         else:
             # Future editors can be handled here
             self.debug_print(f"Timecode navigation not implemented for {current_editor}")
 
-    def _jump_to_frame(self, frame, timeline, item_ref=None):
-        """Jump to a specific frame in the timeline."""
+    def _resolve_jump_to_frame(self, frame, timeline, item_ref=None):
+        """Jump to a specific frame in the DaVinci Resolve timeline."""
         # Try different methods to set the current position
         try:
             # Try SetCurrentFramePosition first
@@ -4165,8 +4620,58 @@ except Exception as e:
         except Exception as e:
             logging.error(f"Error using timeline navigation methods: {str(e)}")
             return False
+    
+    def _resolve_create_marker_at_frame(self, frame, timeline):
+        """Create a marker at the specified frame in the DaVinci Resolve timeline"""
+        try:
+            # Get Resolve-specific marker settings from preferences
+            color = self.get_editor_setting("DaVinci Resolve", "marker_color", "Blue")
+            name = self.get_editor_setting("DaVinci Resolve", "marker_name", "Marker")
             
-
+            # Get valid colors for Resolve from DEFAULT_PREFS
+            default_colors = DEFAULT_PREFS["editor_settings"]["DaVinci Resolve"]["available_colors"]
+            valid_colors = self.get_editor_setting("DaVinci Resolve", "available_colors", default_colors)
+            if color not in valid_colors:
+                self.debug_print(f"⚠️ Invalid color '{color}' - using 'Blue' instead")
+                color = "Blue"
+            
+            # Ensure name is not empty (API requirement)
+            if not name or name.strip() == "":
+                name = "Marker"
+            
+            # Check if a marker already exists at this frame
+            try:
+                existing_markers = timeline.GetMarkers()
+                if existing_markers and int(frame) in existing_markers:
+                    self.status_var.set(f"Marker already exists at this position")
+                    return False
+            except Exception as e:
+                self.debug_print(f"Could not check existing markers: {e}")
+            
+            # Create the marker at the specified frame
+            # Note: AddMarker requires a non-empty name parameter to succeed
+            # AddMarker expects: frameId (int), color (str), name (str), note (str), duration (int), customData (str)
+            success = timeline.AddMarker(int(frame), color, name, "", 1, "")
+            
+            if success:
+                # Get timecode for display
+                try:
+                    current_tc = timeline.GetCurrentTimecode()
+                    self.status_var.set(f"{color} marker '{name}' created at {current_tc}")
+                except:
+                    self.status_var.set(f"{color} marker '{name}' created at frame {frame}")
+                return True
+            else:
+                self.debug_print(f"Failed to create marker at frame {frame}")
+                self.status_var.set(f"Failed to create marker")
+                return False
+                
+        except Exception as e:
+            self.debug_print(f"Error creating marker: {e}")
+            self.debug_print(f"Exception details: {traceback.format_exc()}")
+            self.status_var.set(f"Error creating marker: {e}")
+            return False
+    
     def _resolve_navigate_to_timecode(self, timecode):
         """Navigate to a specific timecode in Resolve"""
         self._jump_to_frame(self.timeline, self.result['start'], self.result['item'])
@@ -4250,6 +4755,15 @@ except Exception as e:
 
     def _search_subtitle_items(self, subtitle_items, text_to_find, case_sensitive=False):
         matches = []
+        
+        # If search term is empty, return all items
+        if not text_to_find or text_to_find.strip() == "":
+            self.debug_print(f"Empty search term - returning all {len(subtitle_items)} items")
+            for item in subtitle_items:
+                item_copy = item.copy()
+                item_copy['search_type'] = 'all'
+                matches.append(item_copy)
+            return matches
         
         # First pass: individual item search
         for item in subtitle_items:
@@ -4489,6 +5003,34 @@ except Exception as e:
         )
         desc_label.pack(anchor="w", padx=(20, 0), pady=(0, 10))
         
+        # Enable Pagination Setting with auto-save
+        enable_pagination_var = tk.BooleanVar(value=self.preferences.get("enable_pagination", True))
+        
+        def on_pagination_changed():
+            """Auto-save when setting changes"""
+            self.preferences["enable_pagination"] = enable_pagination_var.get()
+            self.save_preferences()
+            # Update pagination visibility
+            self._update_pagination_visibility()
+        
+        enable_pagination_check = ttk.Checkbutton(
+            search_frame, 
+            text="Enable Pagination",
+            variable=enable_pagination_var,
+            command=on_pagination_changed
+        )
+        enable_pagination_check.pack(anchor="w", pady=(0, 5))
+        
+        # Add description for pagination
+        pagination_desc_label = ttk.Label(
+            search_frame,
+            text="When enabled, search results are displayed in pages (improves performance with many results).\nWhen disabled, all results are shown at once (may be slower with large result sets).",
+            wraplength=450,
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        pagination_desc_label.pack(anchor="w", padx=(20, 0), pady=(0, 10))
+        
         # Note about auto-save
         note_label = ttk.Label(
             main_frame,
@@ -4509,6 +5051,205 @@ except Exception as e:
             command=settings_dialog.destroy
         )
         close_btn.pack(side="right", padx=5)
+
+    def _show_marker_settings_dialog(self):
+        """Show a dialog for configuring marker settings (for Shift+Click in editor)"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("marker_settings_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
+        settings_dialog = tk.Toplevel(self.root)
+        settings_dialog.title("Marker Settings")
+        settings_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
+        settings_dialog.transient(self.root)
+        settings_dialog.grab_set()
+        
+        # Bind window close to save size
+        def on_close():
+            self.save_window_size("marker_settings_dialog", 
+                                 settings_dialog.winfo_width(), 
+                                 settings_dialog.winfo_height())
+            settings_dialog.destroy()
+        
+        settings_dialog.protocol("WM_DELETE_WINDOW", on_close)
+        
+        # Set minimum window size to ensure Close button is always visible
+        settings_dialog.minsize(450, 250)
+        
+        # Make dialog modal
+        settings_dialog.focus_set()
+        
+        # Create buttons frame FIRST and pack at bottom (so it stays at bottom when resizing)
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(side="bottom", fill="x", padx=15, pady=15)
+        
+        # Close button (saves window size on close)
+        close_btn = ttk.Button(
+            buttons_frame, 
+            text="Close", 
+            command=on_close
+        )
+        close_btn.pack(side="right", padx=5)
+        
+        # Create main frame with padding (pack after buttons so it fills remaining space)
+        main_frame = ttk.Frame(settings_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title label
+        title_label = ttk.Label(main_frame, text="Marker Settings", 
+                 font=("TkDefaultFont", 12, "bold"))
+        title_label.pack(anchor="w", pady=(0, 10))
+        
+        # Editor selection frame
+        editor_frame = ttk.Frame(main_frame)
+        editor_frame.pack(fill="x", pady=(0, 10))
+        
+        ttk.Label(editor_frame, text="Editor:", width=10).pack(side="left", padx=(0, 10))
+        
+        # Create a local editor variable that syncs with the main one
+        dialog_editor_var = tk.StringVar(value=self.editor_var.get())
+        
+        # Get list of editors from registry
+        available_editors = list(self.EDITOR_REGISTRY.keys())
+        available_editors.insert(0, "None")
+        
+        editor_combo = ttk.Combobox(editor_frame, textvariable=dialog_editor_var,
+                                    values=available_editors, width=20, state="readonly")
+        editor_combo.pack(side="left", padx=5)
+        
+        # Description label (will be updated based on editor)
+        desc_label = ttk.Label(
+            main_frame,
+            text="",
+            wraplength=450,
+            font=("TkDefaultFont", 9),
+            foreground="gray"
+        )
+        desc_label.pack(anchor="w", pady=(0, 15))
+        
+        # Container for marker settings (will be dynamically populated)
+        settings_container = ttk.Frame(main_frame)
+        settings_container.pack(fill="both", expand=True)
+        
+        # Variables to hold current widgets
+        marker_color_var = tk.StringVar()
+        marker_name_var = tk.StringVar()
+        
+        def update_settings_ui():
+            """Update the settings UI based on the selected editor"""
+            # Clear existing widgets
+            for widget in settings_container.winfo_children():
+                widget.destroy()
+            
+            current_editor = dialog_editor_var.get()
+            
+            # Update description based on editor
+            if current_editor == "None" or current_editor not in self.EDITOR_REGISTRY:
+                desc_label.config(text="Please select an editor to configure marker settings.")
+                return
+            
+            # Check if editor has marker settings
+            editor_prefs = self.preferences.get("editor_settings", {}).get(current_editor, {})
+            if "marker_color" not in editor_prefs and "marker_color" not in DEFAULT_PREFS.get("editor_settings", {}).get(current_editor, {}):
+                desc_label.config(text=f"Marker settings are not yet implemented for {current_editor}.")
+                return
+            
+            desc_label.config(text=f"Configure default settings for {current_editor} markers created with Shift+Click in the Editor Navigator.")
+            
+            # Marker Settings Frame
+            marker_frame = ttk.LabelFrame(settings_container, text="Marker Defaults", padding=10)
+            marker_frame.pack(fill="x", pady=10)
+            
+            # Marker Color Setting
+            color_frame = ttk.Frame(marker_frame)
+            color_frame.pack(fill="x", pady=5)
+            
+            ttk.Label(color_frame, text="Marker Color:", width=15).pack(side="left", padx=(0, 10))
+            
+            # Get default values from DEFAULT_PREFS for this editor
+            default_editor_settings = DEFAULT_PREFS.get("editor_settings", {}).get(current_editor, {})
+            if default_editor_settings:
+                default_color = default_editor_settings["marker_color"]
+                default_colors = default_editor_settings["available_colors"]
+                default_name = default_editor_settings["marker_name"]
+            else:
+                # Fallback for editors not yet in DEFAULT_PREFS
+                default_color = "Blue"
+                default_colors = ["Blue"]
+                default_name = "Marker"
+            
+            # Get current settings and available colors from preferences
+            current_color = self.get_editor_setting(current_editor, "marker_color", default_color)
+            marker_colors = self.get_editor_setting(current_editor, "available_colors", default_colors)
+            
+            marker_color_var.set(current_color)
+            
+            def on_color_changed(event=None):
+                """Auto-save when color changes"""
+                self.set_editor_setting(current_editor, "marker_color", marker_color_var.get())
+                # Sync with main editor dropdown if they match
+                if self.editor_var.get() == current_editor:
+                    self.editor_var.set(current_editor)  # Trigger any listeners
+            
+            marker_color_combo = ttk.Combobox(color_frame, textvariable=marker_color_var,
+                                             values=marker_colors, width=15, state="readonly")
+            marker_color_combo.pack(side="left", padx=5)
+            marker_color_combo.bind("<<ComboboxSelected>>", on_color_changed)
+            
+            # Marker Name Setting
+            name_frame = ttk.Frame(marker_frame)
+            name_frame.pack(fill="x", pady=5)
+            
+            ttk.Label(name_frame, text="Marker Name:", width=15).pack(side="left", padx=(0, 10))
+            
+            # Get current name (default_name already retrieved above)
+            current_name = self.get_editor_setting(current_editor, "marker_name", default_name)
+            marker_name_var.set(current_name)
+            
+            def on_name_changed(*args):
+                """Auto-save when name changes"""
+                name = marker_name_var.get().strip()
+                if name:  # Only save if not empty
+                    self.set_editor_setting(current_editor, "marker_name", name)
+            
+            marker_name_entry = ttk.Entry(name_frame, textvariable=marker_name_var, width=30)
+            marker_name_entry.pack(side="left", padx=5)
+            marker_name_var.trace_add("write", on_name_changed)
+            
+            # Add editor-specific notes
+            if current_editor == "DaVinci Resolve":
+                name_desc_label = ttk.Label(
+                    marker_frame,
+                    text="Note: Marker name cannot be empty (required by DaVinci Resolve API).",
+                    wraplength=450,
+                    font=("TkDefaultFont", 8),
+                    foreground="gray"
+                )
+                name_desc_label.pack(anchor="w", padx=(20, 0), pady=(5, 0))
+            
+            # Note about auto-save
+            note_label = ttk.Label(
+                settings_container,
+                text="Settings are automatically saved when changed.",
+                font=("TkDefaultFont", 8),
+                foreground="gray"
+            )
+            note_label.pack(anchor="w", pady=(10, 0))
+        
+        # Bind editor dropdown change to update UI
+        def on_editor_changed_in_dialog(event=None):
+            """When editor changes in dialog, update the UI and use the main handler"""
+            # First, call the main editor change handler to handle all the standard logic
+            # (saves preferences, updates import buttons, etc.)
+            self._on_editor_changed(event)
+            # Then update the marker settings UI for the new editor
+            update_settings_ui()
+        
+        editor_combo.bind("<<ComboboxSelected>>", on_editor_changed_in_dialog)
+        
+        # Initial UI population
+        update_settings_ui()
 
     def _show_media_player_dialog(self):
         """Show a dialog for selecting and configuring media players"""
@@ -5946,7 +6687,7 @@ except Exception as e:
         self.debug_print(f"Stored editor menu reference with cache item at index {cache_index}")
 
     def _start_background_preparation(self):
-        """Start background API preparation without building cache yet"""
+        """Start background API preparation and build cache if needed"""
         def async_preparation():
             try:
                 self.debug_print("Starting background API preparation")
@@ -5954,12 +6695,25 @@ except Exception as e:
                 
                 # Initialize API in background
                 if self._ensure_resolve_ready():
-                    # Get timeline ID to prepare cache metadata but don't build yet
+                    # Get timeline ID to prepare cache metadata
                     timeline_id = self._get_timeline_identifier()
                     if timeline_id:
-                        self.debug_print("API ready, timeline detected - ready for instant cache building")
-                        self.root.after(0, lambda: self._set_cache_status("Ready - search will be fast!"))
-                        self.root.after(2000, lambda: self._clear_cache_status())
+                        self.debug_print("API ready, timeline detected")
+                        
+                        # Check if cache already exists for this timeline
+                        cache_key = f"resolve_subtitles_{timeline_id}"
+                        has_cache = hasattr(self, cache_key) and getattr(self, cache_key)
+                        
+                        if not has_cache:
+                            # No cache exists - build it on first dialog open
+                            self.debug_print("No cache exists, building cache on dialog open...")
+                            self.root.after(0, lambda: self._set_cache_status("Building cache..."))
+                            self._build_subtitle_cache_in_background(timeline_id)
+                        else:
+                            # Cache already exists
+                            self.debug_print("Cache already exists - ready for instant search")
+                            self.root.after(0, lambda: self._set_cache_status("Ready - search will be fast!"))
+                            self.root.after(2000, lambda: self._clear_cache_status())
                     else:
                         self.debug_print("API ready, but no timeline detected")
                         self.root.after(0, lambda: self._set_cache_status("Ready - no timeline detected"))
@@ -6289,6 +7043,8 @@ if __name__ == "__main__":
         editor_menu = tk.Menu(menu_bar, tearoff=0)
         editor_menu.add_command(label="Editor Navigator", 
                                 command=app._show_editor_dialog)
+        editor_menu.add_command(label="Marker Settings...", 
+                                command=app._show_marker_settings_dialog)
         editor_menu.add_separator()
         
         # Add cache setting with dynamic label showing current state
