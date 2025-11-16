@@ -3880,6 +3880,34 @@ except Exception as e:
         # Note: Canvas scrolling is now handled automatically by the global position-based handler
         # No platform-specific activation needed
         
+        # Pagination controls
+        self.pagination_frame = ttk.Frame(self.editor_main_frame)
+        self.pagination_frame.pack(fill="x", pady=5)
+        
+        # Initialize pagination state
+        self.current_page = 1
+        self.items_per_page = 100
+        self.total_pages = 1
+        self.all_matches = []  # Store all results for pagination
+        
+        # Pagination buttons
+        self.prev_button = ttk.Button(self.pagination_frame, text="← Previous", command=self._prev_page, state="disabled")
+        self.prev_button.pack(side="left", padx=5)
+        
+        self.page_label = ttk.Label(self.pagination_frame, text="Page 1 of 1")
+        self.page_label.pack(side="left", padx=10)
+        
+        self.next_button = ttk.Button(self.pagination_frame, text="Next →", command=self._next_page, state="disabled")
+        self.next_button.pack(side="left", padx=5)
+        
+        # Items per page selector
+        ttk.Label(self.pagination_frame, text="Items per page:").pack(side="left", padx=(20, 5))
+        self.items_per_page_var = tk.StringVar(value="100")
+        items_per_page_combo = ttk.Combobox(self.pagination_frame, textvariable=self.items_per_page_var, 
+                                            values=["50", "100", "200", "500"], width=8, state="readonly")
+        items_per_page_combo.pack(side="left", padx=5)
+        items_per_page_combo.bind("<<ComboboxSelected>>", self._on_items_per_page_changed)
+        
         # Set focus to search entry after dialog is fully created
         self.root.after(100, lambda: self.editor_search_entry.focus_set())
         
@@ -3893,6 +3921,54 @@ except Exception as e:
         else:
             self.debug_print("Editor dialog opened - ready for use")
             
+    def _prev_page(self):
+        """Go to previous page of results"""
+        if self.current_page > 1:
+            self.current_page -= 1
+            self._display_current_page()
+    
+    def _next_page(self):
+        """Go to next page of results"""
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self._display_current_page()
+    
+    def _on_items_per_page_changed(self, event=None):
+        """Handle change in items per page"""
+        self.items_per_page = int(self.items_per_page_var.get())
+        self.current_page = 1  # Reset to first page
+        self._display_current_page()
+    
+    def _display_current_page(self):
+        """Display the current page of results"""
+        if not self.all_matches:
+            return
+        
+        # Calculate pagination
+        self.total_pages = max(1, (len(self.all_matches) + self.items_per_page - 1) // self.items_per_page)
+        start_idx = (self.current_page - 1) * self.items_per_page
+        end_idx = min(start_idx + self.items_per_page, len(self.all_matches))
+        page_matches = self.all_matches[start_idx:end_idx]
+        
+        # Get timeline info (stored from original search)
+        timeline_id = getattr(self, '_current_timeline_id', None)
+        timeline = getattr(self, '_current_timeline', None)
+        
+        # Display this page
+        self._render_results(page_matches, timeline_id, timeline)
+        
+        # Update pagination controls
+        self._update_pagination_controls()
+    
+    def _update_pagination_controls(self):
+        """Update the pagination button states and labels"""
+        if not hasattr(self, 'page_label'):
+            return
+            
+        self.page_label.config(text=f"Page {self.current_page} of {self.total_pages} ({len(self.all_matches)} total results)")
+        self.prev_button.config(state="normal" if self.current_page > 1 else "disabled")
+        self.next_button.config(state="normal" if self.current_page < self.total_pages else "disabled")
+    
     def find_text_in_editor(self):
         """Find text in the currently selected editor"""
         text_to_find = self.editor_search_var.get()
@@ -4079,7 +4155,33 @@ except Exception as e:
             return []
 
     def _display_search_results(self, matches, timeline_id, timeline=None):
-        """Display search results in the editor dialog"""
+        """Display search results in the editor dialog with pagination"""
+        try:
+            if not matches:
+                self.status_var.set("No matches found in current timeline")
+                self.all_matches = []
+                self.current_page = 1
+                self.total_pages = 1
+                self._update_pagination_controls()
+                return
+
+            # Store all matches and timeline info for pagination
+            self.all_matches = matches
+            self._current_timeline_id = timeline_id
+            self._current_timeline = timeline
+            
+            # Reset to first page
+            self.current_page = 1
+            
+            # Display first page
+            self._display_current_page()
+            
+        except Exception as e:
+            self.debug_print(f"Error displaying search results: {e}")
+            self.status_var.set(f"Error displaying search results: {e}")
+    
+    def _render_results(self, matches, timeline_id, timeline=None):
+        """Render a specific set of results (used for pagination)"""
         global dvr_script
         try:
             if not matches:
