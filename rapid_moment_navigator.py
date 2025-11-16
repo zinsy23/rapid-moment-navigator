@@ -488,6 +488,41 @@ class RapidMomentNavigator:
             self.current_scroll_canvas = self.results_canvas
             self.debug_print("Main canvas immediately activated for Mac scrolling")
         
+        # Pagination controls for main navigator
+        pagination_frame = ttk.Frame(self.main_frame)
+        pagination_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Pagination state for main navigator
+        self.main_current_page = 1
+        self.main_items_per_page = 50
+        self.main_total_pages = 0
+        self.main_all_results = []  # Store all results for pagination
+        
+        # Previous button
+        self.main_prev_btn = ttk.Button(pagination_frame, text="◄ Previous", command=self._main_prev_page, state="disabled")
+        self.main_prev_btn.pack(side="left", padx=5)
+        
+        # Page info label
+        self.main_page_label = ttk.Label(pagination_frame, text="Page 0 of 0")
+        self.main_page_label.pack(side="left", padx=10)
+        
+        # Next button
+        self.main_next_btn = ttk.Button(pagination_frame, text="Next ►", command=self._main_next_page, state="disabled")
+        self.main_next_btn.pack(side="left", padx=5)
+        
+        # Items per page selector
+        ttk.Label(pagination_frame, text="Items per page:").pack(side="left", padx=(20, 5))
+        self.main_items_per_page_var = tk.StringVar(value="50")
+        main_items_combo = ttk.Combobox(
+            pagination_frame,
+            textvariable=self.main_items_per_page_var,
+            values=["25", "50", "100", "200", "500"],
+            state="readonly",
+            width=8
+        )
+        main_items_combo.pack(side="left", padx=5)
+        main_items_combo.bind("<<ComboboxSelected>>", self._on_main_items_per_page_changed)
+        
         # Status bar
         self.status_var = tk.StringVar()
         self.status_bar = ttk.Label(self.main_frame, textvariable=self.status_var, relief="sunken", anchor="w")
@@ -1558,6 +1593,12 @@ class RapidMomentNavigator:
         
         self.search_results = []
         
+        # Reset pagination state
+        self.main_all_results = []
+        self.main_current_page = 1
+        self.main_total_pages = 0
+        self._update_main_pagination_controls()
+        
         self.debug_print(f"Searching for '{keyword}' in {selected_show_name} ({selected_show_path})")
         
         # Start search in a separate thread to keep UI responsive
@@ -1686,15 +1727,33 @@ class RapidMomentNavigator:
                 self.debug_print(f"Error processing {subtitle_file}: {e}")
                 self.status_var.set(f"Error processing {subtitle_file}: {e}")
                 continue
-            
-            # If there are results for this file, display them in the UI
-            if file_results:
-                # Use main thread to update the UI
-                self.root.after(0, self._update_results_ui, subtitle_file, file_results)
         
         # Update status
         self.debug_print(f"Found {total_results} matches in {show_name}")
-        self.root.after(0, lambda: self.status_var.set(f"Found {total_results} matches in {show_name}"))
+        
+        # Store all results and display with pagination
+        self.root.after(0, self._finalize_main_search_results, total_results, show_name)
+    
+    def _finalize_main_search_results(self, total_results, show_name):
+        """Finalize search results and set up pagination"""
+        # Store all results for pagination
+        self.main_all_results = self.search_results.copy()
+        
+        # Calculate total pages
+        if self.main_all_results:
+            self.main_total_pages = (len(self.main_all_results) + self.main_items_per_page - 1) // self.main_items_per_page
+            self.main_current_page = 1
+            
+            # Display first page
+            self._display_main_current_page()
+        else:
+            # No results
+            self.main_total_pages = 0
+            self.main_current_page = 1
+            self._update_main_pagination_controls()
+        
+        # Update status
+        self.status_var.set(f"Found {total_results} matches in {show_name}")
     
     def _update_results_ui(self, subtitle_file, file_results):
         """Update the UI with search results (called from main thread)"""
@@ -1795,6 +1854,169 @@ class RapidMomentNavigator:
             self.debug_print(f"Added clickable timecode for {timecode_text}")
         
         self.debug_print(f"UI updated with {len(file_results)} results from {file_basename}")
+    
+    def _main_prev_page(self):
+        """Navigate to previous page in main navigator"""
+        if self.main_current_page > 1:
+            self.main_current_page -= 1
+            self._display_main_current_page()
+    
+    def _main_next_page(self):
+        """Navigate to next page in main navigator"""
+        if self.main_current_page < self.main_total_pages:
+            self.main_current_page += 1
+            self._display_main_current_page()
+    
+    def _on_main_items_per_page_changed(self, event=None):
+        """Handle change in items per page for main navigator"""
+        try:
+            self.main_items_per_page = int(self.main_items_per_page_var.get())
+            # Recalculate total pages
+            if self.main_all_results:
+                self.main_total_pages = (len(self.main_all_results) + self.main_items_per_page - 1) // self.main_items_per_page
+                # Reset to page 1 when changing items per page
+                self.main_current_page = 1
+                self._display_main_current_page()
+        except ValueError:
+            pass
+    
+    def _display_main_current_page(self):
+        """Display the current page of results in main navigator"""
+        if not self.main_all_results:
+            return
+        
+        # Calculate slice indices
+        start_idx = (self.main_current_page - 1) * self.main_items_per_page
+        end_idx = start_idx + self.main_items_per_page
+        
+        # Get results for current page
+        page_results = self.main_all_results[start_idx:end_idx]
+        
+        # Clear the results container
+        for widget in self.results_container.winfo_children():
+            widget.destroy()
+        
+        # Group results by file
+        results_by_file = {}
+        for result in page_results:
+            file_path = result['file']
+            if file_path not in results_by_file:
+                results_by_file[file_path] = []
+            results_by_file[file_path].append(result)
+        
+        # Render each file's results
+        for subtitle_file, file_results in results_by_file.items():
+            self._render_main_file_results(subtitle_file, file_results)
+        
+        # Update pagination controls
+        self._update_main_pagination_controls()
+        
+        # Scroll to top
+        self.results_canvas.yview_moveto(0)
+    
+    def _render_main_file_results(self, subtitle_file, file_results):
+        """Render results for a single file in main navigator"""
+        # Add file header
+        file_basename = os.path.basename(subtitle_file)
+        
+        # Find the show name this subtitle belongs to
+        show_path = None
+        for show_name, path in self.show_name_to_path_map.items():
+            if subtitle_file.startswith(path):
+                show_path = path
+                break
+        
+        # Get relative path from show root if possible
+        if show_path:
+            relative_path = os.path.relpath(subtitle_file, show_path)
+            header_text = f"File: {relative_path}"
+        else:
+            header_text = f"File: {file_basename}"
+        
+        # Create a frame for the file header
+        header_frame = ttk.Frame(self.results_container)
+        header_frame.pack(fill="x", padx=5, pady=2)
+        
+        # Add file header label
+        file_header = ttk.Label(
+            header_frame, 
+            text=header_text, 
+            font=("TkDefaultFont", 10, "bold"), 
+            foreground="green"
+        )
+        file_header.pack(side="left", anchor="w")
+        
+        # Check if we should show import buttons
+        selected_editor = self.editor_var.get()
+        show_import_buttons = selected_editor != "None"
+        
+        # Add each result
+        for result in file_results:
+            # Create a frame for this result
+            result_frame = ttk.Frame(self.results_container)
+            result_frame.pack(fill="x", padx=5, pady=2, anchor="w")
+            
+            # Create import buttons frame at the top right
+            import_buttons_frame = ttk.Frame(result_frame)
+            # Store reference to the import buttons frame for later visibility updates
+            result_frame.import_buttons_frame = import_buttons_frame
+            
+            # Always create the import buttons, but only show the frame if editor is selected
+            if show_import_buttons:
+                import_buttons_frame.pack(side="right", padx=5, anchor="ne")
+            
+            # Add Import Media button (always create, will be visible only if frame is visible)
+            import_media_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Media", 
+                result, 
+                self._handle_import_media_click,
+                tooltip="Import the entire video file to the DaVinci Resolve timeline"
+            )
+            import_media_btn.pack(side="left", padx=5)
+            
+            # Add Import Clip button (always create, will be visible only if frame is visible)
+            import_clip_btn = ClickableImport(
+                import_buttons_frame, 
+                "Import Clip", 
+                result, 
+                self._handle_import_clip_click,
+                tooltip="Import only the time range from this subtitle entry to the DaVinci Resolve timeline"
+            )
+            import_clip_btn.pack(side="left", padx=5)
+            
+            # Create content frame (with timecode and text) that fills the remaining space
+            content_frame = ttk.Frame(result_frame)
+            content_frame.pack(side="left", fill="both", expand=True, anchor="w")
+            
+            # Create clickable timecode label
+            timecode_text = f"{result['start_time']} --> {result['end_time']}"
+            timecode_label = ClickableTimecode(
+                content_frame, 
+                timecode_text, 
+                result, 
+                self._handle_timecode_click
+            )
+            timecode_label.pack(anchor="w")
+            
+            # Add text label
+            subtitle_label = ttk.Label(content_frame, text=result['clean_text'], wraplength=700)
+            subtitle_label.pack(anchor="w", padx=10)
+            
+            # Add some space after each result
+            ttk.Separator(self.results_container, orient="horizontal").pack(fill="x", pady=5)
+    
+    def _update_main_pagination_controls(self):
+        """Update pagination controls state for main navigator"""
+        # Update page label
+        if self.main_total_pages > 0:
+            self.main_page_label.config(text=f"Page {self.main_current_page} of {self.main_total_pages} ({len(self.main_all_results)} total results)")
+        else:
+            self.main_page_label.config(text="Page 0 of 0")
+        
+        # Update button states
+        self.main_prev_btn.config(state="normal" if self.main_current_page > 1 else "disabled")
+        self.main_next_btn.config(state="normal" if self.main_current_page < self.main_total_pages else "disabled")
     
     def _restore_subtitle_line_breaks(self, text):
         """Restore line breaks in subtitle text from DaVinci Resolve API"""
