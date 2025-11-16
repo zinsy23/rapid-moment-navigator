@@ -30,6 +30,8 @@ DEFAULT_PREFS = {
     "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
     "window_aspect_ratio_lock": True,  # Maintain aspect ratio when resizing individual windows
     "window_proportional_scaling": True,  # Scale all windows proportionally when one is changed
+    "marker_color": "Blue",  # Default marker color for Shift+Click in editor
+    "marker_name": "Marker",  # Default marker name for Shift+Click in editor
     # Note: current_media_player is dynamically set based on OS platform
 }
 
@@ -2658,6 +2660,7 @@ except Exception as e:
             "general_settings_dialog": (520, 350),
             "media_player_dialog": (550, 400),
             "editor_dialog": (600, 500),
+            "marker_settings_dialog": (500, 300),
             "debug_window": (800, 425),
             "window_sizing_dialog": (600, 700),
             "resolve_paths_dialog": (600, 500),
@@ -3908,15 +3911,6 @@ except Exception as e:
         items_per_page_combo.pack(side="left", padx=5)
         items_per_page_combo.bind("<<ComboboxSelected>>", self._on_items_per_page_changed)
         
-        # Marker color selector (for Shift+Click)
-        ttk.Label(self.pagination_frame, text="Marker color:").pack(side="left", padx=(20, 5))
-        self.marker_color_var = tk.StringVar(value="Blue")
-        marker_colors = ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", "Fuchsia", 
-                        "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", "Cocoa", "Cream"]
-        marker_color_combo = ttk.Combobox(self.pagination_frame, textvariable=self.marker_color_var,
-                                         values=marker_colors, width=10, state="readonly")
-        marker_color_combo.pack(side="left", padx=5)
-        
         # Set focus to search entry after dialog is fully created
         self.root.after(100, lambda: self.editor_search_entry.focus_set())
         
@@ -4312,11 +4306,9 @@ except Exception as e:
     def _create_marker_at_frame(self, frame, timeline):
         """Create a marker at the specified frame in the timeline"""
         try:
-            # Get the selected marker color from the dropdown
-            if hasattr(self, 'marker_color_var'):
-                color = self.marker_color_var.get()
-            else:
-                color = "Blue"
+            # Get marker settings from preferences
+            color = self.preferences.get("marker_color", "Blue")
+            name = self.preferences.get("marker_name", "Marker")
             
             # Verify the color is valid
             valid_colors = ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", 
@@ -4325,6 +4317,10 @@ except Exception as e:
             if color not in valid_colors:
                 self.debug_print(f"⚠️ Invalid color '{color}' - using 'Blue' instead")
                 color = "Blue"
+            
+            # Ensure name is not empty (API requirement)
+            if not name or name.strip() == "":
+                name = "Marker"
             
             # Check if a marker already exists at this frame
             try:
@@ -4338,15 +4334,15 @@ except Exception as e:
             # Create the marker at the specified frame
             # Note: AddMarker requires a non-empty name parameter to succeed
             # AddMarker expects: frameId (int), color (str), name (str), note (str), duration (int), customData (str)
-            success = timeline.AddMarker(int(frame), color, "Marker", "", 1, "")
+            success = timeline.AddMarker(int(frame), color, name, "", 1, "")
             
             if success:
                 # Get timecode for display
                 try:
                     current_tc = timeline.GetCurrentTimecode()
-                    self.status_var.set(f"{color} marker created at {current_tc}")
+                    self.status_var.set(f"{color} marker '{name}' created at {current_tc}")
                 except:
-                    self.status_var.set(f"{color} marker created at frame {frame}")
+                    self.status_var.set(f"{color} marker '{name}' created at frame {frame}")
                 return True
             else:
                 self.debug_print(f"Failed to create marker at frame {frame}")
@@ -4710,6 +4706,126 @@ except Exception as e:
             command=settings_dialog.destroy
         )
         close_btn.pack(side="right", padx=5)
+
+    def _show_marker_settings_dialog(self):
+        """Show a dialog for configuring marker settings (for Shift+Click in editor)"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("marker_settings_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+        
+        settings_dialog = tk.Toplevel(self.root)
+        settings_dialog.title("Marker Settings")
+        settings_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
+        settings_dialog.transient(self.root)
+        settings_dialog.grab_set()
+        
+        # Bind window close to save size
+        def on_close():
+            self.save_window_size("marker_settings_dialog", 
+                                 settings_dialog.winfo_width(), 
+                                 settings_dialog.winfo_height())
+            settings_dialog.destroy()
+        
+        settings_dialog.protocol("WM_DELETE_WINDOW", on_close)
+        
+        # Set minimum window size to ensure Close button is always visible
+        settings_dialog.minsize(450, 250)
+        
+        # Make dialog modal
+        settings_dialog.focus_set()
+        
+        # Create buttons frame FIRST and pack at bottom (so it stays at bottom when resizing)
+        buttons_frame = ttk.Frame(settings_dialog)
+        buttons_frame.pack(side="bottom", fill="x", padx=15, pady=15)
+        
+        # Close button (saves window size on close)
+        close_btn = ttk.Button(
+            buttons_frame, 
+            text="Close", 
+            command=on_close
+        )
+        close_btn.pack(side="right", padx=5)
+        
+        # Create main frame with padding (pack after buttons so it fills remaining space)
+        main_frame = ttk.Frame(settings_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title label
+        ttk.Label(main_frame, text="Marker Settings", 
+                 font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Description
+        desc_label = ttk.Label(
+            main_frame,
+            text="Configure default settings for markers created with Shift+Click in the Editor Navigator.",
+            wraplength=450,
+            font=("TkDefaultFont", 9),
+            foreground="gray"
+        )
+        desc_label.pack(anchor="w", pady=(0, 15))
+        
+        # Marker Settings Frame
+        marker_frame = ttk.LabelFrame(main_frame, text="Marker Defaults", padding=10)
+        marker_frame.pack(fill="x", pady=10)
+        
+        # Marker Color Setting
+        color_frame = ttk.Frame(marker_frame)
+        color_frame.pack(fill="x", pady=5)
+        
+        ttk.Label(color_frame, text="Marker Color:", width=15).pack(side="left", padx=(0, 10))
+        
+        marker_color_var = tk.StringVar(value=self.preferences.get("marker_color", "Blue"))
+        marker_colors = ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", "Fuchsia", 
+                        "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", "Cocoa", "Cream"]
+        
+        def on_color_changed(event=None):
+            """Auto-save when color changes"""
+            self.preferences["marker_color"] = marker_color_var.get()
+            self.save_preferences()
+        
+        marker_color_combo = ttk.Combobox(color_frame, textvariable=marker_color_var,
+                                         values=marker_colors, width=15, state="readonly")
+        marker_color_combo.pack(side="left", padx=5)
+        marker_color_combo.bind("<<ComboboxSelected>>", on_color_changed)
+        
+        # Marker Name Setting
+        name_frame = ttk.Frame(marker_frame)
+        name_frame.pack(fill="x", pady=5)
+        
+        ttk.Label(name_frame, text="Marker Name:", width=15).pack(side="left", padx=(0, 10))
+        
+        marker_name_var = tk.StringVar(value=self.preferences.get("marker_name", "Marker"))
+        
+        def on_name_changed(*args):
+            """Auto-save when name changes"""
+            name = marker_name_var.get().strip()
+            if name:  # Only save if not empty
+                self.preferences["marker_name"] = name
+                self.save_preferences()
+        
+        marker_name_entry = ttk.Entry(name_frame, textvariable=marker_name_var, width=30)
+        marker_name_entry.pack(side="left", padx=5)
+        marker_name_var.trace_add("write", on_name_changed)
+        
+        # Add description for marker name
+        name_desc_label = ttk.Label(
+            marker_frame,
+            text="Note: Marker name cannot be empty (required by DaVinci Resolve API).",
+            wraplength=450,
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        name_desc_label.pack(anchor="w", padx=(20, 0), pady=(5, 0))
+        
+        # Note about auto-save
+        note_label = ttk.Label(
+            main_frame,
+            text="Settings are automatically saved when changed.",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        note_label.pack(anchor="w", pady=(10, 0))
 
     def _show_media_player_dialog(self):
         """Show a dialog for selecting and configuring media players"""
@@ -6490,6 +6606,8 @@ if __name__ == "__main__":
         editor_menu = tk.Menu(menu_bar, tearoff=0)
         editor_menu.add_command(label="Editor Navigator", 
                                 command=app._show_editor_dialog)
+        editor_menu.add_command(label="Marker Settings...", 
+                                command=app._show_marker_settings_dialog)
         editor_menu.add_separator()
         
         # Add cache setting with dynamic label showing current state
