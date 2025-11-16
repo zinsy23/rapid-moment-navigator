@@ -192,8 +192,8 @@ class ClickableEditorTimecode(Label):
         self.config(font=("TkDefaultFont", 10, "underline"))
         
     def _on_click(self, event):
-        """Handle click event"""
-        self.callback(self.timeline, self.start_frame, self.item_ref)
+        """Handle click event - pass event to callback for modifier key detection"""
+        self.callback(self.timeline, self.start_frame, self.item_ref, event)
 
 # Keep the old names for backward compatibility
 ClickableTimecodeLink = ClickableEditorTimecode  # New alias
@@ -3908,6 +3908,15 @@ except Exception as e:
         items_per_page_combo.pack(side="left", padx=5)
         items_per_page_combo.bind("<<ComboboxSelected>>", self._on_items_per_page_changed)
         
+        # Marker color selector (for Shift+Click)
+        ttk.Label(self.pagination_frame, text="Marker color:").pack(side="left", padx=(20, 5))
+        self.marker_color_var = tk.StringVar(value="Blue")
+        marker_colors = ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", "Fuchsia", 
+                        "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", "Cocoa", "Cream"]
+        marker_color_combo = ttk.Combobox(self.pagination_frame, textvariable=self.marker_color_var,
+                                         values=marker_colors, width=10, state="readonly")
+        marker_color_combo.pack(side="left", padx=5)
+        
         # Set focus to search entry after dialog is fully created
         self.root.after(100, lambda: self.editor_search_entry.focus_set())
         
@@ -4232,12 +4241,21 @@ except Exception as e:
             self.debug_print(f"Error displaying search results: {e}")
             self.status_var.set(f"Error displaying search results: {e}")
 
-    def _handle_editor_timecode_click(self, timeline, start_frame, item_ref=None):
+    def _handle_editor_timecode_click(self, timeline, start_frame, item_ref=None, event=None):
         """Handle clicks on editor timecode results - generic handler"""
         current_editor = self.editor_var.get()
         
         if current_editor == "DaVinci Resolve":
+            # Check if Shift key was held during click
+            shift_held = event and (event.state & 0x0001)  # 0x0001 is the Shift modifier mask
+            
+            # Always jump to the frame first
             self._jump_to_frame(start_frame, timeline, item_ref)
+            
+            # If Shift was held, also create a marker at that frame
+            if shift_held:
+                # Use the same frame we jumped to for the marker
+                self._create_marker_at_frame(start_frame, timeline)
         else:
             # Future editors can be handled here
             self.debug_print(f"Timecode navigation not implemented for {current_editor}")
@@ -4290,8 +4308,57 @@ except Exception as e:
         except Exception as e:
             logging.error(f"Error using timeline navigation methods: {str(e)}")
             return False
+    
+    def _create_marker_at_frame(self, frame, timeline):
+        """Create a marker at the specified frame in the timeline"""
+        try:
+            # Get the selected marker color from the dropdown
+            if hasattr(self, 'marker_color_var'):
+                color = self.marker_color_var.get()
+            else:
+                color = "Blue"
             
-
+            # Verify the color is valid
+            valid_colors = ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", 
+                          "Fuchsia", "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", 
+                          "Cocoa", "Cream"]
+            if color not in valid_colors:
+                self.debug_print(f"⚠️ Invalid color '{color}' - using 'Blue' instead")
+                color = "Blue"
+            
+            # Check if a marker already exists at this frame
+            try:
+                existing_markers = timeline.GetMarkers()
+                if existing_markers and int(frame) in existing_markers:
+                    self.status_var.set(f"Marker already exists at this position")
+                    return False
+            except Exception as e:
+                self.debug_print(f"Could not check existing markers: {e}")
+            
+            # Create the marker at the specified frame
+            # Note: AddMarker requires a non-empty name parameter to succeed
+            # AddMarker expects: frameId (int), color (str), name (str), note (str), duration (int), customData (str)
+            success = timeline.AddMarker(int(frame), color, "Marker", "", 1, "")
+            
+            if success:
+                # Get timecode for display
+                try:
+                    current_tc = timeline.GetCurrentTimecode()
+                    self.status_var.set(f"{color} marker created at {current_tc}")
+                except:
+                    self.status_var.set(f"{color} marker created at frame {frame}")
+                return True
+            else:
+                self.debug_print(f"Failed to create marker at frame {frame}")
+                self.status_var.set(f"Failed to create marker")
+                return False
+                
+        except Exception as e:
+            self.debug_print(f"Error creating marker: {e}")
+            self.debug_print(f"Exception details: {traceback.format_exc()}")
+            self.status_var.set(f"Error creating marker: {e}")
+            return False
+    
     def _resolve_navigate_to_timecode(self, timecode):
         """Navigate to a specific timecode in Resolve"""
         self._jump_to_frame(self.timeline, self.result['start'], self.result['item'])
