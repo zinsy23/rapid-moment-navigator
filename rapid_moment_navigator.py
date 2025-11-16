@@ -6358,7 +6358,7 @@ except Exception as e:
         self.debug_print(f"Stored editor menu reference with cache item at index {cache_index}")
 
     def _start_background_preparation(self):
-        """Start background API preparation without building cache yet"""
+        """Start background API preparation and build cache if needed"""
         def async_preparation():
             try:
                 self.debug_print("Starting background API preparation")
@@ -6366,12 +6366,25 @@ except Exception as e:
                 
                 # Initialize API in background
                 if self._ensure_resolve_ready():
-                    # Get timeline ID to prepare cache metadata but don't build yet
+                    # Get timeline ID to prepare cache metadata
                     timeline_id = self._get_timeline_identifier()
                     if timeline_id:
-                        self.debug_print("API ready, timeline detected - ready for instant cache building")
-                        self.root.after(0, lambda: self._set_cache_status("Ready - search will be fast!"))
-                        self.root.after(2000, lambda: self._clear_cache_status())
+                        self.debug_print("API ready, timeline detected")
+                        
+                        # Check if cache already exists for this timeline
+                        cache_key = f"resolve_subtitles_{timeline_id}"
+                        has_cache = hasattr(self, cache_key) and getattr(self, cache_key)
+                        
+                        if not has_cache:
+                            # No cache exists - build it on first dialog open
+                            self.debug_print("No cache exists, building cache on dialog open...")
+                            self.root.after(0, lambda: self._set_cache_status("Building cache..."))
+                            self._build_subtitle_cache_in_background(timeline_id)
+                        else:
+                            # Cache already exists
+                            self.debug_print("Cache already exists - ready for instant search")
+                            self.root.after(0, lambda: self._set_cache_status("Ready - search will be fast!"))
+                            self.root.after(2000, lambda: self._clear_cache_status())
                     else:
                         self.debug_print("API ready, but no timeline detected")
                         self.root.after(0, lambda: self._set_cache_status("Ready - no timeline detected"))
