@@ -1241,6 +1241,7 @@ class RapidMomentNavigator:
     
     def map_subtitles_to_videos(self):
         """Map subtitle files to their corresponding video files"""
+        self.debug_print("Mapping subtitle files to videos...")
         self.status_var.set("Mapping subtitle files to videos...")
         
         # Clear previous mappings
@@ -1577,15 +1578,18 @@ class RapidMomentNavigator:
         selected_show_name = self.show_var.get()
         
         if not keyword:
+            self.debug_print("Search attempted with empty keyword")
             self.status_var.set("Please enter a search keyword.")
             return
             
         if not selected_show_name:
+            self.debug_print("Search attempted with no show selected")
             self.status_var.set("Please select a show.")
             return
         
         # Get the full path for the selected show
         if selected_show_name not in self.show_name_to_path_map:
+            self.debug_print(f"Show path not found for: {selected_show_name}")
             self.status_var.set(f"Show path not found for: {selected_show_name}")
             return
             
@@ -1638,6 +1642,7 @@ class RapidMomentNavigator:
             return
         
         if not subtitle_files:
+            self.debug_print(f"No subtitle files found in {show_name}")
             self.status_var.set(f"No subtitle files found in {show_name}")
             return
             
@@ -2092,6 +2097,7 @@ class RapidMomentNavigator:
             self.debug_print(f"Found matching video file: {video_file}")
             start_time_seconds = result['start_time_seconds']
             self.play_video(video_file, start_time_seconds)
+            self.debug_print(f"Opening {os.path.basename(video_file)} at {result['start_time']}")
             self.status_var.set(f"Opening {os.path.basename(video_file)} at {result['start_time']}")
         else:
             self.debug_print(f"No matching video file found for {os.path.basename(subtitle_file)}")
@@ -3419,6 +3425,7 @@ except Exception as e:
         selected_indices = self.dir_listbox.curselection()
         
         if not selected_indices:
+            self.debug_print("Remove directory attempted with no selection")
             self.status_var.set("No directory selected")
             return
         
@@ -3478,6 +3485,7 @@ except Exception as e:
                 # If no shows are found, show the guidance dialog
                 self.root.after(500, self._delayed_show_guidance)
         else:
+            self.debug_print(f"Directory not found in preferences: {selected_dir}")
             self.status_var.set("Directory not found in preferences")
 
     def _setup_resolve_paths(self):
@@ -4347,8 +4355,10 @@ except Exception as e:
                     is_empty_search = not text_to_find or text_to_find.strip() == ""
                     
                     if is_empty_search:
+                        self.debug_print("Loading all cached items (empty search)")
                         self.root.after(0, lambda: self.status_var.set("Loading all cached items..."))
                     else:
+                        self.debug_print("Searching cached subtitle data")
                         self.root.after(0, lambda: self.status_var.set("Searching cached subtitle data..."))
                     
                     # Search cached items (or get all if empty search)
@@ -4356,8 +4366,10 @@ except Exception as e:
                     if matches:
                         self.root.after(0, lambda: self._display_search_results(matches, timeline_id))
                         if is_empty_search:
+                            self.debug_print(f"Showing all {len(matches)} items from cache")
                             self.root.after(0, lambda: self.status_var.set(f"Showing all {len(matches)} items from cache"))
                         else:
+                            self.debug_print(f"Found {len(matches)} matches in editor (cache)")
                             self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches in editor"))
                     else:
                         self.debug_print("No matches found in cached data")
@@ -4437,8 +4449,10 @@ except Exception as e:
                 # Display results using timeline from API
                 self.root.after(0, lambda: self._display_search_results(matches, timeline_id, timeline))
                 if is_empty_search:
+                    self.debug_print(f"Showing all {len(matches)} items via API")
                     self.root.after(0, lambda: self.status_var.set(f"Showing all {len(matches)} items via API"))
                 else:
+                    self.debug_print(f"Found {len(matches)} matches via API")
                     self.root.after(0, lambda: self.status_var.set(f"Found {len(matches)} matches via API"))
 
             except Exception as e:
