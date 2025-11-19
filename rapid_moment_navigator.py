@@ -77,6 +77,16 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "category": "Results Navigation",
         "keys": ["<Up>", "k"]
     },
+    "result_first": {
+        "description": "Jump to first result on page",
+        "category": "Results Navigation",
+        "keys": ["<Home>", "gg"]
+    },
+    "result_last": {
+        "description": "Jump to last result on page",
+        "category": "Results Navigation",
+        "keys": ["<End>", "G"]
+    },
     "result_activate": {
         "description": "Activate selected result (play at timecode)",
         "category": "Results Actions",
@@ -435,6 +445,10 @@ class RapidMomentNavigator:
         self.result_items = []  # List of dicts with {frame, result_data, timecode_label, import_media_btn, import_clip_btn}
         self.selected_result_index = None  # Currently selected result index
         self.selected_result_frame = None  # Currently highlighted frame widget
+        
+        # Double-tap key tracking (for shortcuts like 'gg', 'dd', etc.)
+        self.last_key_press_times = {}  # key -> timestamp mapping
+        self.double_tap_timeout = 500  # milliseconds - time window for double-tap
         
         # Setup exception handling for Tkinter
         self.setup_exception_handler()
@@ -2093,6 +2107,70 @@ class RapidMomentNavigator:
         else:
             self.debug_print("Already at first result")
     
+    def _handle_double_tap_key(self, key, action_callback, action_name):
+        """
+        Generic handler for same-letter double-tap detection (e.g., 'gg', 'dd', 'cc')
+        
+        Args:
+            key: The key character (e.g., 'g', 'd')
+            action_callback: Function to call on double-tap
+            action_name: Name of action for debug logging
+        """
+        # Don't navigate if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            return
+        
+        import time
+        current_time = time.time() * 1000  # Convert to milliseconds
+        
+        # Get last press time for this key (default to 0 if not found)
+        last_press_time = self.last_key_press_times.get(key, 0)
+        
+        # Check if this is a double-tap (within timeout window)
+        if current_time - last_press_time < self.double_tap_timeout:
+            # Double-tap detected - execute action
+            self.debug_print(f"Double '{key}' detected - {action_name}")
+            action_callback()
+            # Reset timer to prevent triple-tap
+            self.last_key_press_times[key] = 0
+        else:
+            # First press - just record the time
+            self.debug_print(f"First '{key}' press detected")
+            self.last_key_press_times[key] = current_time
+    
+    def _jump_to_first_result(self):
+        """Jump to the first result on the current page"""
+        # Don't navigate if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            self.debug_print("Search bar has focus, ignoring navigation")
+            return
+        
+        self.debug_print(f"_jump_to_first_result called, result_items count: {len(self.result_items)}")
+        if not self.result_items:
+            self.debug_print("No result items available")
+            return
+        
+        # Jump to first result (index 0)
+        self.debug_print("Jumping to first result")
+        self._select_result(0)
+    
+    def _jump_to_last_result(self):
+        """Jump to the last result on the current page"""
+        # Don't navigate if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            self.debug_print("Search bar has focus, ignoring navigation")
+            return
+        
+        self.debug_print(f"_jump_to_last_result called, result_items count: {len(self.result_items)}")
+        if not self.result_items:
+            self.debug_print("No result items available")
+            return
+        
+        # Jump to last result
+        last_index = len(self.result_items) - 1
+        self.debug_print(f"Jumping to last result (index {last_index})")
+        self._select_result(last_index)
+    
     def _activate_selected_result(self):
         """Activate the currently selected result (simulate clicking timecode)"""
         if self.selected_result_index is None or not self.result_items:
@@ -2147,10 +2225,15 @@ class RapidMomentNavigator:
             "escape_search": self._escape_search_bar,
             "result_next": self._navigate_result_next,
             "result_previous": self._navigate_result_previous,
+            "result_first": self._jump_to_first_result,
+            "result_last": self._jump_to_last_result,
             "result_activate": self._activate_selected_result,
             "result_import_media": self._import_media_for_selected_result,
             "result_import_clip": self._import_clip_for_selected_result,
         }
+        
+        # Track which double-tap keys we've already bound to avoid duplicates
+        bound_double_tap_keys = {}
         
         # Bind each shortcut
         for action_id, handler in action_handlers.items():
@@ -2158,18 +2241,42 @@ class RapidMomentNavigator:
                 keys = shortcuts[action_id].get("keys", [])
                 for key in keys:
                     try:
-                        # For single character keys without angle brackets, use KeyPress format
-                        if not key.startswith('<') and len(key) == 1:
+                        # Check if this is a same-letter double-tap (two identical characters, no angle brackets)
+                        if not key.startswith('<') and len(key) == 2 and key[0] == key[1]:
+                            # This is a double-tap shortcut like 'gg', 'dd', 'cc', etc.
+                            single_key = key[0]
+                            bind_key = f"<KeyPress-{single_key}>"
+                            
+                            # Only bind once per key, even if multiple actions use it
+                            if single_key not in bound_double_tap_keys:
+                                # Store the handler for this double-tap
+                                bound_double_tap_keys[single_key] = (handler, action_id)
+                                self.debug_print(f"Registered double-tap '{key}' for {action_id}")
+                            else:
+                                self.debug_print(f"Warning: '{key}' already bound to {bound_double_tap_keys[single_key][1]}, skipping binding for {action_id}")
+                        
+                        # Single character keys without angle brackets
+                        elif not key.startswith('<') and len(key) == 1:
                             bind_key = f"<KeyPress-{key}>"
                             # Use bind_all for single character keys to catch them globally
                             self.root.bind_all(bind_key, lambda e, h=handler: h())
                             self.debug_print(f"Bound (globally) {bind_key} (from {key}) to {action_id}")
+                        
+                        # Special keys with angle brackets (like <Control-f>, <Home>, etc.)
                         else:
                             bind_key = key
                             self.root.bind(bind_key, lambda e, h=handler: h())
                             self.debug_print(f"Bound {bind_key} (from {key}) to {action_id}")
                     except Exception as e:
                         self.debug_print(f"Error binding {key} for {action_id}: {e}")
+        
+        # Now bind all the first keys for double-tap sequences
+        for single_key, (handler, action_id) in bound_double_tap_keys.items():
+            bind_key = f"<KeyPress-{single_key}>"
+            # Bind the key to detect double-tap
+            self.root.bind_all(bind_key, lambda e, k=single_key, h=handler, aid=action_id: 
+                self._handle_double_tap_key(k, h, aid))
+            self.debug_print(f"Bound (globally) {bind_key} for double-tap '{single_key}{single_key}' to {action_id}")
     
     def _display_main_current_page(self):
         """Display the current page of results in main navigator"""
@@ -6708,6 +6815,7 @@ except Exception as e:
         key_display.pack(pady=10, fill="x")
         
         captured_binding = [None]  # Use list to allow modification in nested function
+        first_key = [None]  # Track first key for multi-key sequences
         
         def capture_key(event):
             # Build the key binding string
@@ -6722,14 +6830,32 @@ except Exception as e:
             # Get the key symbol
             key = event.keysym
             
-            # Build the binding string
+            # Ignore modifier keys by themselves
+            if key in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R'):
+                return
+            
+            # Build the binding string for this key press
             if modifiers:
                 binding = "<" + "-".join(modifiers) + "-" + key + ">"
             else:
                 binding = key
             
-            captured_binding[0] = binding
-            captured_key.set(self._format_key_for_display(binding))
+            # Check if this is the same key as last press (for double-tap)
+            if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and binding == first_key[0]:
+                # Same key pressed twice - create double-tap like "gg", "dd", "cc"
+                sequence = first_key[0] + binding
+                captured_binding[0] = sequence
+                captured_key.set(self._format_key_for_display(sequence))
+                first_key[0] = None  # Reset after creating double-tap
+            else:
+                # First press or different key - store this key
+                first_key[0] = binding
+                captured_binding[0] = binding
+                # Show hint for single letters without modifiers
+                if not modifiers and not binding.startswith('<'):
+                    captured_key.set(self._format_key_for_display(binding) + " (press same key again for double-tap, or Save)")
+                else:
+                    captured_key.set(self._format_key_for_display(binding))
         
         # Bind to the dialog window itself
         edit_dialog.bind("<Key>", capture_key)
@@ -6846,6 +6972,7 @@ except Exception as e:
             key_display.pack(pady=10)
             
             captured_binding = [None]  # Use list to allow modification in nested function
+            first_key = [None]  # Track first key for multi-key sequences
             
             def capture_key(event):
                 # Build the key binding string
@@ -6860,14 +6987,32 @@ except Exception as e:
                 # Get the key symbol
                 key = event.keysym
                 
-                # Build the binding string
+                # Ignore modifier keys by themselves
+                if key in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R'):
+                    return
+                
+                # Build the binding string for this key press
                 if modifiers:
                     binding = "<" + "-".join(modifiers) + "-" + key + ">"
                 else:
                     binding = key
                 
-                captured_binding[0] = binding
-                captured_key.set(self._format_key_for_display(binding))
+                # Check if this is the same key as last press (for double-tap)
+                if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and binding == first_key[0]:
+                    # Same key pressed twice - create double-tap like "gg", "dd", "cc"
+                    sequence = first_key[0] + binding
+                    captured_binding[0] = sequence
+                    captured_key.set(self._format_key_for_display(sequence))
+                    first_key[0] = None  # Reset after creating double-tap
+                else:
+                    # First press or different key - store this key
+                    first_key[0] = binding
+                    captured_binding[0] = binding
+                    # Show hint for single letters without modifiers
+                    if not modifiers and not binding.startswith('<'):
+                        captured_key.set(self._format_key_for_display(binding) + " (press same key again for double-tap, or Add)")
+                    else:
+                        captured_key.set(self._format_key_for_display(binding))
             
             add_key_dialog.bind("<Key>", capture_key)
             
@@ -6934,6 +7079,7 @@ except Exception as e:
             key_display.pack(pady=10, fill="x")
             
             captured_binding = [None]
+            first_key = [None]  # Track first key for multi-key sequences
             
             def capture_key(event):
                 # Build the key binding string
@@ -6948,14 +7094,32 @@ except Exception as e:
                 # Get the key symbol
                 key = event.keysym
                 
-                # Build the binding string
+                # Ignore modifier keys by themselves
+                if key in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R'):
+                    return
+                
+                # Build the binding string for this key press
                 if modifiers:
                     binding = "<" + "-".join(modifiers) + "-" + key + ">"
                 else:
                     binding = key
                 
-                captured_binding[0] = binding
-                captured_key.set(self._format_key_for_display(binding))
+                # Check if this is the same key as last press (for double-tap)
+                if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and binding == first_key[0]:
+                    # Same key pressed twice - create double-tap like "gg", "dd", "cc"
+                    sequence = first_key[0] + binding
+                    captured_binding[0] = sequence
+                    captured_key.set(self._format_key_for_display(sequence))
+                    first_key[0] = None  # Reset after creating double-tap
+                else:
+                    # First press or different key - store this key
+                    first_key[0] = binding
+                    captured_binding[0] = binding
+                    # Show hint for single letters without modifiers
+                    if not modifiers and not binding.startswith('<'):
+                        captured_key.set(self._format_key_for_display(binding) + " (press same key again for double-tap, or Save)")
+                    else:
+                        captured_key.set(self._format_key_for_display(binding))
             
             # Bind to capture keys
             edit_key_dialog.bind("<Key>", capture_key)
