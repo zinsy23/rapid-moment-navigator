@@ -2263,17 +2263,23 @@ class RapidMomentNavigator:
         """Import clip for the currently selected result"""
         # Don't import if app window doesn't have focus
         if not self._is_app_window_focused():
+            self.debug_print("App window doesn't have focus")
             return
         
         if self.selected_result_index is None or not self.result_items:
+            self.debug_print(f"No selection or no results: index={self.selected_result_index}, items={len(self.result_items) if self.result_items else 0}")
             return
         
         result_item = self.result_items[self.selected_result_index]
+        self.debug_print(f"Attempting to import clip for result {self.selected_result_index + 1}")
+        self.debug_print(f"Button viewable: {result_item['import_clip_btn'].winfo_viewable()}")
+        
         # Check if import clip button is visible (editor is selected)
         if result_item['import_clip_btn'].winfo_viewable():
             # Call the callback with the result stored in the button
+            self.debug_print(f"Calling import clip callback with result: {result_item['import_clip_btn'].result}")
             result_item['import_clip_btn'].callback(result_item['import_clip_btn'].result)
-            self.debug_print(f"Imported clip for result {self.selected_result_index + 1}")
+            self.debug_print(f"Import clip callback completed for result {self.selected_result_index + 1}")
         else:
             self.debug_print("Import clip not available (no editor selected)")
     
