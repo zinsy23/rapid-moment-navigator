@@ -2253,7 +2253,8 @@ class RapidMomentNavigator:
         result_item = self.result_items[self.selected_result_index]
         # Check if import media button is visible (editor is selected)
         if result_item['import_media_btn'].winfo_viewable():
-            result_item['import_media_btn'].callback(result_item['result_data'])
+            # Call the callback with the result stored in the button
+            result_item['import_media_btn'].callback(result_item['import_media_btn'].result)
             self.debug_print(f"Imported media for result {self.selected_result_index + 1}")
         else:
             self.debug_print("Import media not available (no editor selected)")
@@ -2270,7 +2271,8 @@ class RapidMomentNavigator:
         result_item = self.result_items[self.selected_result_index]
         # Check if import clip button is visible (editor is selected)
         if result_item['import_clip_btn'].winfo_viewable():
-            result_item['import_clip_btn'].callback(result_item['result_data'])
+            # Call the callback with the result stored in the button
+            result_item['import_clip_btn'].callback(result_item['import_clip_btn'].result)
             self.debug_print(f"Imported clip for result {self.selected_result_index + 1}")
         else:
             self.debug_print("Import clip not available (no editor selected)")
