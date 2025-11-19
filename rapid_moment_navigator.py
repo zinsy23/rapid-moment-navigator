@@ -3018,7 +3018,8 @@ except Exception as e:
             "resolve_paths_dialog": (600, 500),
             "add_directory_dialog": (525, 450),
             "guidance_dialog": (650, 600),
-            "keyboard_shortcuts_dialog": (700, 600)
+            "keyboard_shortcuts_dialog": (700, 600),
+            "key_capture_dialog": (450, 400)
         }
         return defaults.get(window_type, (400, 300))
     
@@ -5820,6 +5821,7 @@ except Exception as e:
             "general_settings_dialog": "General Settings Dialog",
             "media_player_dialog": "Media Player Settings Dialog",
             "keyboard_shortcuts_dialog": "Keyboard Shortcuts Dialog",
+            "key_capture_dialog": "Key Capture Dialog (Edit Key Binding)",
             "editor_dialog": "Editor Navigator Dialog",
             "debug_window": "Debug Console Window",
             "window_sizing_dialog": "Window Sizing Dialog (this dialog)",
@@ -6184,6 +6186,9 @@ except Exception as e:
             if hasattr(self, 'keyboard_shortcuts_canvas'):
                 self._cleanup_canvas_scrolling(self.keyboard_shortcuts_canvas)
                 delattr(self, 'keyboard_shortcuts_canvas')
+            # Clean up dialog reference
+            if hasattr(self, 'keyboard_shortcuts_dialog'):
+                delattr(self, 'keyboard_shortcuts_dialog')
             dialog.destroy()
         
         dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
@@ -6253,6 +6258,9 @@ except Exception as e:
         
         # Store references to key entry widgets for later access
         self.shortcut_entries = {}
+        
+        # Store reference to the dialog for nested dialogs
+        self.keyboard_shortcuts_dialog = dialog
         
         # Create UI for each category
         for category_name in sorted(categories.keys()):
@@ -6333,6 +6341,9 @@ except Exception as e:
             if hasattr(self, 'keyboard_shortcuts_canvas'):
                 self._cleanup_canvas_scrolling(self.keyboard_shortcuts_canvas)
                 delattr(self, 'keyboard_shortcuts_canvas')
+            # Clean up dialog reference
+            if hasattr(self, 'keyboard_shortcuts_dialog'):
+                delattr(self, 'keyboard_shortcuts_dialog')
             
             dialog.destroy()
         
@@ -6408,19 +6419,29 @@ except Exception as e:
         current_key = self.shortcut_entries[action_id]["keys"][key_index]
         action_desc = DEFAULT_KEYBOARD_SHORTCUTS[action_id]["description"]
         
+        # Get parent dialog (keyboard shortcuts dialog)
+        parent_dialog = self.keyboard_shortcuts_dialog if hasattr(self, 'keyboard_shortcuts_dialog') else self.root
+        
         # Create edit dialog
-        edit_dialog = tk.Toplevel(self.root)
+        edit_dialog = tk.Toplevel(parent_dialog)
         edit_dialog.title(f"Edit Key Binding")
-        edit_dialog.geometry("450x250")
-        edit_dialog.transient(self.root)
+        dialog_width, dialog_height = self.get_window_size("key_capture_dialog")
+        edit_dialog.geometry(f"{dialog_width}x{dialog_height}")
+        edit_dialog.transient(parent_dialog)
         edit_dialog.grab_set()
         
-        # Center the dialog
-        edit_dialog.update_idletasks()
-        screen_width = edit_dialog.winfo_screenwidth()
-        screen_height = edit_dialog.winfo_screenheight()
-        x = (screen_width - edit_dialog.winfo_width()) // 2
-        y = (screen_height - edit_dialog.winfo_height()) // 2
+        # Center the dialog relative to parent
+        edit_dialog.update()  # Use update() instead of update_idletasks() for more reliable sizing
+        if parent_dialog == self.root:
+            # Center on screen
+            screen_width = edit_dialog.winfo_screenwidth()
+            screen_height = edit_dialog.winfo_screenheight()
+            x = (screen_width - edit_dialog.winfo_width()) // 2
+            y = (screen_height - edit_dialog.winfo_height()) // 2
+        else:
+            # Center relative to parent dialog
+            x = parent_dialog.winfo_x() + (parent_dialog.winfo_width() - edit_dialog.winfo_width()) // 2
+            y = parent_dialog.winfo_y() + (parent_dialog.winfo_height() - edit_dialog.winfo_height()) // 2
         edit_dialog.geometry(f"+{x}+{y}")
         
         # Main frame
@@ -6446,7 +6467,7 @@ except Exception as e:
                  font=("TkDefaultFont", 10)).pack(pady=(10, 5))
         
         # Captured key display
-        captured_key = tk.StringVar(value="(press a key)")
+        captured_key = tk.StringVar(value="(press a key combination)")
         key_display = ttk.Label(main_frame, textvariable=captured_key, 
                                font=("TkDefaultFont", 12, "bold"),
                                relief="solid", borderwidth=2, padding=15,
@@ -6477,7 +6498,15 @@ except Exception as e:
             captured_binding[0] = binding
             captured_key.set(self._format_key_for_display(binding))
         
+        # Bind to the dialog window itself
         edit_dialog.bind("<Key>", capture_key)
+        # Also bind to all child widgets to ensure we catch keys
+        edit_dialog.bind_all("<Key>", capture_key)
+        
+        def cleanup_and_close():
+            """Clean up bindings and close dialog"""
+            edit_dialog.unbind_all("<Key>")
+            edit_dialog.destroy()
         
         def save_key():
             if captured_binding[0]:
@@ -6492,13 +6521,18 @@ except Exception as e:
                 # Update the key at the specific index
                 self.shortcut_entries[action_id]["keys"][key_index] = captured_binding[0]
                 self._display_shortcut_keys(action_id, self.shortcut_entries[action_id]["keys_frame"])
-                edit_dialog.destroy()
+                cleanup_and_close()
         
         # Buttons
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(pady=(15, 0))
         ttk.Button(btn_frame, text="Save", command=save_key).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Cancel", command=edit_dialog.destroy).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=cleanup_and_close).pack(side="left", padx=5)
+        
+        # Ensure the dialog has focus to capture key events - do this AFTER all widgets are created
+        edit_dialog.update()  # Force update first
+        edit_dialog.focus_force()
+        edit_dialog.focus_set()  # Try both methods
     
     def _edit_shortcut_keys(self, action_id, parent_dialog):
         """Open a dialog to edit keys for a specific action"""
@@ -6514,7 +6548,7 @@ except Exception as e:
         edit_dialog.grab_set()
         
         # Center the dialog
-        edit_dialog.update_idletasks()
+        edit_dialog.update()  # Use update() instead of update_idletasks() for more reliable sizing
         x = parent_dialog.winfo_x() + (parent_dialog.winfo_width() - edit_dialog.winfo_width()) // 2
         y = parent_dialog.winfo_y() + (parent_dialog.winfo_height() - edit_dialog.winfo_height()) // 2
         edit_dialog.geometry(f"+{x}+{y}")
@@ -6561,7 +6595,7 @@ except Exception as e:
             add_key_dialog.grab_set()
             
             # Center the dialog
-            add_key_dialog.update_idletasks()
+            add_key_dialog.update()  # Use update() instead of update_idletasks() for more reliable sizing
             x = edit_dialog.winfo_x() + (edit_dialog.winfo_width() - add_key_dialog.winfo_width()) // 2
             y = edit_dialog.winfo_y() + (edit_dialog.winfo_height() - add_key_dialog.winfo_height()) // 2
             add_key_dialog.geometry(f"+{x}+{y}")
@@ -6604,6 +6638,9 @@ except Exception as e:
             
             add_key_dialog.bind("<Key>", capture_key)
             
+            # Ensure the dialog has focus to capture key events
+            add_key_dialog.focus_force()
+            
             def save_key():
                 if captured_binding[0] and captured_binding[0] not in current_keys:
                     current_keys.append(captured_binding[0])
@@ -6631,12 +6668,13 @@ except Exception as e:
             # Create edit key dialog
             edit_key_dialog = tk.Toplevel(edit_dialog)
             edit_key_dialog.title("Edit Key Binding")
-            edit_key_dialog.geometry("450x250")
+            dialog_width, dialog_height = self.get_window_size("key_capture_dialog")
+            edit_key_dialog.geometry(f"{dialog_width}x{dialog_height}")
             edit_key_dialog.transient(edit_dialog)
             edit_key_dialog.grab_set()
             
             # Center the dialog
-            edit_key_dialog.update_idletasks()
+            edit_key_dialog.update()  # Use update() instead of update_idletasks() for more reliable sizing
             x = edit_dialog.winfo_x() + (edit_dialog.winfo_width() - edit_key_dialog.winfo_width()) // 2
             y = edit_dialog.winfo_y() + (edit_dialog.winfo_height() - edit_key_dialog.winfo_height()) // 2
             edit_key_dialog.geometry(f"+{x}+{y}")
@@ -6655,7 +6693,7 @@ except Exception as e:
             ttk.Label(frame, text="Press the new key combination:", 
                      font=("TkDefaultFont", 10)).pack(pady=(10, 5))
             
-            captured_key = tk.StringVar(value="(press a key)")
+            captured_key = tk.StringVar(value="(press a key combination)")
             key_display = ttk.Label(frame, textvariable=captured_key, 
                                    font=("TkDefaultFont", 12, "bold"),
                                    relief="solid", borderwidth=2, padding=15,
@@ -6686,7 +6724,19 @@ except Exception as e:
                 captured_binding[0] = binding
                 captured_key.set(self._format_key_for_display(binding))
             
+            # Bind to capture keys
             edit_key_dialog.bind("<Key>", capture_key)
+            edit_key_dialog.bind_all("<Key>", capture_key)
+            
+            def cleanup_and_close_edit():
+                """Clean up bindings and close dialog"""
+                edit_key_dialog.unbind_all("<Key>")
+                edit_key_dialog.destroy()
+            
+            # Ensure the dialog has focus to capture key events
+            edit_key_dialog.update()
+            edit_key_dialog.focus_force()
+            edit_key_dialog.focus_set()
             
             def save_edited_key():
                 if captured_binding[0]:
@@ -6702,12 +6752,12 @@ except Exception as e:
                     refresh_keys_list()
                     # Re-select the edited item
                     keys_listbox.selection_set(index)
-                    edit_key_dialog.destroy()
+                    cleanup_and_close_edit()
             
             btn_frame = ttk.Frame(frame)
             btn_frame.pack(pady=(15, 0))
             ttk.Button(btn_frame, text="Save", command=save_edited_key).pack(side="left", padx=5)
-            ttk.Button(btn_frame, text="Cancel", command=edit_key_dialog.destroy).pack(side="left", padx=5)
+            ttk.Button(btn_frame, text="Cancel", command=cleanup_and_close_edit).pack(side="left", padx=5)
         
         def remove_key():
             """Remove selected key binding"""
