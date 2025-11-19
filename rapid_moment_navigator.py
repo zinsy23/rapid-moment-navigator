@@ -2061,8 +2061,44 @@ class RapidMomentNavigator:
         except Exception as e:
             self.debug_print(f"Error scrolling to result: {e}")
     
+    def _is_app_window_focused(self):
+        """
+        Check if any application window has focus (main window or editor dialog)
+        Returns True if main window or editor dialog has focus, False otherwise
+        """
+        try:
+            # Get the currently focused widget
+            focused_widget = self.root.focus_get()
+            # If focused_widget is None, no window has focus
+            if focused_widget is None:
+                return False
+            
+            # Get the top-level window of the focused widget
+            toplevel = focused_widget.winfo_toplevel()
+            
+            # Check if it's the main window
+            if toplevel == self.root:
+                return True
+            
+            # Check if it's the editor dialog (if it exists and is open)
+            if hasattr(self, 'editor_dialog') and self.editor_dialog is not None:
+                try:
+                    if self.editor_dialog.winfo_exists() and toplevel == self.editor_dialog:
+                        return True
+                except:
+                    pass
+            
+            # Not a recognized application window
+            return False
+        except:
+            return False
+    
     def _navigate_result_next(self):
         """Navigate to the next result"""
+        # Don't navigate if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
         # Don't navigate if search bar has focus (user is typing)
         if self.root.focus_get() == self.search_entry:
             self.debug_print("Search bar has focus, ignoring navigation")
@@ -2086,6 +2122,10 @@ class RapidMomentNavigator:
     
     def _navigate_result_previous(self):
         """Navigate to the previous result"""
+        # Don't navigate if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
         # Don't navigate if search bar has focus (user is typing)
         if self.root.focus_get() == self.search_entry:
             self.debug_print("Search bar has focus, ignoring navigation")
@@ -2116,6 +2156,10 @@ class RapidMomentNavigator:
             action_callback: Function to call on double-tap
             action_name: Name of action for debug logging
         """
+        # Don't navigate if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
         # Don't navigate if search bar has focus (user is typing)
         if self.root.focus_get() == self.search_entry:
             return
@@ -2140,6 +2184,10 @@ class RapidMomentNavigator:
     
     def _jump_to_first_result(self):
         """Jump to the first result on the current page"""
+        # Don't navigate if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
         # Don't navigate if search bar has focus (user is typing)
         if self.root.focus_get() == self.search_entry:
             self.debug_print("Search bar has focus, ignoring navigation")
@@ -2158,6 +2206,10 @@ class RapidMomentNavigator:
     
     def _jump_to_last_result(self):
         """Jump to the last result on the current page"""
+        # Don't navigate if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
         # Don't navigate if search bar has focus (user is typing)
         if self.root.focus_get() == self.search_entry:
             self.debug_print("Search bar has focus, ignoring navigation")
@@ -2177,6 +2229,10 @@ class RapidMomentNavigator:
     
     def _activate_selected_result(self):
         """Activate the currently selected result (simulate clicking timecode)"""
+        # Don't activate if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
         if self.selected_result_index is None or not self.result_items:
             return
         
@@ -2187,6 +2243,10 @@ class RapidMomentNavigator:
     
     def _import_media_for_selected_result(self):
         """Import media for the currently selected result"""
+        # Don't import if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
         if self.selected_result_index is None or not self.result_items:
             return
         
@@ -2200,6 +2260,10 @@ class RapidMomentNavigator:
     
     def _import_clip_for_selected_result(self):
         """Import clip for the currently selected result"""
+        # Don't import if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
         if self.selected_result_index is None or not self.result_items:
             return
         
@@ -2215,6 +2279,10 @@ class RapidMomentNavigator:
     
     def _escape_search_bar(self):
         """Unfocus/escape the search bar"""
+        # Don't unfocus if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
         # Remove focus from search entry by focusing on the main frame
         self.main_frame.focus_set()
         self.debug_print("Unfocused search bar")
