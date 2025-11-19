@@ -2153,6 +2153,8 @@ class RapidMomentNavigator:
         # Jump to first result (index 0)
         self.debug_print("Jumping to first result")
         self._select_result(0)
+        # Scroll all the way to the top
+        self.results_canvas.yview_moveto(0)
     
     def _jump_to_last_result(self):
         """Jump to the last result on the current page"""
@@ -2170,6 +2172,8 @@ class RapidMomentNavigator:
         last_index = len(self.result_items) - 1
         self.debug_print(f"Jumping to last result (index {last_index})")
         self._select_result(last_index)
+        # Scroll all the way to the bottom
+        self.results_canvas.yview_moveto(1.0)
     
     def _activate_selected_result(self):
         """Activate the currently selected result (simulate clicking timecode)"""
