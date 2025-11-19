@@ -60,7 +60,7 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
     "focus_search": {
         "description": "Focus search bar",
         "category": "Navigation",
-        "keys": ["<Control-f>"]
+        "keys": ["<Control-f>", "i"]
     },
     "escape_search": {
         "description": "Unfocus/escape search bar",
@@ -2277,6 +2277,65 @@ class RapidMomentNavigator:
     
     # ===== End Result Navigation Methods =====
     
+    def _scroll_half_page_down(self):
+        """Scroll down half a page in the results canvas"""
+        # Don't scroll if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
+        try:
+            # Get the visible height of the canvas
+            canvas_height = self.results_canvas.winfo_height()
+            # Scroll down by half the visible height
+            # Convert pixels to scroll units (roughly)
+            scroll_amount = int(canvas_height / 2 / 20)  # Assuming ~20 pixels per unit
+            self.results_canvas.yview_scroll(scroll_amount, "units")
+            self.debug_print(f"Scrolled down {scroll_amount} units")
+            
+            # Adjust selection to stay in visible area
+            if self.selected_result_index is not None and self.result_items:
+                # Try to move selection down by roughly half the visible results
+                visible_results = max(1, int(len(self.result_items) * 0.3))  # Rough estimate
+                new_index = min(self.selected_result_index + visible_results, len(self.result_items) - 1)
+                if new_index != self.selected_result_index:
+                    self._select_result(new_index)
+        except Exception as e:
+            self.debug_print(f"Error scrolling down: {e}")
+    
+    def _scroll_half_page_up(self):
+        """Scroll up half a page in the results canvas"""
+        # Don't scroll if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
+        try:
+            # Get the visible height of the canvas
+            canvas_height = self.results_canvas.winfo_height()
+            # Scroll up by half the visible height
+            # Convert pixels to scroll units (roughly)
+            scroll_amount = int(canvas_height / 2 / 20)  # Assuming ~20 pixels per unit
+            self.results_canvas.yview_scroll(-scroll_amount, "units")
+            self.debug_print(f"Scrolled up {scroll_amount} units")
+            
+            # Adjust selection to stay in visible area
+            if self.selected_result_index is not None and self.result_items:
+                # Try to move selection up by roughly half the visible results
+                visible_results = max(1, int(len(self.result_items) * 0.3))  # Rough estimate
+                new_index = max(self.selected_result_index - visible_results, 0)
+                if new_index != self.selected_result_index:
+                    self._select_result(new_index)
+        except Exception as e:
+            self.debug_print(f"Error scrolling up: {e}")
+    
+    def _focus_search_bar(self):
+        """Focus the search bar"""
+        # Don't focus if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
+        self.search_entry.focus_set()
+        self.debug_print("Focused search bar")
+    
     def _escape_search_bar(self):
         """Unfocus/escape the search bar"""
         # Don't unfocus if app window doesn't have focus
@@ -2286,6 +2345,21 @@ class RapidMomentNavigator:
         # Remove focus from search entry by focusing on the main frame
         self.main_frame.focus_set()
         self.debug_print("Unfocused search bar")
+        
+        # If no result is selected, select the first one
+        if self.selected_result_index is None and self.result_items:
+            self.debug_print("No result selected, auto-selecting first result")
+            self._select_result(0)
+    
+    def _show_fuzzy_search(self):
+        """Show fuzzy search dialog for shows"""
+        # Don't show if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
+        # TODO: Implement fuzzy search dialog
+        self.debug_print("Fuzzy search not yet implemented")
+        messagebox.showinfo("Coming Soon", "Fuzzy search for shows will be implemented soon!")
     
     def _setup_keyboard_shortcuts(self):
         """Bind keyboard shortcuts from preferences to their actions"""
@@ -2294,6 +2368,8 @@ class RapidMomentNavigator:
         
         # Map action IDs to their handler functions
         action_handlers = {
+            "show_fuzzy_search": self._show_fuzzy_search,
+            "focus_search": self._focus_search_bar,
             "escape_search": self._escape_search_bar,
             "result_next": self._navigate_result_next,
             "result_previous": self._navigate_result_previous,
@@ -2302,6 +2378,8 @@ class RapidMomentNavigator:
             "result_activate": self._activate_selected_result,
             "result_import_media": self._import_media_for_selected_result,
             "result_import_clip": self._import_clip_for_selected_result,
+            "scroll_half_page_down": self._scroll_half_page_down,
+            "scroll_half_page_up": self._scroll_half_page_up,
         }
         
         # Track which double-tap keys we've already bound to avoid duplicates
