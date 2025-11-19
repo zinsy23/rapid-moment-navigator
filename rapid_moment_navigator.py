@@ -929,12 +929,13 @@ class RapidMomentNavigator:
                         scroll_amount = -1
                 else:
                     # Windows and Linux
-                    if hasattr(event, 'delta'):
+                    # Check for Linux Button events FIRST (they have delta=0)
+                    if hasattr(event, 'num') and event.num in (4, 5):
+                        # Linux Button events - 4 is up, 5 is down
+                        scroll_amount = -1 if event.num == 4 else 1
+                    elif hasattr(event, 'delta') and event.delta != 0:
                         # Windows standard - delta is 120 per notch
                         scroll_amount = int(-1 * (event.delta / 120))
-                    elif hasattr(event, 'num'):
-                        # Linux Button events
-                        scroll_amount = -1 if event.num == 4 else 1
                     else:
                         # Fallback
                         scroll_amount = -1
@@ -969,21 +970,27 @@ class RapidMomentNavigator:
                         # Priority order: settings dialogs > editor dialog > main canvas
                         target_canvas = None
                         
-                        # Highest priority: Window sizing dialog canvas
-                        if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
+                        # Highest priority: Keyboard shortcuts dialog canvas
+                        if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
                             try:
-                                if self.window_sizing_canvas.winfo_exists():
-                                    target_canvas = self.window_sizing_canvas
-                                    self.debug_print("Routing scroll to window sizing canvas")
+                                if self.keyboard_shortcuts_canvas.winfo_exists():
+                                    target_canvas = self.keyboard_shortcuts_canvas
                             except:
                                 pass
                         
-                        # Second priority: Editor dialog canvas
+                        # Second highest priority: Window sizing dialog canvas
+                        if not target_canvas and hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
+                            try:
+                                if self.window_sizing_canvas.winfo_exists():
+                                    target_canvas = self.window_sizing_canvas
+                            except:
+                                pass
+                        
+                        # Third priority: Editor dialog canvas
                         if not target_canvas and hasattr(self, 'editor_dialog') and self.editor_dialog and hasattr(self, 'editor_results_canvas'):
                             try:
                                 if self.editor_results_canvas.winfo_exists():
                                     target_canvas = self.editor_results_canvas
-                                    self.debug_print("Routing scroll to editor canvas")
                             except:
                                 pass
                         
@@ -992,7 +999,6 @@ class RapidMomentNavigator:
                             try:
                                 if self.results_canvas.winfo_exists():
                                     target_canvas = self.results_canvas
-                                    self.debug_print("Routing scroll to main canvas")
                             except:
                                 pass
                         
@@ -6228,11 +6234,11 @@ except Exception as e:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
+        # Store reference to the canvas for cleanup (BEFORE setting up scrolling)
+        self.keyboard_shortcuts_canvas = canvas
+        
         # Setup cross-platform mousewheel scrolling
         self._setup_canvas_scrolling(canvas)
-        
-        # Store reference to the canvas for cleanup
-        self.keyboard_shortcuts_canvas = canvas
         
         # Load current shortcuts from preferences or use defaults
         current_shortcuts = self.preferences.get("keyboard_shortcuts", DEFAULT_KEYBOARD_SHORTCUTS.copy())
