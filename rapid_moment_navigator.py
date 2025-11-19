@@ -431,6 +431,11 @@ class RapidMomentNavigator:
         self.active_scroll_canvases = {}  # canvas -> handler mapping
         self.current_scroll_canvas = None  # Currently focused canvas for scrolling
         
+        # Result navigation tracking
+        self.result_items = []  # List of dicts with {frame, result_data, timecode_label, import_media_btn, import_clip_btn}
+        self.selected_result_index = None  # Currently selected result index
+        self.selected_result_frame = None  # Currently highlighted frame widget
+        
         # Setup exception handling for Tkinter
         self.setup_exception_handler()
         
@@ -445,6 +450,10 @@ class RapidMomentNavigator:
         # Create main frame
         self.main_frame = ttk.Frame(root)
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Setup styles for result selection
+        style = ttk.Style()
+        style.configure('Selected.TFrame', background='#cce5ff', relief='solid', borderwidth=2)
         
         # Create directory management frame
         self.dir_frame = ttk.LabelFrame(self.main_frame, text="Media Directories")
@@ -1661,6 +1670,9 @@ class RapidMomentNavigator:
             widget.destroy()
         
         self.search_results = []
+        self.result_items = []  # Clear result navigation tracking
+        self.selected_result_index = None
+        self.selected_result_frame = None
         
         # Reset pagination state
         self.main_all_results = []
@@ -1938,9 +1950,20 @@ class RapidMomentNavigator:
             # Add some space after each result
             ttk.Separator(self.results_container, orient="horizontal").pack(fill="x", pady=5)
             
+            # Track this result for keyboard navigation
+            self.result_items.append({
+                'frame': result_frame,
+                'result_data': result,
+                'timecode_label': timecode_label,
+                'import_media_btn': import_media_btn,
+                'import_clip_btn': import_clip_btn
+            })
+            self.debug_print(f"Tracked result {len(self.result_items)} for keyboard navigation")
+            
             self.debug_print(f"Added clickable timecode for {timecode_text}")
         
         self.debug_print(f"UI updated with {len(file_results)} results from {file_basename}")
+        self.debug_print(f"Total result_items tracked: {len(self.result_items)}")
     
     def _main_prev_page(self):
         """Navigate to previous page in main navigator"""
@@ -1967,11 +1990,195 @@ class RapidMomentNavigator:
         except ValueError:
             pass
     
-    def _display_main_current_page(self):
-        """Display the current page of results in main navigator"""
-        if not self.main_all_results:
+    # ===== Result Navigation Methods =====
+    
+    def _select_result(self, index):
+        """Select and highlight a result by index"""
+        if not self.result_items or index < 0 or index >= len(self.result_items):
             return
         
+        # Remove highlight from previously selected result
+        if self.selected_result_frame:
+            self.selected_result_frame.configure(relief='flat', borderwidth=0)
+        
+        # Highlight the new selection
+        self.selected_result_index = index
+        result_item = self.result_items[index]
+        self.selected_result_frame = result_item['frame']
+        # Use relief and borderwidth for visible highlighting
+        self.selected_result_frame.configure(relief='solid', borderwidth=2)
+        
+        # Scroll to make the selected result visible
+        self._scroll_to_result(result_item['frame'])
+        
+        self.debug_print(f"Selected result {index + 1} of {len(self.result_items)}")
+    
+    def _scroll_to_result(self, frame):
+        """Scroll the canvas to make the given frame visible"""
+        try:
+            # Update canvas to get accurate positions
+            self.results_canvas.update_idletasks()
+            
+            # Get the frame's position relative to the canvas
+            frame_y = frame.winfo_y()
+            frame_height = frame.winfo_height()
+            
+            # Get canvas visible area
+            canvas_height = self.results_canvas.winfo_height()
+            
+            # Get current scroll position
+            scroll_region = self.results_canvas.cget("scrollregion").split()
+            if len(scroll_region) == 4:
+                total_height = float(scroll_region[3])
+                
+                # Calculate if frame is visible
+                current_view = self.results_canvas.yview()
+                view_top = current_view[0] * total_height
+                view_bottom = current_view[1] * total_height
+                
+                # Scroll if frame is not fully visible
+                if frame_y < view_top:
+                    # Frame is above visible area - scroll up
+                    self.results_canvas.yview_moveto(frame_y / total_height)
+                elif (frame_y + frame_height) > view_bottom:
+                    # Frame is below visible area - scroll down
+                    target_y = max(0, (frame_y + frame_height - canvas_height) / total_height)
+                    self.results_canvas.yview_moveto(target_y)
+        except Exception as e:
+            self.debug_print(f"Error scrolling to result: {e}")
+    
+    def _navigate_result_next(self):
+        """Navigate to the next result"""
+        # Don't navigate if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            self.debug_print("Search bar has focus, ignoring navigation")
+            return
+        
+        self.debug_print(f"_navigate_result_next called, result_items count: {len(self.result_items)}")
+        if not self.result_items:
+            self.debug_print("No result items available")
+            return
+        
+        if self.selected_result_index is None:
+            # No selection, select first result
+            self.debug_print("No selection, selecting first result")
+            self._select_result(0)
+        elif self.selected_result_index < len(self.result_items) - 1:
+            # Select next result
+            self.debug_print(f"Selecting next result: {self.selected_result_index + 1}")
+            self._select_result(self.selected_result_index + 1)
+        else:
+            self.debug_print("Already at last result")
+    
+    def _navigate_result_previous(self):
+        """Navigate to the previous result"""
+        # Don't navigate if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            self.debug_print("Search bar has focus, ignoring navigation")
+            return
+        
+        self.debug_print(f"_navigate_result_previous called, result_items count: {len(self.result_items)}")
+        if not self.result_items:
+            self.debug_print("No result items available")
+            return
+        
+        if self.selected_result_index is None:
+            # No selection, select first result (same as next)
+            self.debug_print("No selection, selecting first result")
+            self._select_result(0)
+        elif self.selected_result_index > 0:
+            # Select previous result
+            self.debug_print(f"Selecting previous result: {self.selected_result_index - 1}")
+            self._select_result(self.selected_result_index - 1)
+        else:
+            self.debug_print("Already at first result")
+    
+    def _activate_selected_result(self):
+        """Activate the currently selected result (simulate clicking timecode)"""
+        if self.selected_result_index is None or not self.result_items:
+            return
+        
+        result_item = self.result_items[self.selected_result_index]
+        # Simulate clicking the timecode
+        result_item['timecode_label'].callback(result_item['result_data'])
+        self.debug_print(f"Activated result {self.selected_result_index + 1}")
+    
+    def _import_media_for_selected_result(self):
+        """Import media for the currently selected result"""
+        if self.selected_result_index is None or not self.result_items:
+            return
+        
+        result_item = self.result_items[self.selected_result_index]
+        # Check if import media button is visible (editor is selected)
+        if result_item['import_media_btn'].winfo_viewable():
+            result_item['import_media_btn'].callback(result_item['result_data'])
+            self.debug_print(f"Imported media for result {self.selected_result_index + 1}")
+        else:
+            self.debug_print("Import media not available (no editor selected)")
+    
+    def _import_clip_for_selected_result(self):
+        """Import clip for the currently selected result"""
+        if self.selected_result_index is None or not self.result_items:
+            return
+        
+        result_item = self.result_items[self.selected_result_index]
+        # Check if import clip button is visible (editor is selected)
+        if result_item['import_clip_btn'].winfo_viewable():
+            result_item['import_clip_btn'].callback(result_item['result_data'])
+            self.debug_print(f"Imported clip for result {self.selected_result_index + 1}")
+        else:
+            self.debug_print("Import clip not available (no editor selected)")
+    
+    # ===== End Result Navigation Methods =====
+    
+    def _escape_search_bar(self):
+        """Unfocus/escape the search bar"""
+        # Remove focus from search entry by focusing on the main frame
+        self.main_frame.focus_set()
+        self.debug_print("Unfocused search bar")
+    
+    def _setup_keyboard_shortcuts(self):
+        """Bind keyboard shortcuts from preferences to their actions"""
+        # Get keyboard shortcuts from preferences
+        shortcuts = self.preferences.get("keyboard_shortcuts", DEFAULT_KEYBOARD_SHORTCUTS)
+        
+        # Map action IDs to their handler functions
+        action_handlers = {
+            "escape_search": self._escape_search_bar,
+            "result_next": self._navigate_result_next,
+            "result_previous": self._navigate_result_previous,
+            "result_activate": self._activate_selected_result,
+            "result_import_media": self._import_media_for_selected_result,
+            "result_import_clip": self._import_clip_for_selected_result,
+        }
+        
+        # Bind each shortcut
+        for action_id, handler in action_handlers.items():
+            if action_id in shortcuts:
+                keys = shortcuts[action_id].get("keys", [])
+                for key in keys:
+                    try:
+                        # For single character keys without angle brackets, use KeyPress format
+                        if not key.startswith('<') and len(key) == 1:
+                            bind_key = f"<KeyPress-{key}>"
+                            # Use bind_all for single character keys to catch them globally
+                            self.root.bind_all(bind_key, lambda e, h=handler: h())
+                            self.debug_print(f"Bound (globally) {bind_key} (from {key}) to {action_id}")
+                        else:
+                            bind_key = key
+                            self.root.bind(bind_key, lambda e, h=handler: h())
+                            self.debug_print(f"Bound {bind_key} (from {key}) to {action_id}")
+                    except Exception as e:
+                        self.debug_print(f"Error binding {key} for {action_id}: {e}")
+    
+    def _display_main_current_page(self):
+        """Display the current page of results in main navigator"""
+        self.debug_print(f"_display_main_current_page called, main_all_results count: {len(self.main_all_results) if hasattr(self, 'main_all_results') else 0}")
+        if not self.main_all_results:
+            self.debug_print("No main_all_results to display")
+            return
+        
+        self.debug_print(f"Displaying page {self.main_current_page}, items per page: {self.main_items_per_page}")
         # Calculate slice indices
         start_idx = (self.main_current_page - 1) * self.main_items_per_page
         end_idx = start_idx + self.main_items_per_page
@@ -1982,6 +2189,11 @@ class RapidMomentNavigator:
         # Clear the results container
         for widget in self.results_container.winfo_children():
             widget.destroy()
+        
+        # Clear result navigation tracking
+        self.result_items = []
+        self.selected_result_index = None
+        self.selected_result_frame = None
         
         # Group results by file
         results_by_file = {}
@@ -2092,6 +2304,18 @@ class RapidMomentNavigator:
             
             # Add some space after each result
             ttk.Separator(self.results_container, orient="horizontal").pack(fill="x", pady=5)
+            
+            # Track this result for keyboard navigation
+            self.result_items.append({
+                'frame': result_frame,
+                'result_data': result,
+                'timecode_label': timecode_label,
+                'import_media_btn': import_media_btn,
+                'import_clip_btn': import_clip_btn
+            })
+            self.debug_print(f"Tracked result {len(self.result_items)} for keyboard navigation")
+        
+        self.debug_print(f"Total result_items tracked in _render_main_file_results: {len(self.result_items)}")
     
     def _update_main_pagination_controls(self):
         """Update pagination controls state for main navigator"""
@@ -7713,6 +7937,9 @@ if __name__ == "__main__":
     try:
         # Initialize and run the application
         app = RapidMomentNavigator(root, debug=args.debug)
+        
+        # Setup keyboard shortcuts
+        app._setup_keyboard_shortcuts()
         
         # Force debug output to be flushed immediately if debug is enabled
         if args.debug:
