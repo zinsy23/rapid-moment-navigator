@@ -6567,6 +6567,9 @@ except Exception as e:
             self.debug_print("Keyboard shortcuts saved successfully")
             self.status_var.set("Keyboard shortcuts updated successfully")
             
+            # Rebind all keyboard shortcuts with the new mappings
+            self._setup_keyboard_shortcuts()
+            
             # Clean up scroll bindings before closing
             if hasattr(self, 'keyboard_shortcuts_canvas'):
                 self._cleanup_canvas_scrolling(self.keyboard_shortcuts_canvas)
