@@ -55,17 +55,17 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
     "show_fuzzy_search": {
         "description": "Open fuzzy search for shows",
         "category": "Navigation",
-        "keys": ["<Control-o>"]
+        "keys": ["<Control-O>"]
     },
     "focus_search": {
         "description": "Focus search bar",
         "category": "Navigation",
-        "keys": ["<Control-f>", "i"]
+        "keys": ["<Control-F>", "i"]
     },
     "escape_search": {
         "description": "Unfocus/escape search bar",
         "category": "Navigation",
-        "keys": ["<Escape>", "<Control-Shift-c>"]
+        "keys": ["<Escape>", "<Control-Shift-C>"]
     },
     "result_next": {
         "description": "Navigate to next result",
@@ -95,12 +95,12 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
     "result_import_media": {
         "description": "Import media for selected result",
         "category": "Results Actions",
-        "keys": ["<Control-i>"]
+        "keys": ["<Control-I>"]
     },
     "result_import_clip": {
         "description": "Import clip for selected result",
         "category": "Results Actions",
-        "keys": ["<Control-Shift-i>"]
+        "keys": ["<Control-Shift-I>"]
     },
     "scroll_half_page_down": {
         "description": "Scroll down half a page",
@@ -2369,8 +2369,41 @@ class RapidMomentNavigator:
         self.debug_print("Fuzzy search not yet implemented")
         messagebox.showinfo("Coming Soon", "Fuzzy search for shows will be implemented soon!")
     
+    def _unbind_keyboard_shortcuts(self):
+        """Unbind all keyboard shortcuts to prepare for rebinding"""
+        # Get all shortcuts that might be bound
+        shortcuts = self.preferences.get("keyboard_shortcuts", DEFAULT_KEYBOARD_SHORTCUTS)
+        
+        for action_id, action_data in shortcuts.items():
+            keys = action_data.get("keys", [])
+            for key in keys:
+                try:
+                    # Check if this is a same-letter double-tap
+                    if not key.startswith('<') and len(key) == 2 and key[0] == key[1]:
+                        single_key = key[0]
+                        bind_key = f"<KeyPress-{single_key}>"
+                        self.root.unbind_all(bind_key)
+                        self.debug_print(f"Unbound double-tap key {bind_key}")
+                    
+                    # Single character keys
+                    elif not key.startswith('<') and len(key) == 1:
+                        bind_key = f"<KeyPress-{key}>"
+                        self.root.unbind_all(bind_key)
+                        self.debug_print(f"Unbound global key {bind_key}")
+                    
+                    # Special keys with angle brackets
+                    else:
+                        bind_key = key
+                        self.root.unbind(bind_key)
+                        self.debug_print(f"Unbound key {bind_key}")
+                except Exception as e:
+                    self.debug_print(f"Error unbinding {key}: {e}")
+    
     def _setup_keyboard_shortcuts(self):
         """Bind keyboard shortcuts from preferences to their actions"""
+        # First unbind any existing shortcuts
+        self._unbind_keyboard_shortcuts()
+        
         # Get keyboard shortcuts from preferences
         shortcuts = self.preferences.get("keyboard_shortcuts", DEFAULT_KEYBOARD_SHORTCUTS)
         
@@ -6992,6 +7025,11 @@ except Exception as e:
             if key in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R'):
                 return
             
+            # Normalize letter keys to uppercase when modifiers are present
+            # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
+            if modifiers and len(key) == 1 and key.isalpha():
+                key = key.upper()
+            
             # Build the binding string for this key press
             if modifiers:
                 binding = "<" + "-".join(modifiers) + "-" + key + ">"
@@ -7149,6 +7187,11 @@ except Exception as e:
                 if key in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R'):
                     return
                 
+                # Normalize letter keys to uppercase when modifiers are present
+                # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
+                if modifiers and len(key) == 1 and key.isalpha():
+                    key = key.upper()
+                
                 # Build the binding string for this key press
                 if modifiers:
                     binding = "<" + "-".join(modifiers) + "-" + key + ">"
@@ -7255,6 +7298,11 @@ except Exception as e:
                 # Ignore modifier keys by themselves
                 if key in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R'):
                     return
+                
+                # Normalize letter keys to uppercase when modifiers are present
+                # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
+                if modifiers and len(key) == 1 and key.isalpha():
+                    key = key.upper()
                 
                 # Build the binding string for this key press
                 if modifiers:
