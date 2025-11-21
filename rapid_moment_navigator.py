@@ -3925,9 +3925,30 @@ except Exception as e:
             "add_directory_dialog": (525, 450),
             "guidance_dialog": (650, 600),
             "keyboard_shortcuts_dialog": (700, 600),
-            "key_capture_dialog": (450, 400)
+            "key_capture_dialog": (450, 400),
+            "prefix_keys_dialog": (450, 400)
         }
         return defaults.get(window_type, (400, 300))
+    
+    def get_child_dialog_size(self, parent_width, parent_height, width_ratio=0.8, height_ratio=None):
+        """Calculate child dialog size proportionally based on parent size
+        
+        Args:
+            parent_width: Width of parent dialog
+            parent_height: Height of parent dialog
+            width_ratio: Ratio of child width to parent width (default 0.8)
+            height_ratio: Ratio of child height to parent height (default: same as width_ratio)
+        """
+        if height_ratio is None:
+            height_ratio = width_ratio
+        
+        child_width = int(parent_width * width_ratio)
+        child_height = int(parent_height * height_ratio)
+        
+        # Ensure minimum sizes
+        child_width = max(350, child_width)
+        child_height = max(200, child_height)
+        return child_width, child_height
     
     def get_window_size(self, window_type):
         """Get window size for a specific window type, with fallback to defaults"""
@@ -6728,7 +6749,9 @@ except Exception as e:
             "media_player_dialog": "Media Player Settings Dialog",
             "keyboard_shortcuts_dialog": "Keyboard Shortcuts Dialog",
             "key_capture_dialog": "Key Capture Dialog (Edit Key Binding)",
+            "prefix_keys_dialog": "Prefix Keys Dialog (Manage Prefix Keys)",
             "editor_dialog": "Editor Navigator Dialog",
+            "marker_settings_dialog": "Marker Settings Dialog",
             "debug_window": "Debug Console Window",
             "window_sizing_dialog": "Window Sizing Dialog (this dialog)",
             "resolve_paths_dialog": "DaVinci Resolve Paths Dialog",
@@ -7325,7 +7348,8 @@ except Exception as e:
         # Create dialog
         prefix_dialog = tk.Toplevel(parent_dialog)
         prefix_dialog.title("Manage Prefix Keys")
-        prefix_dialog.geometry("450x400")
+        dialog_width, dialog_height = self.get_window_size("prefix_keys_dialog")
+        prefix_dialog.geometry(f"{dialog_width}x{dialog_height}")
         prefix_dialog.transient(parent_dialog)
         prefix_dialog.grab_set()
         
@@ -7371,15 +7395,22 @@ except Exception as e:
         
         refresh_list()
         
-        # Buttons frame
-        buttons_frame = ttk.Frame(list_frame)
-        buttons_frame.pack(fill="x", pady=(10, 0))
+        # Buttons frame (outside the list_frame so they don't scroll)
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(fill="x", pady=(0, 10))
         
         def add_key():
             """Add a new prefix key"""
             add_dialog = tk.Toplevel(prefix_dialog)
             add_dialog.title("Add Prefix Key")
-            add_dialog.geometry("350x200")
+            
+            # Calculate size proportionally based on parent (original: 350x200 from 450x400)
+            parent_width = prefix_dialog.winfo_width()
+            parent_height = prefix_dialog.winfo_height()
+            child_width, child_height = self.get_child_dialog_size(parent_width, parent_height, 
+                                                                   width_ratio=350/450, height_ratio=200/400)
+            
+            add_dialog.geometry(f"{child_width}x{child_height}")
             add_dialog.transient(prefix_dialog)
             add_dialog.grab_set()
             
@@ -7684,7 +7715,14 @@ except Exception as e:
         # Create edit dialog
         edit_dialog = tk.Toplevel(parent_dialog)
         edit_dialog.title(f"Edit Shortcut: {action_desc}")
-        edit_dialog.geometry("500x400")
+        
+        # Calculate size proportionally based on parent (original: 500x400 from 600x500)
+        parent_width = parent_dialog.winfo_width()
+        parent_height = parent_dialog.winfo_height()
+        child_width, child_height = self.get_child_dialog_size(parent_width, parent_height, 
+                                                               width_ratio=500/600, height_ratio=400/500)
+        
+        edit_dialog.geometry(f"{child_width}x{child_height}")
         edit_dialog.transient(parent_dialog)
         edit_dialog.grab_set()
         
@@ -7731,7 +7769,14 @@ except Exception as e:
             """Add a new key binding"""
             add_key_dialog = tk.Toplevel(edit_dialog)
             add_key_dialog.title("Add Key Binding")
-            add_key_dialog.geometry("400x200")
+            
+            # Calculate size proportionally based on parent (original: 400x200 from 500x400)
+            parent_width = edit_dialog.winfo_width()
+            parent_height = edit_dialog.winfo_height()
+            child_width, child_height = self.get_child_dialog_size(parent_width, parent_height, 
+                                                                   width_ratio=400/500, height_ratio=200/400)
+            
+            add_key_dialog.geometry(f"{child_width}x{child_height}")
             add_key_dialog.transient(edit_dialog)
             add_key_dialog.grab_set()
             
