@@ -2371,8 +2371,15 @@ class RapidMomentNavigator:
     
     def _unbind_keyboard_shortcuts(self):
         """Unbind all keyboard shortcuts to prepare for rebinding"""
-        # Get all shortcuts that might be bound
-        shortcuts = self.preferences.get("keyboard_shortcuts", DEFAULT_KEYBOARD_SHORTCUTS)
+        # Get all shortcuts that might be bound (merge defaults with custom)
+        shortcuts = {}
+        for action_id, action_data in DEFAULT_KEYBOARD_SHORTCUTS.items():
+            shortcuts[action_id] = action_data.copy()
+        
+        custom_shortcuts = self.preferences.get("keyboard_shortcuts", {})
+        for action_id, custom_data in custom_shortcuts.items():
+            if action_id in shortcuts:
+                shortcuts[action_id]["keys"] = custom_data.get("keys", shortcuts[action_id]["keys"])
         
         for action_id, action_data in shortcuts.items():
             keys = action_data.get("keys", [])
@@ -2394,8 +2401,9 @@ class RapidMomentNavigator:
                     # Special keys with angle brackets
                     else:
                         bind_key = key
-                        self.root.unbind(bind_key)
-                        self.debug_print(f"Unbound key {bind_key}")
+                        # Unbind from class "all"
+                        self.root.unbind_class("all", bind_key)
+                        self.debug_print(f"Unbound class key {bind_key}")
                 except Exception as e:
                     self.debug_print(f"Error unbinding {key}: {e}")
     
@@ -2462,11 +2470,13 @@ class RapidMomentNavigator:
                             self.root.bind_all(bind_key, lambda e, h=handler: h())
                             self.debug_print(f"Bound (globally) {bind_key} (from {key}) to {action_id}")
                         
-                        # Special keys with angle brackets (like <Control-f>, <Home>, etc.)
+                        # Special keys with angle brackets (like <Control-F>, <Home>, etc.)
                         else:
                             bind_key = key
-                            self.root.bind(bind_key, lambda e, h=handler: h())
-                            self.debug_print(f"Bound {bind_key} (from {key}) to {action_id}")
+                            # For modifier keys, use bind_class on all widgets to override defaults
+                            # Return "break" to prevent default Tkinter handling
+                            self.root.bind_class("all", bind_key, lambda e, h=handler: (h(), "break")[1])
+                            self.debug_print(f"Bound (class all, override) {bind_key} (from {key}) to {action_id}")
                     except Exception as e:
                         self.debug_print(f"Error binding {key} for {action_id}: {e}")
         
