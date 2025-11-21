@@ -49,6 +49,10 @@ DEFAULT_PREFS = {
     # Note: current_media_player is dynamically set based on OS platform
 }
 
+# Default prefix keys for two-letter sequences
+# These keys show the "press again for sequence" hint
+DEFAULT_PREFIX_KEYS = ['g', 'z']
+
 # Default keyboard shortcuts
 # Each action can have multiple key bindings
 DEFAULT_KEYBOARD_SHORTCUTS = {
@@ -111,6 +115,21 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "description": "Scroll up half a page",
         "category": "Scrolling",
         "keys": ["u"]
+    },
+    "center_result": {
+        "description": "Center selected result in viewport",
+        "category": "View Control",
+        "keys": ["zz"]
+    },
+    "result_to_top": {
+        "description": "Move selected result to top of viewport",
+        "category": "View Control",
+        "keys": ["zt"]
+    },
+    "result_to_bottom": {
+        "description": "Move selected result to bottom of viewport",
+        "category": "View Control",
+        "keys": ["zb"]
     }
 }
 
@@ -449,6 +468,7 @@ class RapidMomentNavigator:
         # Double-tap key tracking (for shortcuts like 'gg', 'dd', etc.)
         self.last_key_press_times = {}  # key -> timestamp mapping
         self.double_tap_timeout = 500  # milliseconds - time window for double-tap
+        self.bound_shortcut_keys = set()  # Track which keys we've bound for cleanup
         
         # Setup exception handling for Tkinter
         self.setup_exception_handler()
@@ -2147,14 +2167,14 @@ class RapidMomentNavigator:
         else:
             self.debug_print("Already at first result")
     
-    def _handle_double_tap_key(self, key, action_callback, action_name):
+    def _handle_two_letter_sequence(self, first_key, second_key_map):
         """
-        Generic handler for same-letter double-tap detection (e.g., 'gg', 'dd', 'cc')
+        Generic handler for two-letter sequence detection (e.g., 'gg', 'zt', 'zb')
+        This just records the key press - it doesn't wait or block.
         
         Args:
-            key: The key character (e.g., 'g', 'd')
-            action_callback: Function to call on double-tap
-            action_name: Name of action for debug logging
+            first_key: The first key character (e.g., 'g', 'z')
+            second_key_map: Dict mapping second keys to (handler, action_id) tuples
         """
         # Don't navigate if app window doesn't have focus
         if not self._is_app_window_focused():
@@ -2167,20 +2187,22 @@ class RapidMomentNavigator:
         import time
         current_time = time.time() * 1000  # Convert to milliseconds
         
-        # Get last press time for this key (default to 0 if not found)
-        last_press_time = self.last_key_press_times.get(key, 0)
+        # Get last press info for this key (default to None if not found)
+        last_press_info = self.last_key_press_times.get(first_key, None)
         
-        # Check if this is a double-tap (within timeout window)
-        if current_time - last_press_time < self.double_tap_timeout:
-            # Double-tap detected - execute action
-            self.debug_print(f"Double '{key}' detected - {action_name}")
-            action_callback()
-            # Reset timer to prevent triple-tap
-            self.last_key_press_times[key] = 0
+        # Check if this is the second key in a sequence (within timeout window)
+        if last_press_info and current_time - last_press_info['time'] < self.double_tap_timeout:
+            # Second press within timeout - check if we have a mapping for this key
+            if first_key in second_key_map:
+                handler, action_id = second_key_map[first_key]
+                self.debug_print(f"Two-letter sequence '{first_key}{first_key}' detected - {action_id}")
+                handler()
+            # Reset timer regardless
+            self.last_key_press_times[first_key] = None
         else:
-            # First press - just record the time
-            self.debug_print(f"First '{key}' press detected")
-            self.last_key_press_times[key] = current_time
+            # First press - just record the time, don't wait
+            self.debug_print(f"First '{first_key}' press detected")
+            self.last_key_press_times[first_key] = {'time': current_time, 'map': second_key_map}
     
     def _jump_to_first_result(self):
         """Jump to the first result on the current page"""
@@ -2513,6 +2535,112 @@ class RapidMomentNavigator:
         except Exception as e:
             self.debug_print(f"Error in _scroll_to_keep_selection_visible: {e}")
     
+    def _center_result(self):
+        """Center the selected result in the viewport (Vim zz)"""
+        if not self._is_app_window_focused():
+            return
+        
+        if self.selected_result_index is None or not self.result_items:
+            return
+        
+        try:
+            selected_frame = self.result_items[self.selected_result_index]['frame']
+            canvas_height = self.results_canvas.winfo_height()
+            
+            # Get scroll region
+            scroll_region = self.results_canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Get the selected frame's position and height
+            frame_y = selected_frame.winfo_y()
+            frame_height = selected_frame.winfo_height()
+            
+            # Calculate scroll position to center the frame
+            # We want the middle of the frame to be at the middle of the canvas
+            frame_middle = frame_y + (frame_height / 2)
+            canvas_middle = canvas_height / 2
+            desired_viewport_top = frame_middle - canvas_middle
+            
+            # Convert to scroll fraction
+            new_scroll_pos = desired_viewport_top / total_height
+            new_scroll_pos = max(0.0, min(1.0, new_scroll_pos))
+            
+            self.results_canvas.yview_moveto(new_scroll_pos)
+            self.debug_print("Centered selected result in viewport")
+        except Exception as e:
+            self.debug_print(f"Error centering result: {e}")
+    
+    def _result_to_top(self):
+        """Move selected result to top of viewport (Vim zt)"""
+        if not self._is_app_window_focused():
+            return
+        
+        if self.selected_result_index is None or not self.result_items:
+            return
+        
+        try:
+            selected_frame = self.result_items[self.selected_result_index]['frame']
+            
+            # Get scroll region
+            scroll_region = self.results_canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Get the selected frame's position
+            frame_y = selected_frame.winfo_y()
+            
+            # Scroll so the frame is at the top (with small margin)
+            margin = 5  # Small margin from top
+            desired_viewport_top = frame_y - margin
+            
+            # Convert to scroll fraction
+            new_scroll_pos = desired_viewport_top / total_height
+            new_scroll_pos = max(0.0, min(1.0, new_scroll_pos))
+            
+            self.results_canvas.yview_moveto(new_scroll_pos)
+            self.debug_print("Moved selected result to top of viewport")
+        except Exception as e:
+            self.debug_print(f"Error moving result to top: {e}")
+    
+    def _result_to_bottom(self):
+        """Move selected result to bottom of viewport (Vim zb)"""
+        if not self._is_app_window_focused():
+            return
+        
+        if self.selected_result_index is None or not self.result_items:
+            return
+        
+        try:
+            selected_frame = self.result_items[self.selected_result_index]['frame']
+            canvas_height = self.results_canvas.winfo_height()
+            
+            # Get scroll region
+            scroll_region = self.results_canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Get the selected frame's position and height
+            frame_y = selected_frame.winfo_y()
+            frame_height = selected_frame.winfo_height()
+            
+            # Scroll so the frame is at the bottom (with small margin)
+            margin = 5  # Small margin from bottom
+            frame_bottom = frame_y + frame_height
+            desired_viewport_top = frame_bottom - canvas_height + margin
+            
+            # Convert to scroll fraction
+            new_scroll_pos = desired_viewport_top / total_height
+            new_scroll_pos = max(0.0, min(1.0, new_scroll_pos))
+            
+            self.results_canvas.yview_moveto(new_scroll_pos)
+            self.debug_print("Moved selected result to bottom of viewport")
+        except Exception as e:
+            self.debug_print(f"Error moving result to bottom: {e}")
+    
     def _focus_search_bar(self):
         """Focus the search bar"""
         # Don't focus if app window doesn't have focus
@@ -2549,48 +2677,24 @@ class RapidMomentNavigator:
     
     def _unbind_keyboard_shortcuts(self):
         """Unbind all keyboard shortcuts to prepare for rebinding"""
-        # Get all shortcuts that might be bound (merge defaults with custom)
-        shortcuts = {}
-        for action_id, action_data in DEFAULT_KEYBOARD_SHORTCUTS.items():
-            shortcuts[action_id] = action_data.copy()
-        
-        custom_shortcuts = self.preferences.get("keyboard_shortcuts", {})
-        for action_id, custom_data in custom_shortcuts.items():
-            if action_id in shortcuts:
-                shortcuts[action_id]["keys"] = custom_data.get("keys", shortcuts[action_id]["keys"])
-        
-        for action_id, action_data in shortcuts.items():
-            keys = action_data.get("keys", [])
-            for key in keys:
+        # Unbind all previously bound keys
+        for bind_key in self.bound_shortcut_keys:
+            try:
+                # Try to unbind from both bind and bind_all
                 try:
-                    # Check if this is a same-letter double-tap
-                    if not key.startswith('<') and len(key) == 2 and key[0] == key[1]:
-                        single_key = key[0]
-                        bind_key = f"<KeyPress-{single_key}>"
-                        self.root.unbind_all(bind_key)
-                        self.debug_print(f"Unbound double-tap key {bind_key}")
-                    
-                    # Single character keys
-                    elif not key.startswith('<') and len(key) == 1:
-                        bind_key = f"<KeyPress-{key}>"
-                        self.root.unbind_all(bind_key)
-                        self.debug_print(f"Unbound global key {bind_key}")
-                    
-                    # Special keys with angle brackets
-                    else:
-                        bind_key = key
-                        # Try to unbind from both bind and bind_all
-                        try:
-                            self.root.unbind(bind_key)
-                        except:
-                            pass
-                        try:
-                            self.root.unbind_all(bind_key)
-                        except:
-                            pass
-                        self.debug_print(f"Unbound key {bind_key}")
-                except Exception as e:
-                    self.debug_print(f"Error unbinding {key}: {e}")
+                    self.root.unbind(bind_key)
+                except:
+                    pass
+                try:
+                    self.root.unbind_all(bind_key)
+                except:
+                    pass
+                self.debug_print(f"Unbound key {bind_key}")
+            except Exception as e:
+                self.debug_print(f"Error unbinding {bind_key}: {e}")
+        
+        # Clear the tracking set
+        self.bound_shortcut_keys.clear()
     
     def _setup_keyboard_shortcuts(self):
         """Bind keyboard shortcuts from preferences to their actions"""
@@ -2623,10 +2727,13 @@ class RapidMomentNavigator:
             "result_import_clip": self._import_clip_for_selected_result,
             "scroll_half_page_down": self._scroll_half_page_down,
             "scroll_half_page_up": self._scroll_half_page_up,
+            "center_result": self._center_result,
+            "result_to_top": self._result_to_top,
+            "result_to_bottom": self._result_to_bottom,
         }
         
-        # Track which double-tap keys we've already bound to avoid duplicates
-        bound_double_tap_keys = {}
+        # Track two-letter sequences (both same-letter like 'gg' and different-letter like 'zt')
+        two_letter_sequences = {}  # Maps first letter to dict of {second_letter: (handler, action_id)}
         
         # Bind each shortcut
         for action_id, handler in action_handlers.items():
@@ -2634,25 +2741,28 @@ class RapidMomentNavigator:
                 keys = shortcuts[action_id].get("keys", [])
                 for key in keys:
                     try:
-                        # Check if this is a same-letter double-tap (two identical characters, no angle brackets)
-                        if not key.startswith('<') and len(key) == 2 and key[0] == key[1]:
-                            # This is a double-tap shortcut like 'gg', 'dd', 'cc', etc.
-                            single_key = key[0]
-                            bind_key = f"<KeyPress-{single_key}>"
+                        # Check if this is a two-letter sequence (no angle brackets, exactly 2 chars)
+                        if not key.startswith('<') and len(key) == 2:
+                            # This is a two-letter shortcut like 'gg', 'zt', 'zb', etc.
+                            first_key = key[0]
+                            second_key = key[1]
                             
-                            # Only bind once per key, even if multiple actions use it
-                            if single_key not in bound_double_tap_keys:
-                                # Store the handler for this double-tap
-                                bound_double_tap_keys[single_key] = (handler, action_id)
-                                self.debug_print(f"Registered double-tap '{key}' for {action_id}")
+                            # Store the sequence
+                            if first_key not in two_letter_sequences:
+                                two_letter_sequences[first_key] = {}
+                            
+                            if second_key in two_letter_sequences[first_key]:
+                                self.debug_print(f"Warning: '{key}' already bound to {two_letter_sequences[first_key][second_key][1]}, skipping binding for {action_id}")
                             else:
-                                self.debug_print(f"Warning: '{key}' already bound to {bound_double_tap_keys[single_key][1]}, skipping binding for {action_id}")
+                                two_letter_sequences[first_key][second_key] = (handler, action_id)
+                                self.debug_print(f"Registered two-letter sequence '{key}' for {action_id}")
                         
                         # Single character keys without angle brackets
                         elif not key.startswith('<') and len(key) == 1:
                             bind_key = f"<KeyPress-{key}>"
                             # Use bind_all for single character keys to catch them globally
                             self.root.bind_all(bind_key, lambda e, h=handler: h())
+                            self.bound_shortcut_keys.add(bind_key)
                             self.debug_print(f"Bound (globally) {bind_key} (from {key}) to {action_id}")
                         
                         # Special keys with angle brackets (like <Control-F>, <Home>, etc.)
@@ -2678,6 +2788,7 @@ class RapidMomentNavigator:
                                 
                                 # Bind the uppercase variant
                                 self.root.bind_all(bind_key, handler_wrapper)
+                                self.bound_shortcut_keys.add(bind_key)
                                 
                                 # Also bind lowercase variant for Control/Alt keys (cross-platform compatibility)
                                 if ("Control" in bind_key or "Alt" in bind_key) and "-" in bind_key:
@@ -2687,23 +2798,54 @@ class RapidMomentNavigator:
                                         if letter.isupper():
                                             lowercase_key = bind_key.replace(letter + ">", letter.lower() + ">")
                                             self.root.bind_all(lowercase_key, handler_wrapper)
+                                            self.bound_shortcut_keys.add(lowercase_key)
                                             self.debug_print(f"Also bound lowercase variant: {lowercase_key}")
                                 
                                 self.debug_print(f"Bound (globally, override) {bind_key} (from {key}) to {action_id}")
                             else:
                                 # Use regular bind for non-modifier special keys like <Home>, <End>
                                 self.root.bind(bind_key, lambda e, h=handler: h())
+                                self.bound_shortcut_keys.add(bind_key)
                                 self.debug_print(f"Bound {bind_key} (from {key}) to {action_id}")
                     except Exception as e:
                         self.debug_print(f"Error binding {key} for {action_id}: {e}")
         
-        # Now bind all the first keys for double-tap sequences
-        for single_key, (handler, action_id) in bound_double_tap_keys.items():
-            bind_key = f"<KeyPress-{single_key}>"
-            # Bind the key to detect double-tap
-            self.root.bind_all(bind_key, lambda e, k=single_key, h=handler, aid=action_id: 
-                self._handle_double_tap_key(k, h, aid))
-            self.debug_print(f"Bound (globally) {bind_key} for double-tap '{single_key}{single_key}' to {action_id}")
+        # Now bind all the first keys for two-letter sequences
+        for first_key, second_key_map in two_letter_sequences.items():
+            bind_key = f"<KeyPress-{first_key}>"
+            # Bind the key to record it as a potential first key
+            self.root.bind_all(bind_key, lambda e, fk=first_key, skm=second_key_map: 
+                self._handle_two_letter_sequence(fk, skm))
+            self.bound_shortcut_keys.add(bind_key)
+            self.debug_print(f"Bound (globally) {bind_key} for two-letter sequences starting with '{first_key}'")
+            
+            # Also bind handlers for each possible second key to complete the sequence
+            for second_key, (handler, action_id) in second_key_map.items():
+                # Skip if it's the same as the first key (already handled above)
+                if second_key == first_key:
+                    continue
+                
+                second_bind_key = f"<KeyPress-{second_key}>"
+                # Bind to check if this completes a sequence
+                def make_sequence_completer(fk, sk, h, aid):
+                    def completer(event):
+                        # Check if the first key was recently pressed
+                        import time
+                        current_time = time.time() * 1000
+                        last_press_info = self.last_key_press_times.get(fk, None)
+                        
+                        if last_press_info and current_time - last_press_info['time'] < self.double_tap_timeout:
+                            # Complete the sequence
+                            self.debug_print(f"Two-letter sequence '{fk}{sk}' detected - {aid}")
+                            h()
+                            self.last_key_press_times[fk] = None
+                            return "break"  # Prevent the single-key action from also firing
+                        # If not completing a sequence, let the key work normally
+                    return completer
+                
+                self.root.bind_all(second_bind_key, make_sequence_completer(first_key, second_key, handler, action_id), add="+")
+                self.bound_shortcut_keys.add(second_bind_key)
+                self.debug_print(f"Bound (globally) {second_bind_key} to complete sequence '{first_key}{second_key}'")
     
     def _display_main_current_page(self):
         """Display the current page of results in main navigator"""
@@ -6925,6 +7067,33 @@ except Exception as e:
         except Exception as e:
             self.debug_print(f"Error applying sizes to open windows: {e}")
 
+    def _should_show_sequence_hint(self, key):
+        """Check if a key should show the 'press again for sequence' hint"""
+        # Only show for single lowercase letters without modifiers
+        if not key or key.startswith('<') or len(key) != 1:
+            return False
+        
+        # Get prefix keys (defaults + custom from preferences)
+        prefix_keys = set(DEFAULT_PREFIX_KEYS)
+        custom_prefix_keys = self.preferences.get("prefix_keys", [])
+        prefix_keys.update(custom_prefix_keys)
+        
+        # Show for prefix keys (g, z, or custom)
+        if key in prefix_keys:
+            return True
+        
+        # Show if there's an uppercase mapping for this key (indicates it's a navigation key)
+        shortcuts = self.preferences.get("keyboard_shortcuts", {})
+        all_shortcuts = {**DEFAULT_KEYBOARD_SHORTCUTS, **shortcuts}
+        
+        uppercase_key = key.upper()
+        for action_id, action_data in all_shortcuts.items():
+            keys = action_data.get("keys", [])
+            if uppercase_key in keys:
+                return True
+        
+        return False
+    
     def _show_keyboard_shortcuts_dialog(self):
         """Show a dialog for configuring keyboard shortcuts"""
         # Get saved size and calculate centered position BEFORE creating window
@@ -7143,9 +7312,166 @@ except Exception as e:
                     self._display_shortcut_keys(action_id, self.shortcut_entries[action_id]["keys_frame"])
         
         # Buttons
+        ttk.Button(buttons_frame, text="Manage Prefix Keys", command=self._show_prefix_keys_dialog).pack(side="left", padx=5)
         ttk.Button(buttons_frame, text="Reset to Defaults", command=reset_to_defaults).pack(side="left", padx=5)
         ttk.Button(buttons_frame, text="Save", command=save_shortcuts).pack(side="right", padx=5)
         ttk.Button(buttons_frame, text="Cancel", command=on_dialog_close).pack(side="right", padx=5)
+    
+    def _show_prefix_keys_dialog(self):
+        """Show dialog to manage prefix keys (keys that show sequence hint)"""
+        # Get parent dialog (keyboard shortcuts dialog)
+        parent_dialog = self.keyboard_shortcuts_dialog if hasattr(self, 'keyboard_shortcuts_dialog') else self.root
+        
+        # Create dialog
+        prefix_dialog = tk.Toplevel(parent_dialog)
+        prefix_dialog.title("Manage Prefix Keys")
+        prefix_dialog.geometry("450x400")
+        prefix_dialog.transient(parent_dialog)
+        prefix_dialog.grab_set()
+        
+        # Center the dialog
+        prefix_dialog.update()
+        x = parent_dialog.winfo_x() + (parent_dialog.winfo_width() - prefix_dialog.winfo_width()) // 2
+        y = parent_dialog.winfo_y() + (parent_dialog.winfo_height() - prefix_dialog.winfo_height()) // 2
+        prefix_dialog.geometry(f"+{x}+{y}")
+        
+        # Main frame
+        main_frame = ttk.Frame(prefix_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title and description
+        ttk.Label(main_frame, text="Prefix Keys", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        ttk.Label(main_frame, text="Keys that show '(press again for sequence)' hint when pressed.",
+                 foreground="gray").pack(anchor="w", pady=(0, 10))
+        
+        # Get current prefix keys (defaults + custom)
+        custom_prefix_keys = self.preferences.get("prefix_keys", [])
+        current_keys = list(set(DEFAULT_PREFIX_KEYS + custom_prefix_keys))  # Merge and deduplicate
+        current_keys.sort()  # Sort alphabetically
+        
+        # Listbox frame
+        list_frame = ttk.LabelFrame(main_frame, text="Current Prefix Keys", padding=10)
+        list_frame.pack(fill="both", expand=True, pady=(0, 10))
+        
+        # Scrollable listbox
+        list_scroll = ttk.Scrollbar(list_frame)
+        list_scroll.pack(side="right", fill="y")
+        
+        keys_listbox = tk.Listbox(list_frame, yscrollcommand=list_scroll.set, height=10)
+        keys_listbox.pack(side="left", fill="both", expand=True)
+        list_scroll.config(command=keys_listbox.yview)
+        
+        def refresh_list():
+            """Refresh the listbox with current keys"""
+            keys_listbox.delete(0, tk.END)
+            for key in current_keys:
+                is_default = key in DEFAULT_PREFIX_KEYS
+                display = f"{key}  (default)" if is_default else key
+                keys_listbox.insert(tk.END, display)
+        
+        refresh_list()
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(list_frame)
+        buttons_frame.pack(fill="x", pady=(10, 0))
+        
+        def add_key():
+            """Add a new prefix key"""
+            add_dialog = tk.Toplevel(prefix_dialog)
+            add_dialog.title("Add Prefix Key")
+            add_dialog.geometry("350x200")
+            add_dialog.transient(prefix_dialog)
+            add_dialog.grab_set()
+            
+            # Center
+            add_dialog.update()
+            x = prefix_dialog.winfo_x() + (prefix_dialog.winfo_width() - add_dialog.winfo_width()) // 2
+            y = prefix_dialog.winfo_y() + (prefix_dialog.winfo_height() - add_dialog.winfo_height()) // 2
+            add_dialog.geometry(f"+{x}+{y}")
+            
+            frame = ttk.Frame(add_dialog, padding=20)
+            frame.pack(fill="both", expand=True)
+            
+            ttk.Label(frame, text="Press a single letter key:").pack(pady=10)
+            
+            captured_key = tk.StringVar(value="(waiting...)")
+            key_display = ttk.Label(frame, textvariable=captured_key, 
+                                   font=("TkDefaultFont", 12, "bold"),
+                                   relief="solid", borderwidth=2, padding=10)
+            key_display.pack(pady=10)
+            
+            captured = [None]
+            
+            def capture(event):
+                key = event.keysym
+                # Only allow single lowercase letters
+                if len(key) == 1 and key.isalpha() and key.islower():
+                    captured[0] = key
+                    captured_key.set(key)
+                elif len(key) == 1 and key.isalpha() and key.isupper():
+                    # Convert to lowercase
+                    captured[0] = key.lower()
+                    captured_key.set(key.lower())
+                else:
+                    captured_key.set("(only letters allowed)")
+            
+            add_dialog.bind("<Key>", capture)
+            add_dialog.focus_force()
+            
+            def save():
+                if captured[0]:
+                    if captured[0] in current_keys:
+                        messagebox.showwarning("Duplicate", f"'{captured[0]}' is already a prefix key.")
+                    else:
+                        current_keys.append(captured[0])
+                        current_keys.sort()
+                        refresh_list()
+                        add_dialog.destroy()
+            
+            ttk.Button(frame, text="Add", command=save).pack(side="right", padx=5)
+            ttk.Button(frame, text="Cancel", command=add_dialog.destroy).pack(side="right")
+        
+        def remove_key():
+            """Remove selected prefix key"""
+            selection = keys_listbox.curselection()
+            if not selection:
+                messagebox.showinfo("No Selection", "Please select a prefix key to remove.")
+                return
+            
+            idx = selection[0]
+            key = current_keys[idx]
+            
+            if key in DEFAULT_PREFIX_KEYS:
+                messagebox.showwarning("Cannot Remove", f"'{key}' is a default prefix key and cannot be removed.")
+                return
+            
+            current_keys.remove(key)
+            refresh_list()
+        
+        ttk.Button(buttons_frame, text="Add", command=add_key).pack(side="left", padx=5)
+        ttk.Button(buttons_frame, text="Remove", command=remove_key).pack(side="left", padx=5)
+        
+        # Bottom buttons
+        bottom_frame = ttk.Frame(main_frame)
+        bottom_frame.pack(fill="x")
+        
+        def save_and_close():
+            """Save custom prefix keys to preferences"""
+            # Only save keys that aren't defaults
+            custom_only = [k for k in current_keys if k not in DEFAULT_PREFIX_KEYS]
+            
+            if custom_only:
+                self.preferences["prefix_keys"] = custom_only
+            else:
+                # Remove from preferences if only defaults remain
+                if "prefix_keys" in self.preferences:
+                    del self.preferences["prefix_keys"]
+            
+            self.save_preferences()
+            prefix_dialog.destroy()
+        
+        ttk.Button(bottom_frame, text="Save", command=save_and_close).pack(side="right", padx=5)
+        ttk.Button(bottom_frame, text="Cancel", command=prefix_dialog.destroy).pack(side="right")
     
     def _display_shortcut_keys(self, action_id, keys_frame):
         """Display the current keys for a shortcut action"""
@@ -7278,20 +7604,29 @@ except Exception as e:
             if key in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R'):
                 return
             
-            # Normalize letter keys to uppercase when modifiers are present
-            # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
-            if modifiers and len(key) == 1 and key.isalpha():
-                key = key.upper()
-            
-            # Build the binding string for this key press
-            if modifiers:
-                binding = "<" + "-".join(modifiers) + "-" + key + ">"
+            # Special handling for Shift+letter: treat as just the uppercase letter
+            if "Shift" in modifiers and len(key) == 1 and key.isalpha() and len(modifiers) == 1:
+                # Just Shift+letter (no Ctrl or Alt) -> store as uppercase letter only
+                binding = key.upper()
             else:
-                binding = key
+                # Normalize letter keys to uppercase when other modifiers are present
+                # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
+                if modifiers and len(key) == 1 and key.isalpha():
+                    key = key.upper()
+                    # Remove Shift from modifiers for letters (it's implied by uppercase)
+                    if "Shift" in modifiers:
+                        modifiers.remove("Shift")
+                
+                # Build the binding string for this key press
+                if modifiers:
+                    binding = "<" + "-".join(modifiers) + "-" + key + ">"
+                else:
+                    binding = key
             
             # Check if this is the same key as last press (for double-tap)
+            # No timeout in capture dialog - just check if same key
             if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and binding == first_key[0]:
-                # Same key pressed twice - create double-tap like "gg", "dd", "cc"
+                # Same key pressed twice - create double-tap sequence
                 sequence = first_key[0] + binding
                 captured_binding[0] = sequence
                 captured_key.set(self._format_key_for_display(sequence))
@@ -7300,16 +7635,14 @@ except Exception as e:
                 # First press or different key - store this key
                 first_key[0] = binding
                 captured_binding[0] = binding
-                # Show hint for single letters without modifiers
-                if not modifiers and not binding.startswith('<'):
-                    captured_key.set(self._format_key_for_display(binding) + " (press same key again for double-tap, or Save)")
+                # Show hint ONLY for g, z, or keys with uppercase mappings
+                if self._should_show_sequence_hint(binding):
+                    captured_key.set(self._format_key_for_display(binding) + " (press again for sequence, or Save)")
                 else:
                     captured_key.set(self._format_key_for_display(binding))
         
         # Bind to the dialog window itself
         edit_dialog.bind("<Key>", capture_key)
-        # Also bind to all child widgets to ensure we catch keys
-        edit_dialog.bind_all("<Key>", capture_key)
         
         def cleanup_and_close():
             """Clean up bindings and close dialog"""
@@ -7440,20 +7773,29 @@ except Exception as e:
                 if key in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R'):
                     return
                 
-                # Normalize letter keys to uppercase when modifiers are present
-                # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
-                if modifiers and len(key) == 1 and key.isalpha():
-                    key = key.upper()
-                
-                # Build the binding string for this key press
-                if modifiers:
-                    binding = "<" + "-".join(modifiers) + "-" + key + ">"
+                # Special handling for Shift+letter: treat as just the uppercase letter
+                if "Shift" in modifiers and len(key) == 1 and key.isalpha() and len(modifiers) == 1:
+                    # Just Shift+letter (no Ctrl or Alt) -> store as uppercase letter only
+                    binding = key.upper()
                 else:
-                    binding = key
+                    # Normalize letter keys to uppercase when other modifiers are present
+                    # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
+                    if modifiers and len(key) == 1 and key.isalpha():
+                        key = key.upper()
+                        # Remove Shift from modifiers for letters (it's implied by uppercase)
+                        if "Shift" in modifiers:
+                            modifiers.remove("Shift")
+                    
+                    # Build the binding string for this key press
+                    if modifiers:
+                        binding = "<" + "-".join(modifiers) + "-" + key + ">"
+                    else:
+                        binding = key
                 
                 # Check if this is the same key as last press (for double-tap)
-                if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and binding == first_key[0]:
-                    # Same key pressed twice - create double-tap like "gg", "dd", "cc"
+                # No timeout in capture dialog - just check if same key
+                if first_key[0] is not None and not binding.startswith('<') and binding == first_key[0]:
+                    # Same key pressed twice - create double-tap sequence
                     sequence = first_key[0] + binding
                     captured_binding[0] = sequence
                     captured_key.set(self._format_key_for_display(sequence))
@@ -7462,9 +7804,9 @@ except Exception as e:
                     # First press or different key - store this key
                     first_key[0] = binding
                     captured_binding[0] = binding
-                    # Show hint for single letters without modifiers
-                    if not modifiers and not binding.startswith('<'):
-                        captured_key.set(self._format_key_for_display(binding) + " (press same key again for double-tap, or Add)")
+                    # Show hint ONLY for g, z, or keys with uppercase mappings
+                    if self._should_show_sequence_hint(binding):
+                        captured_key.set(self._format_key_for_display(binding) + " (press again for sequence, or Add)")
                     else:
                         captured_key.set(self._format_key_for_display(binding))
             
@@ -7552,20 +7894,29 @@ except Exception as e:
                 if key in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R'):
                     return
                 
-                # Normalize letter keys to uppercase when modifiers are present
-                # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
-                if modifiers and len(key) == 1 and key.isalpha():
-                    key = key.upper()
-                
-                # Build the binding string for this key press
-                if modifiers:
-                    binding = "<" + "-".join(modifiers) + "-" + key + ">"
+                # Special handling for Shift+letter: treat as just the uppercase letter
+                if "Shift" in modifiers and len(key) == 1 and key.isalpha() and len(modifiers) == 1:
+                    # Just Shift+letter (no Ctrl or Alt) -> store as uppercase letter only
+                    binding = key.upper()
                 else:
-                    binding = key
+                    # Normalize letter keys to uppercase when other modifiers are present
+                    # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
+                    if modifiers and len(key) == 1 and key.isalpha():
+                        key = key.upper()
+                        # Remove Shift from modifiers for letters (it's implied by uppercase)
+                        if "Shift" in modifiers:
+                            modifiers.remove("Shift")
+                    
+                    # Build the binding string for this key press
+                    if modifiers:
+                        binding = "<" + "-".join(modifiers) + "-" + key + ">"
+                    else:
+                        binding = key
                 
                 # Check if this is the same key as last press (for double-tap)
-                if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and binding == first_key[0]:
-                    # Same key pressed twice - create double-tap like "gg", "dd", "cc"
+                # No timeout in capture dialog - just check if same key
+                if first_key[0] is not None and not binding.startswith('<') and binding == first_key[0]:
+                    # Same key pressed twice - create double-tap sequence
                     sequence = first_key[0] + binding
                     captured_binding[0] = sequence
                     captured_key.set(self._format_key_for_display(sequence))
@@ -7574,15 +7925,14 @@ except Exception as e:
                     # First press or different key - store this key
                     first_key[0] = binding
                     captured_binding[0] = binding
-                    # Show hint for single letters without modifiers
-                    if not modifiers and not binding.startswith('<'):
-                        captured_key.set(self._format_key_for_display(binding) + " (press same key again for double-tap, or Save)")
+                    # Show hint ONLY for g, z, or keys with uppercase mappings
+                    if self._should_show_sequence_hint(binding):
+                        captured_key.set(self._format_key_for_display(binding) + " (press again for sequence, or Save)")
                     else:
                         captured_key.set(self._format_key_for_display(binding))
             
             # Bind to capture keys
             edit_key_dialog.bind("<Key>", capture_key)
-            edit_key_dialog.bind_all("<Key>", capture_key)
             
             def cleanup_and_close_edit():
                 """Clean up bindings and close dialog"""
