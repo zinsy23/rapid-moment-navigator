@@ -2401,9 +2401,16 @@ class RapidMomentNavigator:
                     # Special keys with angle brackets
                     else:
                         bind_key = key
-                        # Unbind from class "all"
-                        self.root.unbind_class("all", bind_key)
-                        self.debug_print(f"Unbound class key {bind_key}")
+                        # Try to unbind from both bind and bind_all
+                        try:
+                            self.root.unbind(bind_key)
+                        except:
+                            pass
+                        try:
+                            self.root.unbind_all(bind_key)
+                        except:
+                            pass
+                        self.debug_print(f"Unbound key {bind_key}")
                 except Exception as e:
                     self.debug_print(f"Error unbinding {key}: {e}")
     
@@ -2473,10 +2480,42 @@ class RapidMomentNavigator:
                         # Special keys with angle brackets (like <Control-F>, <Home>, etc.)
                         else:
                             bind_key = key
-                            # For modifier keys, use bind_class on all widgets to override defaults
-                            # Return "break" to prevent default Tkinter handling
-                            self.root.bind_class("all", bind_key, lambda e, h=handler: (h(), "break")[1])
-                            self.debug_print(f"Bound (class all, override) {bind_key} (from {key}) to {action_id}")
+                            # Check if this is a modifier key combo that might be intercepted
+                            if "Control" in bind_key or "Alt" in bind_key or "Shift" in bind_key:
+                                # Use bind_all for modifier combos to override widget-specific bindings
+                                # Track last call time to prevent duplicate calls from case variants
+                                def make_handler(h, aid):
+                                    last_call = [0]  # Use list to allow modification in closure
+                                    def wrapper(e):
+                                        import time
+                                        current_time = time.time()
+                                        # Only call if more than 50ms since last call (prevents duplicate from case variants)
+                                        if current_time - last_call[0] > 0.05:
+                                            last_call[0] = current_time
+                                            h()
+                                        return "break"
+                                    return wrapper
+                                
+                                handler_wrapper = make_handler(handler, action_id)
+                                
+                                # Bind the uppercase variant
+                                self.root.bind_all(bind_key, handler_wrapper)
+                                
+                                # Also bind lowercase variant for Control/Alt keys (cross-platform compatibility)
+                                if ("Control" in bind_key or "Alt" in bind_key) and "-" in bind_key:
+                                    parts = bind_key.split("-")
+                                    if len(parts) >= 2 and len(parts[-1]) == 2:  # ends with ">X>"
+                                        letter = parts[-1][0]
+                                        if letter.isupper():
+                                            lowercase_key = bind_key.replace(letter + ">", letter.lower() + ">")
+                                            self.root.bind_all(lowercase_key, handler_wrapper)
+                                            self.debug_print(f"Also bound lowercase variant: {lowercase_key}")
+                                
+                                self.debug_print(f"Bound (globally, override) {bind_key} (from {key}) to {action_id}")
+                            else:
+                                # Use regular bind for non-modifier special keys like <Home>, <End>
+                                self.root.bind(bind_key, lambda e, h=handler: h())
+                                self.debug_print(f"Bound {bind_key} (from {key}) to {action_id}")
                     except Exception as e:
                         self.debug_print(f"Error binding {key} for {action_id}: {e}")
         
