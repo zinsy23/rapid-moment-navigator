@@ -2404,8 +2404,17 @@ class RapidMomentNavigator:
         # First unbind any existing shortcuts
         self._unbind_keyboard_shortcuts()
         
-        # Get keyboard shortcuts from preferences
-        shortcuts = self.preferences.get("keyboard_shortcuts", DEFAULT_KEYBOARD_SHORTCUTS)
+        # Get keyboard shortcuts from preferences and merge with defaults
+        # Start with defaults, then override with any custom shortcuts
+        shortcuts = {}
+        for action_id, action_data in DEFAULT_KEYBOARD_SHORTCUTS.items():
+            shortcuts[action_id] = action_data.copy()
+        
+        # Override with custom shortcuts from preferences
+        custom_shortcuts = self.preferences.get("keyboard_shortcuts", {})
+        for action_id, custom_data in custom_shortcuts.items():
+            if action_id in shortcuts:
+                shortcuts[action_id]["keys"] = custom_data.get("keys", shortcuts[action_id]["keys"])
         
         # Map action IDs to their handler functions
         action_handlers = {
@@ -6762,8 +6771,9 @@ except Exception as e:
         # Setup cross-platform mousewheel scrolling
         self._setup_canvas_scrolling(canvas)
         
-        # Load current shortcuts from preferences or use defaults
-        current_shortcuts = self.preferences.get("keyboard_shortcuts", DEFAULT_KEYBOARD_SHORTCUTS.copy())
+        # Load current shortcuts from preferences and merge with defaults
+        # Start with defaults, then override with any custom shortcuts
+        custom_shortcuts = self.preferences.get("keyboard_shortcuts", {})
         
         # Group shortcuts by category
         categories = {}
@@ -6772,9 +6782,9 @@ except Exception as e:
             if category not in categories:
                 categories[category] = []
             
-            # Get current keys for this action (from prefs or default)
-            if action_id in current_shortcuts:
-                current_keys = current_shortcuts[action_id].get("keys", action_data["keys"])
+            # Get current keys for this action (custom if exists, otherwise default)
+            if action_id in custom_shortcuts:
+                current_keys = custom_shortcuts[action_id].get("keys", action_data["keys"])
             else:
                 current_keys = action_data["keys"]
             
@@ -6846,20 +6856,36 @@ except Exception as e:
         buttons_frame.grid(row=3, column=0, sticky="ew")
         
         def save_shortcuts():
-            """Save shortcuts to preferences"""
-            # Build shortcuts dictionary from current entries
+            """Save shortcuts to preferences (only if they differ from defaults)"""
+            # Build shortcuts dictionary from current entries, but only save if different from defaults
             shortcuts_to_save = {}
             for action_id, entry_data in self.shortcut_entries.items():
                 # Get the default data for this action
                 default_data = DEFAULT_KEYBOARD_SHORTCUTS[action_id]
-                shortcuts_to_save[action_id] = {
-                    "description": default_data["description"],
-                    "category": default_data["category"],
-                    "keys": entry_data["keys"].copy()
-                }
+                current_keys = entry_data["keys"]
+                default_keys = default_data["keys"]
+                
+                # Only save if keys differ from defaults
+                if current_keys != default_keys:
+                    shortcuts_to_save[action_id] = {
+                        "description": default_data["description"],
+                        "category": default_data["category"],
+                        "keys": current_keys.copy()
+                    }
+                    self.debug_print(f"Saving custom shortcut for {action_id}: {current_keys} (default: {default_keys})")
+                else:
+                    self.debug_print(f"Skipping {action_id} - matches default")
             
-            # Save to preferences
-            self.preferences["keyboard_shortcuts"] = shortcuts_to_save
+            # Save to preferences (or remove the key if all shortcuts are default)
+            if shortcuts_to_save:
+                self.preferences["keyboard_shortcuts"] = shortcuts_to_save
+                self.debug_print(f"Saved {len(shortcuts_to_save)} custom shortcuts")
+            else:
+                # Remove keyboard_shortcuts from preferences if all are defaults
+                if "keyboard_shortcuts" in self.preferences:
+                    del self.preferences["keyboard_shortcuts"]
+                    self.debug_print("All shortcuts are default - removed keyboard_shortcuts from preferences")
+            
             self.save_preferences()
             
             self.debug_print("Keyboard shortcuts saved successfully")
