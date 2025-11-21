@@ -2285,55 +2285,233 @@ class RapidMomentNavigator:
     
     # ===== End Result Navigation Methods =====
     
+    def _get_visible_results_count(self):
+        """Calculate how many results are currently visible in the canvas"""
+        if not self.result_items:
+            return 0
+        
+        try:
+            # Get canvas dimensions and scroll position
+            canvas_height = self.results_canvas.winfo_height()
+            current_view = self.results_canvas.yview()
+            
+            # Get total scrollable height
+            scroll_region = self.results_canvas.cget("scrollregion")
+            if not scroll_region:
+                return 5  # Fallback
+            
+            total_height = int(scroll_region.split()[3])
+            
+            # Calculate visible area in absolute coordinates
+            visible_top = current_view[0] * total_height
+            visible_bottom = current_view[1] * total_height
+            
+            # Count how many results are visible
+            visible_count = 0
+            for result_item in self.result_items:
+                frame = result_item['frame']
+                frame_y = frame.winfo_y()
+                frame_height = frame.winfo_height()
+                frame_bottom = frame_y + frame_height
+                
+                # Check if this frame is at least partially visible
+                if frame_bottom > visible_top and frame_y < visible_bottom:
+                    visible_count += 1
+            
+            return max(1, visible_count)
+        except Exception as e:
+            self.debug_print(f"Error calculating visible results: {e}")
+            return 5  # Fallback
+    
+    def _get_selected_visible_position(self):
+        """Get which visible position (1st, 2nd, 3rd, etc.) the selected result is at"""
+        if self.selected_result_index is None or not self.result_items:
+            return None
+        
+        try:
+            # Get canvas dimensions and scroll position
+            current_view = self.results_canvas.yview()
+            scroll_region = self.results_canvas.cget("scrollregion")
+            if not scroll_region:
+                return None
+            
+            total_height = int(scroll_region.split()[3])
+            visible_top = current_view[0] * total_height
+            visible_bottom = current_view[1] * total_height
+            
+            # Find all visible results and their positions
+            visible_results = []
+            for idx, result_item in enumerate(self.result_items):
+                frame = result_item['frame']
+                frame_y = frame.winfo_y()
+                frame_height = frame.winfo_height()
+                frame_bottom = frame_y + frame_height
+                
+                # Check if this frame is at least partially visible
+                if frame_bottom > visible_top and frame_y < visible_bottom:
+                    visible_results.append(idx)
+            
+            # Find the selected result's position in the visible list
+            if self.selected_result_index in visible_results:
+                return visible_results.index(self.selected_result_index)
+            
+            return None
+        except Exception as e:
+            self.debug_print(f"Error getting selected visible position: {e}")
+            return None
+    
     def _scroll_half_page_down(self):
-        """Scroll down half a page in the results canvas"""
+        """Scroll down half a page in the results canvas (Vim-style)"""
         # Don't scroll if app window doesn't have focus
         if not self._is_app_window_focused():
             return
         
+        if not self.result_items:
+            return
+        
         try:
-            # Get the visible height of the canvas
-            canvas_height = self.results_canvas.winfo_height()
-            # Scroll down by half the visible height
-            # Convert pixels to scroll units (roughly)
-            scroll_amount = int(canvas_height / 2 / 20)  # Assuming ~20 pixels per unit
-            self.results_canvas.yview_scroll(scroll_amount, "units")
-            self.debug_print(f"Scrolled down {scroll_amount} units")
+            # Get the current visual position of the selection (e.g., 3rd visible item)
+            visual_position = self._get_selected_visible_position()
             
-            # Adjust selection to stay in visible area
-            if self.selected_result_index is not None and self.result_items:
-                # Try to move selection down by roughly half the visible results
-                visible_results = max(1, int(len(self.result_items) * 0.3))  # Rough estimate
-                new_index = min(self.selected_result_index + visible_results, len(self.result_items) - 1)
-                if new_index != self.selected_result_index:
-                    self._select_result(new_index)
+            # Calculate how many results to move based on currently visible results
+            visible_count = self._get_visible_results_count()
+            results_per_half_page = max(1, visible_count // 2)
+            
+            # Move selection down by half a page of results
+            if self.selected_result_index is None:
+                # No selection, start at first result
+                self._select_result(0)
+            else:
+                new_index = min(self.selected_result_index + results_per_half_page, len(self.result_items) - 1)
+                self._select_result(new_index)
+                
+                # Scroll to maintain the same visual position (Vim behavior)
+                if visual_position is not None:
+                    self._scroll_to_visual_position(visual_position)
+                else:
+                    self._scroll_to_keep_selection_visible()
+            
+            self.debug_print(f"Scrolled down {results_per_half_page} results (visible: {visible_count}, visual_pos: {visual_position})")
         except Exception as e:
             self.debug_print(f"Error scrolling down: {e}")
     
     def _scroll_half_page_up(self):
-        """Scroll up half a page in the results canvas"""
+        """Scroll up half a page in the results canvas (Vim-style)"""
         # Don't scroll if app window doesn't have focus
         if not self._is_app_window_focused():
             return
         
+        if not self.result_items:
+            return
+        
         try:
-            # Get the visible height of the canvas
-            canvas_height = self.results_canvas.winfo_height()
-            # Scroll up by half the visible height
-            # Convert pixels to scroll units (roughly)
-            scroll_amount = int(canvas_height / 2 / 20)  # Assuming ~20 pixels per unit
-            self.results_canvas.yview_scroll(-scroll_amount, "units")
-            self.debug_print(f"Scrolled up {scroll_amount} units")
+            # Get the current visual position of the selection (e.g., 3rd visible item)
+            visual_position = self._get_selected_visible_position()
             
-            # Adjust selection to stay in visible area
-            if self.selected_result_index is not None and self.result_items:
-                # Try to move selection up by roughly half the visible results
-                visible_results = max(1, int(len(self.result_items) * 0.3))  # Rough estimate
-                new_index = max(self.selected_result_index - visible_results, 0)
-                if new_index != self.selected_result_index:
-                    self._select_result(new_index)
+            # Calculate how many results to move based on currently visible results
+            visible_count = self._get_visible_results_count()
+            results_per_half_page = max(1, visible_count // 2)
+            
+            # Move selection up by half a page of results
+            if self.selected_result_index is None:
+                # No selection, start at first result
+                self._select_result(0)
+            else:
+                new_index = max(self.selected_result_index - results_per_half_page, 0)
+                self._select_result(new_index)
+                
+                # Scroll to maintain the same visual position (Vim behavior)
+                if visual_position is not None:
+                    self._scroll_to_visual_position(visual_position)
+                else:
+                    self._scroll_to_keep_selection_visible()
+            
+            self.debug_print(f"Scrolled up {results_per_half_page} results (visible: {visible_count}, visual_pos: {visual_position})")
         except Exception as e:
             self.debug_print(f"Error scrolling up: {e}")
+    
+    def _scroll_to_visual_position(self, target_visible_position):
+        """Scroll canvas so selected result is at the target visible position (0=first visible, 1=second, etc.)"""
+        if self.selected_result_index is None or not self.result_items:
+            return
+        
+        try:
+            selected_frame = self.result_items[self.selected_result_index]['frame']
+            
+            # Get canvas dimensions
+            canvas_height = self.results_canvas.winfo_height()
+            
+            # Get scroll region
+            scroll_region = self.results_canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Get the selected frame's position
+            frame_y = selected_frame.winfo_y()
+            frame_height = selected_frame.winfo_height()
+            
+            # Calculate where we want the top of the canvas viewport to be
+            # We want to scroll so that the selected frame appears at the target_visible_position
+            # First, we need to estimate how far down that position is
+            
+            # Get average result height by sampling visible results
+            avg_height = frame_height  # Use selected frame as estimate
+            
+            # Calculate desired scroll position
+            # If target_visible_position is 2, we want 2 results above the selected one
+            desired_viewport_top = frame_y - (target_visible_position * avg_height)
+            
+            # Convert to scroll fraction
+            new_scroll_pos = desired_viewport_top / total_height
+            
+            # Clamp to valid range [0, 1]
+            new_scroll_pos = max(0.0, min(1.0, new_scroll_pos))
+            
+            self.results_canvas.yview_moveto(new_scroll_pos)
+            self.debug_print(f"Scrolled to maintain visual position {target_visible_position}")
+        except Exception as e:
+            self.debug_print(f"Error in _scroll_to_visual_position: {e}")
+    
+    def _scroll_to_keep_selection_visible(self):
+        """Scroll canvas to keep selected result visible at its current relative position (Vim-style)"""
+        if self.selected_result_index is None or not self.result_items:
+            return
+        
+        try:
+            selected_frame = self.result_items[self.selected_result_index]['frame']
+            
+            # Get the canvas dimensions
+            canvas_height = self.results_canvas.winfo_height()
+            
+            # Get the selected frame's position relative to the scrollable area
+            frame_y = selected_frame.winfo_y()
+            frame_height = selected_frame.winfo_height()
+            
+            # Get current scroll position
+            scroll_region = self.results_canvas.cget("scrollregion")
+            if scroll_region:
+                total_height = int(scroll_region.split()[3])
+            else:
+                return
+            
+            # Calculate where the frame should be scrolled to keep it visible
+            # We want to keep it at roughly the same relative position on screen
+            current_view = self.results_canvas.yview()
+            current_scroll_top = current_view[0] * total_height
+            
+            # Check if frame is above visible area
+            if frame_y < current_scroll_top:
+                # Scroll up to show the frame
+                new_scroll_pos = frame_y / total_height
+                self.results_canvas.yview_moveto(new_scroll_pos)
+            # Check if frame is below visible area
+            elif frame_y + frame_height > current_scroll_top + canvas_height:
+                # Scroll down to show the frame at the bottom
+                new_scroll_pos = (frame_y + frame_height - canvas_height) / total_height
+                self.results_canvas.yview_moveto(max(0, new_scroll_pos))
+        except Exception as e:
+            self.debug_print(f"Error in _scroll_to_keep_selection_visible: {e}")
     
     def _focus_search_bar(self):
         """Focus the search bar"""
