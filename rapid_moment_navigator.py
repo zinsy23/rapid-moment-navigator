@@ -106,6 +106,36 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "category": "Results Actions",
         "keys": ["<Control-Shift-I>"]
     },
+    "open_editor_dialog": {
+        "description": "Open Editor Navigator dialog",
+        "category": "Settings & Dialogs",
+        "keys": ["<Control-E>"]
+    },
+    "open_media_settings": {
+        "description": "Open Media Player Settings",
+        "category": "Settings & Dialogs",
+        "keys": ["<Control-M>"]
+    },
+    "open_marker_settings": {
+        "description": "Open Marker Settings",
+        "category": "Settings & Dialogs",
+        "keys": ["<Control-Shift-M>"]
+    },
+    "open_keyboard_shortcuts": {
+        "description": "Open Keyboard Shortcuts",
+        "category": "Settings & Dialogs",
+        "keys": ["<Control-K>"]
+    },
+    "open_window_sizing": {
+        "description": "Open Window Sizing",
+        "category": "Settings & Dialogs",
+        "keys": ["<Control-W>"]
+    },
+    "open_debug_console": {
+        "description": "Open Debug Console",
+        "category": "Settings & Dialogs",
+        "keys": ["<Control-D>"]
+    },
     "scroll_half_page_down": {
         "description": "Scroll down half a page",
         "category": "Scrolling",
@@ -2730,6 +2760,15 @@ class RapidMomentNavigator:
             "center_result": self._center_result,
             "result_to_top": self._result_to_top,
             "result_to_bottom": self._result_to_bottom,
+            "open_editor_dialog": lambda: self._is_app_window_focused() and self._show_editor_dialog(),
+            "open_media_settings": lambda: self._is_app_window_focused() and self._show_media_player_dialog(),
+            "open_marker_settings": lambda: self._is_app_window_focused() and self._show_marker_settings_dialog(),
+            "open_keyboard_shortcuts": lambda: self._is_app_window_focused() and self._show_keyboard_shortcuts_dialog(),
+            "open_window_sizing": lambda: self._is_app_window_focused() and self._show_window_sizing_dialog(),
+            "open_debug_console": lambda: self._is_app_window_focused() and (
+                self.debug_window.show() if hasattr(self, 'debug_window') and self.debug_window 
+                else self.ensure_debug_window()
+            ),
         }
         
         # Track two-letter sequences (both same-letter like 'gg' and different-letter like 'zt')
@@ -5194,6 +5233,13 @@ except Exception as e:
         items_per_page_combo.pack(side="left", padx=5)
         items_per_page_combo.bind("<<ComboboxSelected>>", self._on_items_per_page_changed)
         
+        # Keyboard shortcuts: Shift+Escape or Ctrl+Shift+X to close (but not when text entry has focus)
+        def handle_close(e):
+            if not isinstance(e.widget, ttk.Entry):
+                on_dialog_close()
+        editor_dialog.bind("<Shift-Escape>", handle_close)
+        editor_dialog.bind("<Control-Shift-X>", handle_close)
+        
         # Set focus to search entry after dialog is fully created
         self.root.after(100, lambda: self.editor_search_entry.focus_set())
         
@@ -5922,6 +5968,10 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
         
+        # Keyboard shortcuts: Escape or Ctrl+C to close
+        settings_dialog.bind("<Escape>", lambda e: settings_dialog.destroy())
+        settings_dialog.bind("<Control-c>", lambda e: settings_dialog.destroy())
+        
         # Add invisible spacer row to absorb extra space when dialog is enlarged
         spacer_frame = ttk.Frame(main_container)
         spacer_frame.grid(row=7, column=0, sticky="nsew")
@@ -6035,6 +6085,10 @@ except Exception as e:
             command=settings_dialog.destroy
         )
         close_btn.pack(side="right", padx=5)
+        
+        # Keyboard shortcuts: Escape or Ctrl+C to close
+        settings_dialog.bind("<Escape>", lambda e: settings_dialog.destroy())
+        settings_dialog.bind("<Control-c>", lambda e: settings_dialog.destroy())
 
     def _show_marker_settings_dialog(self):
         """Show a dialog for configuring marker settings (for Shift+Click in editor)"""
@@ -6075,6 +6129,10 @@ except Exception as e:
             command=on_close
         )
         close_btn.pack(side="right", padx=5)
+        
+        # Keyboard shortcuts: Escape or Ctrl+C to close
+        settings_dialog.bind("<Escape>", lambda e: on_close())
+        settings_dialog.bind("<Control-c>", lambda e: on_close())
         
         # Create main frame with padding (pack after buttons so it fills remaining space)
         main_frame = ttk.Frame(settings_dialog, padding=15)
@@ -6265,6 +6323,10 @@ except Exception as e:
             command=settings_dialog.destroy
         )
         close_btn.pack(side="right", padx=5)
+        
+        # Keyboard shortcuts: Escape or Ctrl+C to close
+        settings_dialog.bind("<Escape>", lambda e: settings_dialog.destroy())
+        settings_dialog.bind("<Control-c>", lambda e: settings_dialog.destroy())
         
         # Create main frame with padding (pack after buttons so it fills remaining space)
         main_frame = ttk.Frame(settings_dialog, padding=15)
@@ -6639,6 +6701,17 @@ except Exception as e:
         
         ttk.Button(btn_frame, text="Save", command=save_player).pack(side="right", padx=5)
         ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=5)
+        
+        # Keyboard shortcuts: Enter to save, Escape/Ctrl+C to cancel (but not when text entry has focus)
+        def handle_enter(e):
+            if not isinstance(e.widget, ttk.Entry):
+                save_player()
+        def handle_escape(e):
+            if not isinstance(e.widget, ttk.Entry):
+                dialog.destroy()
+        dialog.bind("<Return>", handle_enter)
+        dialog.bind("<Escape>", handle_escape)
+        dialog.bind("<Control-c>", handle_escape)
 
     def _show_window_sizing_dialog(self):
         """Show a dialog for configuring window sizes"""
@@ -6875,6 +6948,17 @@ except Exception as e:
             command=lambda: self._apply_window_sizing_settings(dialog)
         )
         apply_btn.pack(side="right", padx=(5, 5))
+        
+        # Keyboard shortcuts: Enter to apply, Escape/Ctrl+C to cancel (but not when text entry has focus)
+        def handle_enter(e):
+            if not isinstance(e.widget, ttk.Entry):
+                self._apply_window_sizing_settings(dialog)
+        def handle_escape(e):
+            if not isinstance(e.widget, ttk.Entry):
+                dialog.destroy()
+        dialog.bind("<Return>", handle_enter)
+        dialog.bind("<Escape>", handle_escape)
+        dialog.bind("<Control-c>", handle_escape)
         
         # Dialog is already positioned correctly from creation
     
@@ -7339,6 +7423,11 @@ except Exception as e:
         ttk.Button(buttons_frame, text="Reset to Defaults", command=reset_to_defaults).pack(side="left", padx=5)
         ttk.Button(buttons_frame, text="Save", command=save_shortcuts).pack(side="right", padx=5)
         ttk.Button(buttons_frame, text="Cancel", command=on_dialog_close).pack(side="right", padx=5)
+        
+        # Keyboard shortcuts: Enter to save, Escape/Ctrl+C to cancel
+        dialog.bind("<Return>", lambda e: save_shortcuts())
+        dialog.bind("<Escape>", lambda e: on_dialog_close())
+        dialog.bind("<Control-c>", lambda e: on_dialog_close())
     
     def _show_prefix_keys_dialog(self):
         """Show dialog to manage prefix keys (keys that show sequence hint)"""
@@ -7503,6 +7592,11 @@ except Exception as e:
         
         ttk.Button(bottom_frame, text="Save", command=save_and_close).pack(side="right", padx=5)
         ttk.Button(bottom_frame, text="Cancel", command=prefix_dialog.destroy).pack(side="right")
+        
+        # Keyboard shortcuts: Enter to save, Escape/Ctrl+C to cancel
+        prefix_dialog.bind("<Return>", lambda e: save_and_close())
+        prefix_dialog.bind("<Escape>", lambda e: prefix_dialog.destroy())
+        prefix_dialog.bind("<Control-c>", lambda e: prefix_dialog.destroy())
     
     def _display_shortcut_keys(self, action_id, keys_frame):
         """Display the current keys for a shortcut action"""
@@ -8889,6 +8983,10 @@ class DebugWindow:
         close_btn = ttk.Button(button_frame, text="Close", command=self.window.withdraw)
         close_btn.pack(side="right", padx=5)
         
+        # Keyboard shortcuts: Escape or Ctrl+C to close
+        self.window.bind("<Escape>", lambda e: self.window.withdraw())
+        self.window.bind("<Control-c>", lambda e: self.window.withdraw())
+        
         # Add save button
         save_btn = ttk.Button(button_frame, text="Save Log", command=self.save_log)
         save_btn.pack(side="right", padx=5)
@@ -8982,7 +9080,7 @@ if __name__ == "__main__":
         settings_menu.add_separator()
         settings_menu.add_command(label="Window Sizing...", 
                                  command=app._show_window_sizing_dialog)
-        menu_bar.add_cascade(label="Settings", menu=settings_menu)
+        menu_bar.add_cascade(label="Settings", menu=settings_menu, underline=0)  # Underline 'S'
             
         # Add Editor Menu
         editor_menu = tk.Menu(menu_bar, tearoff=0)
@@ -9001,14 +9099,14 @@ if __name__ == "__main__":
         # Store reference for dynamic menu updates (cache item is at index 2)
         app._set_editor_menu_reference(editor_menu, 2)
         
-        menu_bar.add_cascade(label="Editor", menu=editor_menu)
+        menu_bar.add_cascade(label="Editor", menu=editor_menu, underline=0)  # Underline 'E'
             
         # Add Debug menu
         debug_menu = tk.Menu(menu_bar, tearoff=0)
         debug_menu.add_command(label="Show Debug Window", 
                               command=lambda: app.ensure_debug_window() or 
                                              (app.debug_window and app.debug_window.window.deiconify()))
-        menu_bar.add_cascade(label="Debug", menu=debug_menu)
+        menu_bar.add_cascade(label="Debug", menu=debug_menu, underline=0)  # Underline 'D'
         
         # Apply menu bar to root window
         root.config(menu=menu_bar)
