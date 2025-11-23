@@ -62,7 +62,7 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "keys": ["<Control-O>"]
     },
     "editor_fuzzy_search": {
-        "description": "Open fuzzy search for editors",
+        "description": "Open fuzzy search for editor",
         "category": "Navigation",
         "keys": ["<Control-Shift-O>"]
     },
@@ -3482,7 +3482,8 @@ class RapidMomentNavigator:
             self.debug_print("No result selected, auto-selecting first result")
             self._select_result(0)
     
-    def _show_dropdown_fuzzy_search(self, dropdown_widget, var_to_set, on_select_callback=None, overlay_height=300):
+    def _show_dropdown_fuzzy_search(self, dropdown_widget, var_to_set, on_select_callback=None, 
+                                    focus_widget_after=None):
         """
         Generic fuzzy search overlay for any dropdown.
         
@@ -3490,7 +3491,7 @@ class RapidMomentNavigator:
             dropdown_widget: The combobox widget to search
             var_to_set: The StringVar to update when selection is made
             on_select_callback: Optional callback to run after selection (receives None as event)
-            overlay_height: Height of the overlay window (default 300)
+            focus_widget_after: Widget to focus and select all text after selection. None = no focus change.
         """
         # Don't show if app window doesn't have focus
         if not self._is_app_window_focused():
@@ -3515,6 +3516,15 @@ class RapidMomentNavigator:
         dropdown_x = dropdown_widget.winfo_rootx()
         dropdown_y = dropdown_widget.winfo_rooty() + dropdown_widget.winfo_height()
         dropdown_width = max(dropdown_widget.winfo_width(), 300)
+        
+        # Calculate height as proportion of available screen space below dropdown
+        # Get screen height and calculate available space
+        screen_height = self.root.winfo_screenheight()
+        available_height_below = screen_height - dropdown_y - 50  # 50px margin from bottom
+        
+        # Use 40% of available height, with min/max bounds
+        overlay_height = int(available_height_below * 0.4)
+        overlay_height = min(max(overlay_height, 150), 500)  # Min 150px, max 500px
         
         fuzzy_overlay.geometry(f"{dropdown_width}x{overlay_height}+{dropdown_x}+{dropdown_y}")
         
@@ -3648,10 +3658,12 @@ class RapidMomentNavigator:
                     on_select_callback(None)
                 fuzzy_overlay.destroy()
                 self.fuzzy_search_overlay = None  # Clear reference
-                # Return focus to main window and search entry
+                # Return focus to main window
                 self.root.focus_force()
-                self.root.after(50, lambda: self.search_entry.focus_set())
-                self.root.after(100, lambda: self.search_entry.select_range(0, tk.END))
+                # Focus and select all in widget if specified
+                if focus_widget_after is not None:
+                    self.root.after(50, lambda: focus_widget_after.focus_set())
+                    self.root.after(100, lambda: focus_widget_after.select_range(0, tk.END) if hasattr(focus_widget_after, 'select_range') else None)
         
         def close_overlay():
             """Close the overlay without selecting"""
@@ -3757,7 +3769,7 @@ class RapidMomentNavigator:
             dropdown_widget=self.show_dropdown,
             var_to_set=self.show_var,
             on_select_callback=None,
-            overlay_height=300
+            focus_widget_after=self.search_entry
         )
     
     def _show_editor_fuzzy_search(self):
@@ -3766,7 +3778,7 @@ class RapidMomentNavigator:
             dropdown_widget=self.editor_dropdown,
             var_to_set=self.editor_var,
             on_select_callback=self._on_editor_changed,
-            overlay_height=200
+            focus_widget_after=self.search_entry
         )
     
     def _unbind_keyboard_shortcuts(self):
