@@ -2900,14 +2900,253 @@ class RapidMomentNavigator:
             self._select_result(0)
     
     def _show_fuzzy_search(self):
-        """Show fuzzy search dialog for shows"""
-        # Don't show if app window doesn't have focus
-        if not self._is_app_window_focused():
+        """Show fuzzy search overlay near the show dropdown"""
+        # Allow fuzzy search even if search bar has focus (removed focus check)
+        # This makes Ctrl+O work from anywhere in the app
+        
+        # Get available shows
+        available_shows = list(self.show_dropdown['values'])
+        if not available_shows:
+            messagebox.showinfo("No Shows", "No shows available to search.")
             return
         
-        # TODO: Implement fuzzy search dialog
-        self.debug_print("Fuzzy search not yet implemented")
-        messagebox.showinfo("Coming Soon", "Fuzzy search for shows will be implemented soon!")
+        # Create a borderless toplevel overlay
+        fuzzy_overlay = tk.Toplevel(self.root)
+        fuzzy_overlay.overrideredirect(True)  # Remove window decorations
+        fuzzy_overlay.transient(self.root)
+        
+        # Position near the show dropdown
+        dropdown_x = self.show_dropdown.winfo_rootx()
+        dropdown_y = self.show_dropdown.winfo_rooty() + self.show_dropdown.winfo_height()
+        dropdown_width = max(self.show_dropdown.winfo_width(), 400)
+        
+        fuzzy_overlay.geometry(f"{dropdown_width}x300+{dropdown_x}+{dropdown_y}")
+        
+        # Main frame with border
+        main_frame = ttk.Frame(fuzzy_overlay, relief="solid", borderwidth=2, padding=5)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Search entry
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(main_frame, textvariable=search_var, font=("TkDefaultFont", 11))
+        search_entry.pack(fill="x", pady=(0, 5))
+        
+        # Results listbox
+        results_frame = ttk.Frame(main_frame)
+        results_frame.pack(fill="both", expand=True)
+        
+        scrollbar = ttk.Scrollbar(results_frame)
+        scrollbar.pack(side="right", fill="y")
+        
+        results_listbox = tk.Listbox(results_frame, yscrollcommand=scrollbar.set, 
+                                     font=("TkDefaultFont", 10), activestyle="none",
+                                     highlightthickness=0)
+        results_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=results_listbox.yview)
+        
+        # Store all shows and filtered results
+        all_shows = available_shows[:]
+        filtered_shows = [None]  # Use list to allow modification in nested function
+        
+        def fuzzy_match_with_score(query, text):
+            """
+            Fuzzy match with scoring for ranking results.
+            Returns (matched, score) tuple.
+            Higher score = better match.
+            
+            Scoring factors:
+            - Consecutive character matches (bonus)
+            - Word boundary matches (bonus)
+            - Earlier matches (bonus)
+            - Shorter text (bonus)
+            - Case-sensitive matches (bonus)
+            """
+            if not query:
+                return (True, 0)
+            
+            query_lower = query.lower()
+            text_lower = text.lower()
+            query_idx = 0
+            score = 0
+            consecutive_bonus = 0
+            last_match_idx = -1
+            
+            for i, char in enumerate(text_lower):
+                if query_idx < len(query_lower) and char == query_lower[query_idx]:
+                    # Base score for match
+                    score += 1
+                    
+                    # Bonus for consecutive matches
+                    if last_match_idx == i - 1:
+                        consecutive_bonus += 5
+                        score += consecutive_bonus
+                    else:
+                        consecutive_bonus = 0
+                    
+                    # Bonus for word boundary (start of string or after space/punctuation)
+                    if i == 0 or text[i-1] in (' ', '-', '_', '.', '/'):
+                        score += 10
+                    
+                    # Bonus for matching at start of string
+                    if i == 0:
+                        score += 15
+                    
+                    # Bonus for case-sensitive match
+                    if query[query_idx] == text[i]:
+                        score += 2
+                    
+                    # Penalty for late matches (encourage earlier matches)
+                    score -= i * 0.1
+                    
+                    last_match_idx = i
+                    query_idx += 1
+                    
+                    if query_idx == len(query_lower):
+                        break
+            
+            # Check if all characters matched
+            if query_idx != len(query_lower):
+                return (False, 0)
+            
+            # Bonus for shorter strings (prefer concise matches)
+            score += 100 / (len(text) + 1)
+            
+            return (True, score)
+        
+        def update_results():
+            """Update the results listbox based on search query"""
+            query = search_var.get()
+            
+            # Filter and score shows using fuzzy matching
+            scored_matches = []
+            for show in all_shows:
+                matched, score = fuzzy_match_with_score(query, show)
+                if matched:
+                    scored_matches.append((show, score))
+            
+            # Sort by score (descending - higher score first)
+            scored_matches.sort(key=lambda x: x[1], reverse=True)
+            matches = [show for show, score in scored_matches]
+            filtered_shows[0] = matches
+            
+            # Update listbox
+            results_listbox.delete(0, tk.END)
+            for show in matches:
+                results_listbox.insert(tk.END, show)
+            
+            # Select first item if available
+            if matches:
+                results_listbox.selection_clear(0, tk.END)
+                results_listbox.selection_set(0)
+                results_listbox.see(0)
+        
+        def select_show():
+            """Select the currently highlighted show and close overlay"""
+            selection = results_listbox.curselection()
+            if selection and filtered_shows[0]:
+                selected_show = filtered_shows[0][selection[0]]
+                # Set the show in the main dropdown
+                self.show_var.set(selected_show)
+                fuzzy_overlay.destroy()
+                # Focus the search input box (natural next step after selecting a show)
+                self.search_entry.focus_set()
+        
+        def close_overlay():
+            """Close the overlay without selecting"""
+            fuzzy_overlay.destroy()
+            # Return focus to main window
+            self.root.focus_force()
+        
+        def navigate_up():
+            """Navigate up in results"""
+            selection = results_listbox.curselection()
+            if selection:
+                current = selection[0]
+                if current > 0:
+                    results_listbox.selection_clear(0, tk.END)
+                    results_listbox.selection_set(current - 1)
+                    results_listbox.see(current - 1)
+        
+        def navigate_down():
+            """Navigate down in results"""
+            selection = results_listbox.curselection()
+            if selection:
+                current = selection[0]
+                if current < results_listbox.size() - 1:
+                    results_listbox.selection_clear(0, tk.END)
+                    results_listbox.selection_set(current + 1)
+                    results_listbox.see(current + 1)
+        
+        # Get navigation keys from shortcuts and bind with Ctrl modifier
+        shortcuts = {**DEFAULT_KEYBOARD_SHORTCUTS}
+        custom_shortcuts = self.preferences.get("keyboard_shortcuts", {})
+        for action_id, custom_data in custom_shortcuts.items():
+            if action_id in shortcuts:
+                shortcuts[action_id]["keys"] = custom_data.get("keys", shortcuts[action_id]["keys"])
+        
+        # Bind navigation keys with Ctrl modifier
+        prev_keys = shortcuts.get("result_previous", {}).get("keys", [])
+        next_keys = shortcuts.get("result_next", {}).get("keys", [])
+        
+        for key in prev_keys:
+            # Skip if key already has modifiers or is not a simple key
+            if key.startswith('<') and ('Control' in key or 'Alt' in key or 'Shift' in key):
+                continue
+            
+            # Convert simple keys to Ctrl+key format
+            if key.startswith('<'):
+                # Special keys like <Up>, <Down>
+                ctrl_key = key.replace('<', '<Control-')
+            elif len(key) == 1:
+                # Single letter keys like 'k'
+                ctrl_key = f"<Control-{key}>"
+            else:
+                # Two-letter sequences - skip these
+                continue
+            
+            search_entry.bind(ctrl_key, lambda e: navigate_up())
+        
+        for key in next_keys:
+            # Skip if key already has modifiers or is not a simple key
+            if key.startswith('<') and ('Control' in key or 'Alt' in key or 'Shift' in key):
+                continue
+            
+            # Convert simple keys to Ctrl+key format
+            if key.startswith('<'):
+                # Special keys like <Up>, <Down>
+                ctrl_key = key.replace('<', '<Control-')
+            elif len(key) == 1:
+                # Single letter keys like 'j'
+                ctrl_key = f"<Control-{key}>"
+            else:
+                # Two-letter sequences - skip these
+                continue
+            
+            search_entry.bind(ctrl_key, lambda e: navigate_down())
+        
+        # Bind events
+        search_var.trace_add("write", lambda *args: update_results())
+        search_entry.bind("<Return>", lambda e: select_show())
+        search_entry.bind("<Escape>", lambda e: close_overlay())
+        search_entry.bind("<Control-c>", lambda e: close_overlay())
+        
+        results_listbox.bind("<Double-Button-1>", lambda e: select_show())
+        results_listbox.bind("<Return>", lambda e: select_show())
+        results_listbox.bind("<Escape>", lambda e: close_overlay())
+        
+        # Close overlay when clicking outside (focus lost)
+        def on_focus_out(event):
+            # Small delay to allow click events to process first
+            fuzzy_overlay.after(100, lambda: fuzzy_overlay.destroy() if fuzzy_overlay.winfo_exists() else None)
+        
+        fuzzy_overlay.bind("<FocusOut>", on_focus_out)
+        
+        # Initialize with all shows
+        update_results()
+        
+        # Focus search entry and grab focus
+        fuzzy_overlay.focus_force()
+        search_entry.focus_set()
     
     def _unbind_keyboard_shortcuts(self):
         """Unbind all keyboard shortcuts to prepare for rebinding"""
