@@ -2352,7 +2352,13 @@ class RapidMomentNavigator:
         canvas_width = max(canvas_width, 400)
         
         # Set geometry
-        search_overlay.geometry(f"{canvas_width}x50+{canvas_x}+{canvas_y}")
+        geometry_string = f"{canvas_width}x50+{canvas_x}+{canvas_y}"
+        self.debug_print(f"Setting geometry to: {geometry_string}")
+        search_overlay.geometry(geometry_string)
+        
+        # Force window to update and reposition (Windows sometimes ignores first geometry call)
+        search_overlay.update_idletasks()
+        search_overlay.geometry(geometry_string)  # Set again after update
         
         # Additional Windows-specific attributes for visibility
         try:
@@ -2361,6 +2367,11 @@ class RapidMomentNavigator:
             pass
         
         self.debug_print(f"Created search overlay at {canvas_x},{canvas_y} with width {canvas_width}")
+        
+        # Verify actual position after setting
+        search_overlay.update()
+        actual_geometry = search_overlay.geometry()
+        self.debug_print(f"Actual overlay geometry: {actual_geometry}")
         
         # Frame with border and background
         frame = tk.Frame(search_overlay, relief="solid", borderwidth=3, bg="white", padx=10, pady=8)
