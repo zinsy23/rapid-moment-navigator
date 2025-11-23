@@ -2299,35 +2299,53 @@ class RapidMomentNavigator:
         
         # Position at bottom of results canvas
         try:
+            # Try the standard method first (works on Linux/Mac)
             canvas_x = self.results_canvas.winfo_rootx()
             canvas_y = self.results_canvas.winfo_rooty()
             canvas_height = self.results_canvas.winfo_height()
             canvas_width = self.results_canvas.winfo_width()
             
-            self.debug_print(f"Canvas raw values: rootx={canvas_x}, rooty={canvas_y}, height={canvas_height}, width={canvas_width}")
+            self.debug_print(f"Canvas winfo_root values: rootx={canvas_x}, rooty={canvas_y}, height={canvas_height}, width={canvas_width}")
             
-            # Validate that we got real coordinates (not 0,0 or 1,1)
+            # Check if we got invalid coordinates (Windows issue)
             if canvas_x <= 1 or canvas_y <= 1:
-                raise ValueError("Invalid canvas coordinates, using fallback")
+                self.debug_print("Invalid rootx/rooty, using geometry-based positioning")
+                
+                # Windows fallback: parse geometry and use relative positioning
+                import re
+                root_geometry = self.root.geometry()
+                self.debug_print(f"Root geometry string: {root_geometry}")
+                
+                match = re.match(r'(\d+)x(\d+)\+(-?\d+)\+(-?\d+)', root_geometry)
+                if match:
+                    root_x = int(match.group(3))
+                    root_y = int(match.group(4))
+                else:
+                    root_x = self.root.winfo_x()
+                    root_y = self.root.winfo_y()
+                
+                # Get canvas position relative to root
+                canvas_rel_x = self.results_canvas.winfo_x()
+                canvas_rel_y = self.results_canvas.winfo_y()
+                
+                # Calculate absolute position
+                canvas_x = root_x + canvas_rel_x
+                canvas_y = root_y + canvas_rel_y + canvas_height - 50
+                
+                self.debug_print(f"Calculated from geometry: x={canvas_x}, y={canvas_y}")
+            else:
+                # Valid coordinates, use them directly
+                canvas_y = canvas_y + canvas_height - 50
             
-            # Calculate final position
-            canvas_y = canvas_y + canvas_height - 50
             canvas_width = max(canvas_width, 400)
+            self.debug_print(f"Final overlay position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
             
-            self.debug_print(f"Canvas calculated position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
         except Exception as e:
             self.debug_print(f"Error getting canvas position: {e}")
-            # Fallback positioning - use main window
-            root_x = self.root.winfo_rootx()
-            root_y = self.root.winfo_rooty()
-            root_height = self.root.winfo_height()
-            root_width = self.root.winfo_width()
-            
-            self.debug_print(f"Root window values: rootx={root_x}, rooty={root_y}, height={root_height}, width={root_width}")
-            
-            canvas_x = root_x + 50
-            canvas_y = root_y + root_height - 100
-            canvas_width = root_width - 100
+            # Last resort fallback - use main window
+            canvas_x = self.root.winfo_rootx() + 50
+            canvas_y = self.root.winfo_rooty() + self.root.winfo_height() - 100
+            canvas_width = self.root.winfo_width() - 100
             self.debug_print(f"Using fallback position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
         
         # Ensure minimum width
