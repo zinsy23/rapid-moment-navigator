@@ -2288,20 +2288,9 @@ class RapidMomentNavigator:
         
         # Create mini search overlay
         search_overlay = tk.Toplevel(self.root)
+        search_overlay.overrideredirect(True)
         search_overlay.transient(self.root)
-        
-        # Platform-specific window handling
-        import platform
-        system = platform.system()
-        
-        if system == "Windows":
-            # On Windows, use a normal window with title bar temporarily to ensure visibility
-            search_overlay.title("Search")
-            search_overlay.attributes('-topmost', True)
-        else:
-            # On Linux/Mac, use borderless overlay
-            search_overlay.overrideredirect(True)
-            search_overlay.attributes('-topmost', True)
+        search_overlay.attributes('-topmost', True)
         
         # Update to get accurate dimensions
         self.root.update_idletasks()
@@ -2310,14 +2299,14 @@ class RapidMomentNavigator:
         # Position at bottom of results canvas
         try:
             canvas_x = self.results_canvas.winfo_rootx()
-            canvas_y = self.results_canvas.winfo_rooty() + self.results_canvas.winfo_height() - 80
+            canvas_y = self.results_canvas.winfo_rooty() + self.results_canvas.winfo_height() - 50
             canvas_width = max(self.results_canvas.winfo_width(), 400)
             self.debug_print(f"Canvas position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
         except Exception as e:
             self.debug_print(f"Error getting canvas position: {e}")
             # Fallback positioning - use main window
             canvas_x = self.root.winfo_rootx() + 50
-            canvas_y = self.root.winfo_rooty() + self.root.winfo_height() - 120
+            canvas_y = self.root.winfo_rooty() + self.root.winfo_height() - 100
             canvas_width = self.root.winfo_width() - 100
             self.debug_print(f"Using fallback position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
         
@@ -2325,16 +2314,18 @@ class RapidMomentNavigator:
         canvas_width = max(canvas_width, 400)
         
         # Set geometry
-        if system == "Windows":
-            # On Windows, make it taller to account for title bar
-            search_overlay.geometry(f"{canvas_width}x80+{canvas_x}+{canvas_y}")
-        else:
-            search_overlay.geometry(f"{canvas_width}x50+{canvas_x}+{canvas_y}")
+        search_overlay.geometry(f"{canvas_width}x50+{canvas_x}+{canvas_y}")
         
-        self.debug_print(f"Created search overlay at {canvas_x},{canvas_y} with width {canvas_width} (system: {system})")
+        # Additional Windows-specific attributes for visibility
+        try:
+            search_overlay.wm_attributes("-topmost", 1)
+        except:
+            pass
+        
+        self.debug_print(f"Created search overlay at {canvas_x},{canvas_y} with width {canvas_width}")
         
         # Frame with border and background
-        frame = tk.Frame(search_overlay, relief="solid", borderwidth=2, bg="white", padx=10, pady=8)
+        frame = tk.Frame(search_overlay, relief="solid", borderwidth=3, bg="white", padx=10, pady=8)
         frame.pack(fill="both", expand=True)
         
         # Search label and entry (show / or ? based on direction)
@@ -2533,11 +2524,14 @@ class RapidMomentNavigator:
         self.search_overlay = search_overlay
         
         # Force window to be visible and focused
-        search_overlay.lift()
-        search_overlay.focus_force()
-        self.root.update()
-        search_entry.focus_set()
-        self.root.update()
+        search_overlay.deiconify()  # Ensure window is not minimized
+        search_overlay.lift()  # Bring to front
+        search_overlay.attributes('-topmost', True)  # Keep on top
+        self.root.update()  # Force UI update
+        search_overlay.focus_force()  # Force focus to overlay
+        search_entry.focus_set()  # Focus the entry
+        search_entry.icursor(0)  # Set cursor position
+        self.root.update()  # Another update to ensure everything is rendered
         
         self.debug_print(f"Search overlay created and focused")
     
