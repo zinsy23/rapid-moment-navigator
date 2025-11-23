@@ -61,6 +61,11 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "category": "Navigation",
         "keys": ["<Control-O>"]
     },
+    "editor_fuzzy_search": {
+        "description": "Open fuzzy search for editors",
+        "category": "Navigation",
+        "keys": ["<Control-Shift-O>"]
+    },
     "focus_search": {
         "description": "Focus search bar",
         "category": "Navigation",
@@ -2739,8 +2744,9 @@ class RapidMomentNavigator:
     
     def _is_app_window_focused(self):
         """
-        Check if any application window has focus (main window or editor dialog)
-        Returns True if main window or editor dialog has focus, False otherwise
+        Check if any application window has focus (main window, overlays, or editor dialog)
+        Returns True if main window or its overlays or editor dialog has focus, False otherwise
+        Overlays (search, fuzzy search) are considered part of the main window.
         """
         try:
             # Get the currently focused widget
@@ -2755,6 +2761,22 @@ class RapidMomentNavigator:
             # Check if it's the main window
             if toplevel == self.root:
                 return True
+            
+            # Check if it's a search overlay (/ or ? search)
+            if hasattr(self, 'search_overlay') and self.search_overlay is not None:
+                try:
+                    if self.search_overlay.winfo_exists() and toplevel == self.search_overlay:
+                        return True
+                except:
+                    pass
+            
+            # Check if it's a fuzzy search overlay (Ctrl+O or Ctrl+Shift+O)
+            if hasattr(self, 'fuzzy_search_overlay') and self.fuzzy_search_overlay is not None:
+                try:
+                    if self.fuzzy_search_overlay.winfo_exists() and toplevel == self.fuzzy_search_overlay:
+                        return True
+                except:
+                    pass
             
             # Check if it's the editor dialog (if it exists and is open)
             if hasattr(self, 'editor_dialog') and self.editor_dialog is not None:
@@ -3408,8 +3430,16 @@ class RapidMomentNavigator:
         if not self._is_app_window_focused():
             return
         
+        # Don't focus if we're in an overlay (fuzzy search or / search)
+        focused_widget = self.root.focus_get()
+        if focused_widget:
+            toplevel = focused_widget.winfo_toplevel()
+            if toplevel != self.root:
+                # We're in an overlay, don't steal focus
+                return
+        
         # Check if search bar already has focus
-        already_focused = (self.root.focus_get() == self.search_entry)
+        already_focused = (focused_widget == self.search_entry)
         
         self.search_entry.focus_set()
         
@@ -3454,8 +3484,10 @@ class RapidMomentNavigator:
     
     def _show_fuzzy_search(self):
         """Show fuzzy search overlay near the show dropdown"""
-        # Allow fuzzy search even if search bar has focus (removed focus check)
-        # This makes Ctrl+O work from anywhere in the app
+        # Don't show if app window doesn't have focus
+        if not self._is_app_window_focused():
+            self.debug_print("App window doesn't have focus, ignoring fuzzy search")
+            return
         
         # Get available shows
         available_shows = list(self.show_dropdown['values'])
@@ -3467,6 +3499,9 @@ class RapidMomentNavigator:
         fuzzy_overlay = tk.Toplevel(self.root)
         fuzzy_overlay.overrideredirect(True)  # Remove window decorations
         fuzzy_overlay.transient(self.root)
+        
+        # Store reference for focus checking
+        self.fuzzy_search_overlay = fuzzy_overlay
         
         # Position near the show dropdown
         dropdown_x = self.show_dropdown.winfo_rootx()
@@ -3601,6 +3636,7 @@ class RapidMomentNavigator:
                 # Set the show in the main dropdown
                 self.show_var.set(selected_show)
                 fuzzy_overlay.destroy()
+                self.fuzzy_search_overlay = None  # Clear reference
                 # Ensure main window has focus first, then focus search entry and select all
                 self.root.focus_force()
                 self.root.after(50, lambda: self.search_entry.focus_set())
@@ -3609,6 +3645,7 @@ class RapidMomentNavigator:
         def close_overlay():
             """Close the overlay without selecting"""
             fuzzy_overlay.destroy()
+            self.fuzzy_search_overlay = None  # Clear reference
             # Return focus to main window
             self.root.focus_force()
         
@@ -3703,6 +3740,175 @@ class RapidMomentNavigator:
         fuzzy_overlay.focus_force()
         search_entry.focus_set()
     
+    def _show_editor_fuzzy_search(self):
+        """Show fuzzy search overlay near the editor dropdown"""
+        # Don't show if app window doesn't have focus
+        if not self._is_app_window_focused():
+            self.debug_print("App window doesn't have focus, ignoring editor fuzzy search")
+            return
+        
+        # Get available editors
+        available_editors = list(self.editor_dropdown['values'])
+        if not available_editors:
+            messagebox.showinfo("No Editors", "No editors available to search.")
+            return
+        
+        # Create a borderless toplevel overlay
+        fuzzy_overlay = tk.Toplevel(self.root)
+        fuzzy_overlay.overrideredirect(True)
+        fuzzy_overlay.transient(self.root)
+        
+        # Store reference for focus checking
+        self.fuzzy_search_overlay = fuzzy_overlay
+        
+        # Position near the editor dropdown
+        dropdown_x = self.editor_dropdown.winfo_rootx()
+        dropdown_y = self.editor_dropdown.winfo_rooty() + self.editor_dropdown.winfo_height()
+        dropdown_width = max(self.editor_dropdown.winfo_width(), 300)
+        
+        fuzzy_overlay.geometry(f"{dropdown_width}x200+{dropdown_x}+{dropdown_y}")
+        
+        # Main frame with border
+        main_frame = ttk.Frame(fuzzy_overlay, relief="solid", borderwidth=2, padding=5)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Search entry
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(main_frame, textvariable=search_var, font=("TkDefaultFont", 11))
+        search_entry.pack(fill="x", pady=(0, 5))
+        
+        # Results listbox
+        results_frame = ttk.Frame(main_frame)
+        results_frame.pack(fill="both", expand=True)
+        
+        scrollbar = ttk.Scrollbar(results_frame)
+        scrollbar.pack(side="right", fill="y")
+        
+        results_listbox = tk.Listbox(results_frame, yscrollcommand=scrollbar.set, 
+                                     font=("TkDefaultFont", 10), activestyle="none",
+                                     highlightthickness=0)
+        results_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=results_listbox.yview)
+        
+        # Store all editors and filtered results
+        all_editors = available_editors[:]
+        filtered_editors = [None]
+        
+        def fuzzy_match_with_score(query, text):
+            """Fuzzy match with scoring"""
+            if not query:
+                return (True, 0)
+            
+            query_lower = query.lower()
+            text_lower = text.lower()
+            query_idx = 0
+            score = 0
+            consecutive_bonus = 0
+            last_match_idx = -1
+            
+            for i, char in enumerate(text_lower):
+                if query_idx < len(query_lower) and char == query_lower[query_idx]:
+                    score += 1
+                    if last_match_idx == i - 1:
+                        consecutive_bonus += 5
+                        score += consecutive_bonus
+                    else:
+                        consecutive_bonus = 0
+                    if i == 0 or text[i-1] in (' ', '-', '_', '.', '/'):
+                        score += 10
+                    if i == 0:
+                        score += 15
+                    if query[query_idx] == text[i]:
+                        score += 2
+                    score -= i * 0.1
+                    last_match_idx = i
+                    query_idx += 1
+                    if query_idx == len(query_lower):
+                        break
+            
+            if query_idx != len(query_lower):
+                return (False, 0)
+            score += 100 / (len(text) + 1)
+            return (True, score)
+        
+        def update_results():
+            """Update results based on search query"""
+            query = search_var.get()
+            scored_matches = []
+            for editor in all_editors:
+                matched, score = fuzzy_match_with_score(query, editor)
+                if matched:
+                    scored_matches.append((editor, score))
+            scored_matches.sort(key=lambda x: x[1], reverse=True)
+            matches = [editor for editor, score in scored_matches]
+            filtered_editors[0] = matches
+            results_listbox.delete(0, tk.END)
+            for editor in matches:
+                results_listbox.insert(tk.END, editor)
+            if matches:
+                results_listbox.selection_clear(0, tk.END)
+                results_listbox.selection_set(0)
+                results_listbox.see(0)
+        
+        def select_editor():
+            """Select editor and close"""
+            selection = results_listbox.curselection()
+            if selection and filtered_editors[0]:
+                selected_editor = filtered_editors[0][selection[0]]
+                self.editor_var.set(selected_editor)
+                self._on_editor_changed(None)
+                fuzzy_overlay.destroy()
+                self.fuzzy_search_overlay = None  # Clear reference
+                self.root.focus_force()
+                self.root.after(50, lambda: self.search_entry.focus_set())
+        
+        def close_overlay():
+            """Close without selecting"""
+            fuzzy_overlay.destroy()
+            self.fuzzy_search_overlay = None  # Clear reference
+            self.root.focus_force()
+        
+        def navigate_up():
+            selection = results_listbox.curselection()
+            if selection:
+                current = selection[0]
+                if current > 0:
+                    results_listbox.selection_clear(0, tk.END)
+                    results_listbox.selection_set(current - 1)
+                    results_listbox.see(current - 1)
+        
+        def navigate_down():
+            selection = results_listbox.curselection()
+            if selection:
+                current = selection[0]
+                if current < results_listbox.size() - 1:
+                    results_listbox.selection_clear(0, tk.END)
+                    results_listbox.selection_set(current + 1)
+                    results_listbox.see(current + 1)
+        
+        # Bind Ctrl+Up/Down for navigation
+        search_entry.bind("<Control-Up>", lambda e: navigate_up())
+        search_entry.bind("<Control-Down>", lambda e: navigate_down())
+        
+        # Bind events
+        search_var.trace_add("write", lambda *args: update_results())
+        search_entry.bind("<Return>", lambda e: select_editor())
+        search_entry.bind("<Escape>", lambda e: close_overlay())
+        search_entry.bind("<Control-c>", lambda e: close_overlay())
+        search_entry.bind("<FocusIn>", lambda e: self.root.after(50, lambda: self._select_all_text(search_entry)))
+        
+        # Close overlay when clicking outside (focus lost)
+        def on_focus_out(event):
+            # Small delay to allow click events to process first
+            fuzzy_overlay.after(100, lambda: close_overlay() if fuzzy_overlay.winfo_exists() else None)
+        
+        fuzzy_overlay.bind("<FocusOut>", on_focus_out)
+        
+        # Initialize
+        update_results()
+        fuzzy_overlay.focus_force()
+        search_entry.focus_set()
+    
     def _unbind_keyboard_shortcuts(self):
         """Unbind all keyboard shortcuts to prepare for rebinding"""
         # Unbind all previously bound keys
@@ -3784,6 +3990,7 @@ class RapidMomentNavigator:
         # Map action IDs to their handler functions
         action_handlers = {
             "show_fuzzy_search": self._show_fuzzy_search,
+            "editor_fuzzy_search": self._show_editor_fuzzy_search,
             "focus_search": self._focus_search_bar,
             "escape_search": self._escape_search_bar,
             "result_next": self._navigate_result_next,
@@ -4369,11 +4576,15 @@ class RapidMomentNavigator:
 
     def _on_editor_changed(self, event):
         """Handle editor selection change"""
-        combobox = event.widget
-        selected_editor = combobox.get()
-        
-        # Update the editor variable
-        self.editor_var.set(selected_editor)
+        # Get selected editor from event or directly from variable
+        if event is not None:
+            combobox = event.widget
+            selected_editor = combobox.get()
+            # Update the editor variable
+            self.editor_var.set(selected_editor)
+        else:
+            # Called programmatically (e.g., from fuzzy search)
+            selected_editor = self.editor_var.get()
         
         # Save the selected editor to preferences
         self.preferences["selected_editor"] = selected_editor
