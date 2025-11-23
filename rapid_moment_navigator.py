@@ -583,6 +583,10 @@ class RapidMomentNavigator:
         self.search_entry.pack(side="left", padx=5)
         self.search_entry.bind("<Return>", self.search_subtitles)
         
+        # Fix Ctrl+A (select all) on Linux - bind it explicitly
+        self.search_entry.bind("<Control-a>", lambda e: self._select_all_text(e.widget))
+        self.search_entry.bind("<Control-A>", lambda e: self._select_all_text(e.widget))
+        
         # Use a direct binding approach for Ctrl+Backspace without KeyRelease complication
         self.search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
         
@@ -2861,6 +2865,15 @@ class RapidMomentNavigator:
         except Exception as e:
             self.debug_print(f"Error moving result to bottom: {e}")
     
+    def _select_all_text(self, widget):
+        """Select all text in an Entry widget (helper for Ctrl+A on Linux)"""
+        try:
+            widget.select_range(0, tk.END)
+            widget.icursor(tk.END)
+            return "break"  # Prevent default behavior
+        except:
+            pass
+    
     def _focus_search_bar(self):
         """Focus the search bar"""
         # Don't focus if app window doesn't have focus
@@ -2890,12 +2903,16 @@ class RapidMomentNavigator:
             self.last_key_press_times.clear()
             return
         
-        # Priority 3: Remove focus from search entry by focusing on the main frame
+        # Priority 3: Remove focus from search entry (only if there are results)
+        if not self.result_items:
+            self.debug_print("No results available, keeping focus on search bar")
+            return
+        
         self.main_frame.focus_set()
         self.debug_print("Unfocused search bar")
         
         # If no result is selected, select the first one
-        if self.selected_result_index is None and self.result_items:
+        if self.selected_result_index is None:
             self.debug_print("No result selected, auto-selecting first result")
             self._select_result(0)
     
@@ -3048,8 +3065,9 @@ class RapidMomentNavigator:
                 # Set the show in the main dropdown
                 self.show_var.set(selected_show)
                 fuzzy_overlay.destroy()
-                # Focus the search input box (natural next step after selecting a show)
-                self.search_entry.focus_set()
+                # Ensure main window has focus first, then focus search entry
+                self.root.focus_force()
+                self.root.after(50, lambda: self.search_entry.focus_set())
         
         def close_overlay():
             """Close the overlay without selecting"""
@@ -5613,6 +5631,10 @@ except Exception as e:
         self.editor_search_entry.bind("<Return>", lambda event: self.find_text_in_editor())
         self.editor_search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
         self.editor_search_entry.bind("<KeyPress>", self._on_search_entry_key)
+        
+        # Fix Ctrl+A (select all) on Linux - bind it explicitly
+        self.editor_search_entry.bind("<Control-a>", lambda e: self._select_all_text(e.widget))
+        self.editor_search_entry.bind("<Control-A>", lambda e: self._select_all_text(e.widget))
         
         # Button to find text
         find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_editor)
@@ -9596,6 +9618,9 @@ if __name__ == "__main__":
         
         # Setup keyboard shortcuts
         app._setup_keyboard_shortcuts()
+        
+        # Focus the search entry on launch
+        app.root.after(100, lambda: app.search_entry.focus_set())
         
         # Force debug output to be flushed immediately if debug is enabled
         if args.debug:
