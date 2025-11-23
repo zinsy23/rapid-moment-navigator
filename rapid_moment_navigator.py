@@ -587,6 +587,9 @@ class RapidMomentNavigator:
         self.search_entry.bind("<Control-a>", lambda e: self._select_all_text(e.widget))
         self.search_entry.bind("<Control-A>", lambda e: self._select_all_text(e.widget))
         
+        # Select all text when search entry gains focus
+        self.search_entry.bind("<FocusIn>", lambda e: self._select_all_on_focus(e.widget))
+        
         # Use a direct binding approach for Ctrl+Backspace without KeyRelease complication
         self.search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
         
@@ -2874,13 +2877,30 @@ class RapidMomentNavigator:
         except:
             pass
     
+    def _select_all_on_focus(self, widget):
+        """Select all text when an Entry widget gains focus"""
+        try:
+            # Use after() to ensure the focus event completes first
+            # Longer delay for Linux compatibility
+            widget.after(50, lambda: widget.select_range(0, tk.END) if widget.winfo_exists() else None)
+        except:
+            pass
+    
     def _focus_search_bar(self):
         """Focus the search bar"""
         # Don't focus if app window doesn't have focus
         if not self._is_app_window_focused():
             return
         
+        # Check if search bar already has focus
+        already_focused = (self.root.focus_get() == self.search_entry)
+        
         self.search_entry.focus_set()
+        
+        # Only select all text if we're gaining focus (not already focused)
+        if not already_focused:
+            self.search_entry.after(50, lambda: self.search_entry.select_range(0, tk.END))
+        
         self.debug_print("Focused search bar")
     
     def _escape_search_bar(self):
@@ -3065,9 +3085,10 @@ class RapidMomentNavigator:
                 # Set the show in the main dropdown
                 self.show_var.set(selected_show)
                 fuzzy_overlay.destroy()
-                # Ensure main window has focus first, then focus search entry
+                # Ensure main window has focus first, then focus search entry and select all
                 self.root.focus_force()
                 self.root.after(50, lambda: self.search_entry.focus_set())
+                self.root.after(100, lambda: self.search_entry.select_range(0, tk.END))
         
         def close_overlay():
             """Close the overlay without selecting"""
@@ -5635,6 +5656,9 @@ except Exception as e:
         # Fix Ctrl+A (select all) on Linux - bind it explicitly
         self.editor_search_entry.bind("<Control-a>", lambda e: self._select_all_text(e.widget))
         self.editor_search_entry.bind("<Control-A>", lambda e: self._select_all_text(e.widget))
+        
+        # Select all text when search entry gains focus
+        self.editor_search_entry.bind("<FocusIn>", lambda e: self._select_all_on_focus(e.widget))
         
         # Button to find text
         find_btn = ttk.Button(self.editor_search_frame, text="Find", command=self.find_text_in_editor)
