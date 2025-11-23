@@ -1004,6 +1004,21 @@ class RapidMomentNavigator:
         except Exception as e:
             print(f"Error creating debug window: {e}", file=sys.stderr)
     
+    def _open_debug_console(self):
+        """Open and focus the debug console window"""
+        try:
+            # Ensure debug window exists
+            self.ensure_debug_window()
+            
+            # Show the window if it's hidden
+            if hasattr(self, 'debug_window') and self.debug_window and self.debug_window.winfo_exists():
+                self.debug_window.window.deiconify()
+                self.debug_window.window.lift()
+                self.debug_window.window.focus_force()
+                self.debug_print("Debug console opened")
+        except Exception as e:
+            self.debug_print(f"Error opening debug console: {e}")
+    
     def show_error_in_gui(self, title, message):
         """Display an error message in the GUI"""
         # Update status bar
@@ -3796,10 +3811,7 @@ class RapidMomentNavigator:
             "open_marker_settings": lambda: self._is_app_window_focused() and self._show_marker_settings_dialog(),
             "open_keyboard_shortcuts": lambda: self._is_app_window_focused() and self._show_keyboard_shortcuts_dialog(),
             "open_window_sizing": lambda: self._is_app_window_focused() and self._show_window_sizing_dialog(),
-            "open_debug_console": lambda: self._is_app_window_focused() and (
-                self.debug_window.show() if hasattr(self, 'debug_window') and self.debug_window 
-                else self.ensure_debug_window()
-            ),
+            "open_debug_console": lambda: self._is_app_window_focused() and self._open_debug_console(),
         }
         
         # Track two-letter sequences (both same-letter like 'gg' and different-letter like 'zt')
@@ -7038,9 +7050,9 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
         
-        # Keyboard shortcuts: Escape or Ctrl+C to close
+        # Keyboard shortcuts: Escape or Ctrl+Shift+C to close (Ctrl+C reserved for copying)
         settings_dialog.bind("<Escape>", lambda e: settings_dialog.destroy())
-        settings_dialog.bind("<Control-c>", lambda e: settings_dialog.destroy())
+        settings_dialog.bind("<Control-Shift-C>", lambda e: settings_dialog.destroy())
         
         # Add invisible spacer row to absorb extra space when dialog is enlarged
         spacer_frame = ttk.Frame(main_container)
@@ -7156,9 +7168,9 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
         
-        # Keyboard shortcuts: Escape or Ctrl+C to close
+        # Keyboard shortcuts: Escape or Ctrl+Shift+C to close (Ctrl+C reserved for copying)
         settings_dialog.bind("<Escape>", lambda e: settings_dialog.destroy())
-        settings_dialog.bind("<Control-c>", lambda e: settings_dialog.destroy())
+        settings_dialog.bind("<Control-Shift-C>", lambda e: settings_dialog.destroy())
 
     def _show_marker_settings_dialog(self):
         """Show a dialog for configuring marker settings (for Shift+Click in editor)"""
@@ -7200,9 +7212,9 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
         
-        # Keyboard shortcuts: Escape or Ctrl+C to close
+        # Keyboard shortcuts: Escape or Ctrl+Shift+C to close (Ctrl+C reserved for copying)
         settings_dialog.bind("<Escape>", lambda e: on_close())
-        settings_dialog.bind("<Control-c>", lambda e: on_close())
+        settings_dialog.bind("<Control-Shift-C>", lambda e: on_close())
         
         # Create main frame with padding (pack after buttons so it fills remaining space)
         main_frame = ttk.Frame(settings_dialog, padding=15)
@@ -7394,9 +7406,9 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
         
-        # Keyboard shortcuts: Escape or Ctrl+C to close
+        # Keyboard shortcuts: Escape or Ctrl+Shift+C to close (Ctrl+C reserved for copying)
         settings_dialog.bind("<Escape>", lambda e: settings_dialog.destroy())
-        settings_dialog.bind("<Control-c>", lambda e: settings_dialog.destroy())
+        settings_dialog.bind("<Control-Shift-C>", lambda e: settings_dialog.destroy())
         
         # Create main frame with padding (pack after buttons so it fills remaining space)
         main_frame = ttk.Frame(settings_dialog, padding=15)
@@ -7781,7 +7793,7 @@ except Exception as e:
                 dialog.destroy()
         dialog.bind("<Return>", handle_enter)
         dialog.bind("<Escape>", handle_escape)
-        dialog.bind("<Control-c>", handle_escape)
+        dialog.bind("<Control-Shift-C>", handle_escape)  # Ctrl+C reserved for copying text
 
     def _show_window_sizing_dialog(self):
         """Show a dialog for configuring window sizes"""
@@ -8028,7 +8040,7 @@ except Exception as e:
                 dialog.destroy()
         dialog.bind("<Return>", handle_enter)
         dialog.bind("<Escape>", handle_escape)
-        dialog.bind("<Control-c>", handle_escape)
+        dialog.bind("<Control-Shift-C>", handle_escape)  # Ctrl+C reserved for copying text
         
         # Dialog is already positioned correctly from creation
     
@@ -8508,7 +8520,7 @@ except Exception as e:
         ttk.Button(buttons_frame, text="Save", command=save_shortcuts).pack(side="right", padx=5)
         ttk.Button(buttons_frame, text="Cancel", command=on_dialog_close).pack(side="right", padx=5)
         
-        # Keyboard shortcuts: Enter to save, Escape/Ctrl+C to cancel
+        # Keyboard shortcuts: Enter to save, Escape to cancel
         dialog.bind("<Return>", lambda e: save_shortcuts())
         dialog.bind("<Escape>", lambda e: on_dialog_close())
         dialog.bind("<Control-c>", lambda e: on_dialog_close())
@@ -8677,7 +8689,7 @@ except Exception as e:
         ttk.Button(bottom_frame, text="Save", command=save_and_close).pack(side="right", padx=5)
         ttk.Button(bottom_frame, text="Cancel", command=prefix_dialog.destroy).pack(side="right")
         
-        # Keyboard shortcuts: Enter to save, Escape/Ctrl+C to cancel
+        # Keyboard shortcuts: Enter to save, Escape to cancel
         prefix_dialog.bind("<Return>", lambda e: save_and_close())
         prefix_dialog.bind("<Escape>", lambda e: prefix_dialog.destroy())
         prefix_dialog.bind("<Control-c>", lambda e: prefix_dialog.destroy())
@@ -10083,12 +10095,12 @@ class DebugWindow:
         clear_btn.pack(side="left", padx=5)
         
         # Add close button
-        close_btn = ttk.Button(button_frame, text="Close", command=self.window.withdraw)
+        close_btn = ttk.Button(button_frame, text="Close", command=self.close_window)
         close_btn.pack(side="right", padx=5)
         
-        # Keyboard shortcuts: Escape or Ctrl+C to close
-        self.window.bind("<Escape>", lambda e: self.window.withdraw())
-        self.window.bind("<Control-c>", lambda e: self.window.withdraw())
+        # Keyboard shortcuts: Escape or Ctrl+Shift+C to close (Ctrl+C reserved for copying text)
+        self.window.bind("<Escape>", lambda e: self.close_window())
+        self.window.bind("<Control-Shift-C>", lambda e: self.close_window())
         
         # Add save button
         save_btn = ttk.Button(button_frame, text="Save Log", command=self.save_log)
@@ -10108,6 +10120,16 @@ class DebugWindow:
             return self.window.winfo_exists()
         except:
             return False
+    
+    def close_window(self):
+        """Close/hide the debug window and return focus to parent"""
+        try:
+            self.window.withdraw()
+            # Return focus to parent window
+            self.parent.focus_force()
+            self.parent.lift()
+        except:
+            pass
     
     def insert_text(self, text):
         """Insert text into the debug window"""
