@@ -2076,15 +2076,17 @@ class RapidMomentNavigator:
             timecode_label.pack(anchor="w")
             
             # Add text widget (allows highlighting of search matches)
-            text_widget = tk.Text(content_frame, height=2, wrap="word", relief="flat", 
+            text_widget = tk.Text(content_frame, wrap="word", relief="flat", 
                                  background=self.root.cget('bg'), font=("TkDefaultFont", 10),
-                                 cursor="arrow", state="disabled", highlightthickness=0)
+                                 cursor="arrow", highlightthickness=0, width=100)
             text_widget.pack(anchor="w", padx=10, fill="x")
             
-            # Insert text and make read-only
-            text_widget.config(state="normal")
+            # Insert text and calculate height based on actual content
             text_widget.insert("1.0", result['clean_text'])
-            text_widget.config(state="disabled")
+            
+            # Get the actual number of lines after wrapping
+            line_count = int(text_widget.index('end-1c').split('.')[0])
+            text_widget.config(height=line_count, state="disabled")
             
             # Configure tag for search highlighting
             text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
@@ -3978,15 +3980,17 @@ class RapidMomentNavigator:
             timecode_label.pack(anchor="w")
             
             # Add text widget (allows highlighting of search matches)
-            text_widget = tk.Text(content_frame, height=2, wrap="word", relief="flat", 
+            text_widget = tk.Text(content_frame, wrap="word", relief="flat", 
                                  background=self.root.cget('bg'), font=("TkDefaultFont", 10),
-                                 cursor="arrow", state="disabled", highlightthickness=0)
+                                 cursor="arrow", highlightthickness=0, width=100)
             text_widget.pack(anchor="w", padx=10, fill="x")
             
-            # Insert text and make read-only
-            text_widget.config(state="normal")
+            # Insert text and calculate height based on actual content
             text_widget.insert("1.0", result['clean_text'])
-            text_widget.config(state="disabled")
+            
+            # Get the actual number of lines after wrapping
+            line_count = int(text_widget.index('end-1c').split('.')[0])
+            text_widget.config(height=line_count, state="disabled")
             
             # Configure tag for search highlighting
             text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
