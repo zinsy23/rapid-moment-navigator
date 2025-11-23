@@ -715,17 +715,17 @@ class RapidMomentNavigator:
         main_items_combo.bind("<<ComboboxSelected>>", self._on_main_items_per_page_changed)
         
         # Status bar frame (contains status text and number prefix)
-        status_frame = ttk.Frame(self.main_frame, relief="sunken", borderwidth=1)
-        status_frame.pack(fill="x", padx=5, pady=5)
+        self.status_frame = ttk.Frame(self.main_frame, relief="sunken", borderwidth=1)
+        self.status_frame.pack(fill="x", padx=5, pady=5)
         
         # Status bar text - left aligned
         self.status_var = tk.StringVar()
-        self.status_bar = ttk.Label(status_frame, textvariable=self.status_var, anchor="w")
+        self.status_bar = ttk.Label(self.status_frame, textvariable=self.status_var, anchor="w")
         self.status_bar.pack(side="left", fill="x", expand=True, padx=2)
         
         # Number prefix - right aligned
         self.number_prefix_var = tk.StringVar()
-        self.number_prefix_label = ttk.Label(status_frame, textvariable=self.number_prefix_var, 
+        self.number_prefix_label = ttk.Label(self.status_frame, textvariable=self.number_prefix_var, 
                                              anchor="e", foreground="blue", font=("TkDefaultFont", 10, "bold"))
         self.number_prefix_label.pack(side="right", padx=5)
         
@@ -2297,18 +2297,18 @@ class RapidMomentNavigator:
         self.root.update()
         search_overlay.update_idletasks()
         
-        # Position at bottom of results canvas
+        # Position overlay over the status bar
         try:
             # Try the standard method first (works on Linux/Mac)
-            canvas_x = self.results_canvas.winfo_rootx()
-            canvas_y = self.results_canvas.winfo_rooty()
-            canvas_height = self.results_canvas.winfo_height()
-            canvas_width = self.results_canvas.winfo_width()
+            status_x = self.status_frame.winfo_rootx()
+            status_y = self.status_frame.winfo_rooty()
+            status_width = self.status_frame.winfo_width()
+            status_height = self.status_frame.winfo_height()
             
-            self.debug_print(f"Canvas winfo_root values: rootx={canvas_x}, rooty={canvas_y}, height={canvas_height}, width={canvas_width}")
+            self.debug_print(f"Status bar winfo_root values: rootx={status_x}, rooty={status_y}, width={status_width}, height={status_height}")
             
             # Check if we got invalid coordinates (Windows issue)
-            if canvas_x <= 1 or canvas_y <= 1:
+            if status_x <= 1 or status_y <= 1:
                 self.debug_print("Invalid rootx/rooty, using geometry-based positioning")
                 
                 # Windows fallback: parse geometry and use relative positioning
@@ -2324,35 +2324,32 @@ class RapidMomentNavigator:
                     root_x = self.root.winfo_x()
                     root_y = self.root.winfo_y()
                 
-                # Get canvas position relative to root
-                canvas_rel_x = self.results_canvas.winfo_x()
-                canvas_rel_y = self.results_canvas.winfo_y()
+                # Get status bar position relative to root
+                status_rel_x = self.status_frame.winfo_x()
+                status_rel_y = self.status_frame.winfo_y()
                 
                 # Calculate absolute position
-                canvas_x = root_x + canvas_rel_x
-                canvas_y = root_y + canvas_rel_y + canvas_height - 50
+                status_x = root_x + status_rel_x
+                status_y = root_y + status_rel_y
                 
-                self.debug_print(f"Calculated from geometry: x={canvas_x}, y={canvas_y}")
-            else:
-                # Valid coordinates, use them directly
-                canvas_y = canvas_y + canvas_height - 50
+                self.debug_print(f"Calculated from geometry: x={status_x}, y={status_y}")
             
-            canvas_width = max(canvas_width, 400)
-            self.debug_print(f"Final overlay position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
+            overlay_width = max(status_width, 400)
+            overlay_height = max(status_height, 40)  # Match status bar height or minimum 40
+            
+            self.debug_print(f"Final overlay position: x={status_x}, y={status_y}, width={overlay_width}, height={overlay_height}")
             
         except Exception as e:
-            self.debug_print(f"Error getting canvas position: {e}")
-            # Last resort fallback - use main window
-            canvas_x = self.root.winfo_rootx() + 50
-            canvas_y = self.root.winfo_rooty() + self.root.winfo_height() - 100
-            canvas_width = self.root.winfo_width() - 100
-            self.debug_print(f"Using fallback position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
-        
-        # Ensure minimum width
-        canvas_width = max(canvas_width, 400)
+            self.debug_print(f"Error getting status bar position: {e}")
+            # Last resort fallback - use main window bottom
+            status_x = self.root.winfo_rootx() + 50
+            status_y = self.root.winfo_rooty() + self.root.winfo_height() - 50
+            overlay_width = self.root.winfo_width() - 100
+            overlay_height = 40
+            self.debug_print(f"Using fallback position: x={status_x}, y={status_y}, width={overlay_width}")
         
         # Set geometry
-        geometry_string = f"{canvas_width}x50+{canvas_x}+{canvas_y}"
+        geometry_string = f"{overlay_width}x{overlay_height}+{status_x}+{status_y}"
         self.debug_print(f"Setting geometry to: {geometry_string}")
         search_overlay.geometry(geometry_string)
         
@@ -2366,7 +2363,7 @@ class RapidMomentNavigator:
         except:
             pass
         
-        self.debug_print(f"Created search overlay at {canvas_x},{canvas_y} with width {canvas_width}")
+        self.debug_print(f"Created search overlay at {status_x},{status_y} with size {overlay_width}x{overlay_height}")
         
         # Verify actual position after setting
         search_overlay.update()
