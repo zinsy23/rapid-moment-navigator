@@ -7439,8 +7439,13 @@ except Exception as e:
         except Exception as e:
             self.debug_print(f"Error applying sizes to open windows: {e}")
 
-    def _should_show_sequence_hint(self, key):
-        """Check if a key should show the 'press again for sequence' hint"""
+    def _should_show_sequence_hint(self, key, current_shortcut_entries=None):
+        """Check if a key should show the 'press again for sequence' hint
+        
+        Args:
+            key: The key to check (single letter)
+            current_shortcut_entries: Optional dict of current working shortcuts from the dialog
+        """
         # Only show for single lowercase letters without modifiers
         if not key or key.startswith('<') or len(key) != 1:
             return False
@@ -7454,15 +7459,24 @@ except Exception as e:
         if key in prefix_keys:
             return True
         
-        # Show if there's an uppercase mapping for this key (indicates it's a navigation key)
-        shortcuts = self.preferences.get("keyboard_shortcuts", {})
-        all_shortcuts = {**DEFAULT_KEYBOARD_SHORTCUTS, **shortcuts}
-        
+        # Check for uppercase mapping
         uppercase_key = key.upper()
-        for action_id, action_data in all_shortcuts.items():
-            keys = action_data.get("keys", [])
-            if uppercase_key in keys:
-                return True
+        
+        # If we have current working shortcuts from the dialog, check those first
+        if current_shortcut_entries:
+            for action_id, entry_data in current_shortcut_entries.items():
+                keys = entry_data.get("keys", [])
+                if uppercase_key in keys:
+                    return True
+        else:
+            # Fall back to saved shortcuts
+            shortcuts = self.preferences.get("keyboard_shortcuts", {})
+            all_shortcuts = {**DEFAULT_KEYBOARD_SHORTCUTS, **shortcuts}
+            
+            for action_id, action_data in all_shortcuts.items():
+                keys = action_data.get("keys", [])
+                if uppercase_key in keys:
+                    return True
         
         return False
     
@@ -7998,6 +8012,11 @@ except Exception as e:
             if "Shift" in modifiers and len(key) == 1 and key.isalpha() and len(modifiers) == 1:
                 # Just Shift+letter (no Ctrl or Alt) -> store as uppercase letter only
                 binding = key.upper()
+            # Special handling for Shift+symbol keys that produce different symbols
+            elif "Shift" in modifiers and len(modifiers) == 1 and key in ('plus', 'exclam', 'at', 'numbersign', 'dollar', 'percent', 'asciicircum', 'ampersand', 'asterisk', 'parenleft', 'parenright', 'underscore', 'braceleft', 'braceright', 'bar', 'colon', 'quotedbl', 'less', 'greater', 'question', 'asciitilde'):
+                # Just Shift+symbol (no Ctrl or Alt) -> store as the symbol itself (Shift is inherent)
+                # For example, Shift+= produces '+', so store as '+' not '<Shift-plus>'
+                binding = f"<{key}>"
             else:
                 # Normalize letter keys to uppercase when other modifiers are present
                 # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
@@ -8013,22 +8032,24 @@ except Exception as e:
                 else:
                     binding = key
             
-            # Check if this is the same key as last press (for double-tap)
-            # No timeout in capture dialog - just check if same key
-            if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and binding == first_key[0]:
-                # Same key pressed twice - create double-tap sequence
+            # Check if we're completing a two-letter sequence
+            # No timeout in capture dialog - just check if we had a first key
+            if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and len(binding) == 1:
+                # Second key press - create two-letter sequence
                 sequence = first_key[0] + binding
                 captured_binding[0] = sequence
                 captured_key.set(self._format_key_for_display(sequence))
-                first_key[0] = None  # Reset after creating double-tap
+                first_key[0] = None  # Reset after creating sequence
             else:
-                # First press or different key - store this key
-                first_key[0] = binding
+                # First press or key with modifiers - store this key
                 captured_binding[0] = binding
-                # Show hint ONLY for g, z, or keys with uppercase mappings
-                if self._should_show_sequence_hint(binding):
-                    captured_key.set(self._format_key_for_display(binding) + " (press again for sequence, or Save)")
+                # Only track first_key if this key should show the hint (prefix key or has uppercase mapping)
+                # Pass current shortcut_entries so we check the working set, not just saved shortcuts
+                if not modifiers and len(binding) == 1 and self._should_show_sequence_hint(binding, self.shortcut_entries):
+                    first_key[0] = binding
+                    captured_key.set(self._format_key_for_display(binding) + " (press another key for sequence)")
                 else:
+                    first_key[0] = None
                     captured_key.set(self._format_key_for_display(binding))
         
         # Bind to the dialog window itself
@@ -8181,6 +8202,10 @@ except Exception as e:
                 if "Shift" in modifiers and len(key) == 1 and key.isalpha() and len(modifiers) == 1:
                     # Just Shift+letter (no Ctrl or Alt) -> store as uppercase letter only
                     binding = key.upper()
+                # Special handling for Shift+symbol keys that produce different symbols
+                elif "Shift" in modifiers and len(modifiers) == 1 and key in ('plus', 'exclam', 'at', 'numbersign', 'dollar', 'percent', 'asciicircum', 'ampersand', 'asterisk', 'parenleft', 'parenright', 'underscore', 'braceleft', 'braceright', 'bar', 'colon', 'quotedbl', 'less', 'greater', 'question', 'asciitilde'):
+                    # Just Shift+symbol (no Ctrl or Alt) -> store as the symbol itself (Shift is inherent)
+                    binding = f"<{key}>"
                 else:
                     # Normalize letter keys to uppercase when other modifiers are present
                     # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
@@ -8196,22 +8221,24 @@ except Exception as e:
                     else:
                         binding = key
                 
-                # Check if this is the same key as last press (for double-tap)
-                # No timeout in capture dialog - just check if same key
-                if first_key[0] is not None and not binding.startswith('<') and binding == first_key[0]:
-                    # Same key pressed twice - create double-tap sequence
+                # Check if we're completing a two-letter sequence
+                # No timeout in capture dialog - just check if we had a first key
+                if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and len(binding) == 1:
+                    # Second key press - create two-letter sequence
                     sequence = first_key[0] + binding
                     captured_binding[0] = sequence
                     captured_key.set(self._format_key_for_display(sequence))
-                    first_key[0] = None  # Reset after creating double-tap
+                    first_key[0] = None  # Reset after creating sequence
                 else:
-                    # First press or different key - store this key
-                    first_key[0] = binding
+                    # First press or key with modifiers - store this key
                     captured_binding[0] = binding
-                    # Show hint ONLY for g, z, or keys with uppercase mappings
-                    if self._should_show_sequence_hint(binding):
-                        captured_key.set(self._format_key_for_display(binding) + " (press again for sequence, or Add)")
+                    # Only track first_key if this key should show the hint (prefix key or has uppercase mapping)
+                    # Pass current shortcut_entries so we check the working set, not just saved shortcuts
+                    if not modifiers and len(binding) == 1 and self._should_show_sequence_hint(binding, self.shortcut_entries):
+                        first_key[0] = binding
+                        captured_key.set(self._format_key_for_display(binding) + " (press another key for sequence)")
                     else:
+                        first_key[0] = None
                         captured_key.set(self._format_key_for_display(binding))
             
             add_key_dialog.bind("<Key>", capture_key)
@@ -8302,6 +8329,10 @@ except Exception as e:
                 if "Shift" in modifiers and len(key) == 1 and key.isalpha() and len(modifiers) == 1:
                     # Just Shift+letter (no Ctrl or Alt) -> store as uppercase letter only
                     binding = key.upper()
+                # Special handling for Shift+symbol keys that produce different symbols
+                elif "Shift" in modifiers and len(modifiers) == 1 and key in ('plus', 'exclam', 'at', 'numbersign', 'dollar', 'percent', 'asciicircum', 'ampersand', 'asterisk', 'parenleft', 'parenright', 'underscore', 'braceleft', 'braceright', 'bar', 'colon', 'quotedbl', 'less', 'greater', 'question', 'asciitilde'):
+                    # Just Shift+symbol (no Ctrl or Alt) -> store as the symbol itself (Shift is inherent)
+                    binding = f"<{key}>"
                 else:
                     # Normalize letter keys to uppercase when other modifiers are present
                     # This ensures consistency (Ctrl+Shift+i becomes Ctrl+Shift+I)
@@ -8317,22 +8348,24 @@ except Exception as e:
                     else:
                         binding = key
                 
-                # Check if this is the same key as last press (for double-tap)
-                # No timeout in capture dialog - just check if same key
-                if first_key[0] is not None and not binding.startswith('<') and binding == first_key[0]:
-                    # Same key pressed twice - create double-tap sequence
+                # Check if we're completing a two-letter sequence
+                # No timeout in capture dialog - just check if we had a first key
+                if first_key[0] is not None and not modifiers and not first_key[0].startswith('<') and len(binding) == 1:
+                    # Second key press - create two-letter sequence
                     sequence = first_key[0] + binding
                     captured_binding[0] = sequence
                     captured_key.set(self._format_key_for_display(sequence))
-                    first_key[0] = None  # Reset after creating double-tap
+                    first_key[0] = None  # Reset after creating sequence
                 else:
-                    # First press or different key - store this key
-                    first_key[0] = binding
+                    # First press or key with modifiers - store this key
                     captured_binding[0] = binding
-                    # Show hint ONLY for g, z, or keys with uppercase mappings
-                    if self._should_show_sequence_hint(binding):
-                        captured_key.set(self._format_key_for_display(binding) + " (press again for sequence, or Save)")
+                    # Only track first_key if this key should show the hint (prefix key or has uppercase mapping)
+                    # Pass current shortcut_entries so we check the working set, not just saved shortcuts
+                    if not modifiers and len(binding) == 1 and self._should_show_sequence_hint(binding, self.shortcut_entries):
+                        first_key[0] = binding
+                        captured_key.set(self._format_key_for_display(binding) + " (press another key for sequence)")
                     else:
+                        first_key[0] = None
                         captured_key.set(self._format_key_for_display(binding))
             
             # Bind to capture keys
