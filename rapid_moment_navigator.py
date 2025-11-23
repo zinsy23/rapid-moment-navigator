@@ -91,6 +91,16 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "category": "Results Navigation",
         "keys": ["<End>", "G"]
     },
+    "increase_items_per_page": {
+        "description": "Increase items per page",
+        "category": "Results Navigation",
+        "keys": ["<plus>", "<equal>"]
+    },
+    "decrease_items_per_page": {
+        "description": "Decrease items per page",
+        "category": "Results Navigation",
+        "keys": ["<minus>"]
+    },
     "result_activate": {
         "description": "Activate selected result (play at timecode)",
         "category": "Results Actions",
@@ -134,7 +144,7 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
     "open_debug_console": {
         "description": "Open Debug Console",
         "category": "Settings & Dialogs",
-        "keys": ["<Control-D>"]
+        "keys": ["<Control-Shift-D>"]
     },
     "scroll_half_page_down": {
         "description": "Scroll down half a page",
@@ -497,8 +507,12 @@ class RapidMomentNavigator:
         
         # Double-tap key tracking (for shortcuts like 'gg', 'dd', etc.)
         self.last_key_press_times = {}  # key -> timestamp mapping
-        self.double_tap_timeout = 500  # milliseconds - time window for double-tap
         self.bound_shortcut_keys = set()  # Track which keys we've bound for cleanup
+        
+        # Number prefix tracking (for Vim-style counts like 10j, 5k)
+        self.number_prefix = ""  # Current number being typed
+        self.number_prefix_timeout = None  # Timer to clear number after inactivity
+        self.number_prefix_label = None  # Visual indicator for number prefix
         
         # Setup exception handling for Tkinter
         self.setup_exception_handler()
@@ -652,10 +666,20 @@ class RapidMomentNavigator:
         main_items_combo.pack(side="left", padx=5)
         main_items_combo.bind("<<ComboboxSelected>>", self._on_main_items_per_page_changed)
         
-        # Status bar
+        # Status bar frame (contains status text and number prefix)
+        status_frame = ttk.Frame(self.main_frame, relief="sunken", borderwidth=1)
+        status_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Status bar text - left aligned
         self.status_var = tk.StringVar()
-        self.status_bar = ttk.Label(self.main_frame, textvariable=self.status_var, relief="sunken", anchor="w")
-        self.status_bar.pack(fill="x", padx=5, pady=5)
+        self.status_bar = ttk.Label(status_frame, textvariable=self.status_var, anchor="w")
+        self.status_bar.pack(side="left", fill="x", expand=True, padx=2)
+        
+        # Number prefix - right aligned
+        self.number_prefix_var = tk.StringVar()
+        self.number_prefix_label = ttk.Label(status_frame, textvariable=self.number_prefix_var, 
+                                             anchor="e", foreground="blue", font=("TkDefaultFont", 10, "bold"))
+        self.number_prefix_label.pack(side="right", padx=5)
         
         # Initialize pagination visibility based on preference
         self._update_pagination_visibility()
@@ -2041,6 +2065,84 @@ class RapidMomentNavigator:
             self.main_current_page += 1
             self._display_main_current_page()
     
+    def _increase_items_per_page(self, event=None):
+        """Increase items per page to next option (Vim-like = or + key)"""
+        # Don't change if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
+        # Don't change if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            return
+        
+        # Don't trigger if any modifier keys are held (Ctrl, Alt, Shift)
+        # Check event.state bitmask: Shift=0x1, CapsLock=0x2, Control=0x4, Alt=0x8/0x80
+        if event:
+            self.debug_print(f"Increase items per page: event.state={event.state}, keysym={event.keysym}")
+            # Control is 0x4, Alt is 0x8 or 0x80, Shift is 0x1
+            # But we need to allow Shift for '+' key
+            if event.state & 0x4:  # Control
+                self.debug_print("Control key held, ignoring")
+                return
+            if event.state & 0x8 or event.state & 0x80:  # Alt
+                self.debug_print("Alt key held, ignoring")
+                return
+        
+        # Get available options
+        options = ["25", "50", "100", "200", "500"]
+        current = self.main_items_per_page_var.get()
+        
+        try:
+            current_index = options.index(current)
+            # Move to next option (clamped to last)
+            next_index = min(current_index + 1, len(options) - 1)
+            if next_index != current_index:
+                self.main_items_per_page_var.set(options[next_index])
+                self._on_main_items_per_page_changed()
+                self.debug_print(f"Increased items per page to {options[next_index]}")
+        except (ValueError, IndexError) as e:
+            self.debug_print(f"Error increasing items per page: {e}")
+    
+    def _decrease_items_per_page(self, event=None):
+        """Decrease items per page to previous option (Vim-like - key)"""
+        # Don't change if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
+        # Don't change if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            return
+        
+        # Don't trigger if any modifier keys are held (Ctrl, Alt, Shift)
+        # Check event.state bitmask: Shift=0x1, CapsLock=0x2, Control=0x4, Alt=0x8/0x80
+        if event:
+            self.debug_print(f"Decrease items per page: event.state={event.state}, keysym={event.keysym}")
+            # Control is 0x4, Alt is 0x8 or 0x80, Shift is 0x1
+            if event.state & 0x4:  # Control
+                self.debug_print("Control key held, ignoring")
+                return
+            if event.state & 0x8 or event.state & 0x80:  # Alt
+                self.debug_print("Alt key held, ignoring")
+                return
+            if event.state & 0x1:  # Shift
+                self.debug_print("Shift key held, ignoring")
+                return
+        
+        # Get available options
+        options = ["25", "50", "100", "200", "500"]
+        current = self.main_items_per_page_var.get()
+        
+        try:
+            current_index = options.index(current)
+            # Move to previous option (clamped to first)
+            prev_index = max(current_index - 1, 0)
+            if prev_index != current_index:
+                self.main_items_per_page_var.set(options[prev_index])
+                self._on_main_items_per_page_changed()
+                self.debug_print(f"Decreased items per page to {options[prev_index]}")
+        except (ValueError, IndexError) as e:
+            self.debug_print(f"Error decreasing items per page: {e}")
+    
     def _on_main_items_per_page_changed(self, event=None):
         """Handle change in items per page for main navigator"""
         try:
@@ -2144,7 +2246,7 @@ class RapidMomentNavigator:
             return False
     
     def _navigate_result_next(self):
-        """Navigate to the next result"""
+        """Navigate to the next result (with optional count from number prefix)"""
         # Don't navigate if app window doesn't have focus
         if not self._is_app_window_focused():
             return
@@ -2154,7 +2256,39 @@ class RapidMomentNavigator:
             self.debug_print("Search bar has focus, ignoring navigation")
             return
         
-        self.debug_print(f"_navigate_result_next called, result_items count: {len(self.result_items)}")
+        # Get count from number prefix (default 1)
+        count = self._get_count()
+        
+        self.debug_print(f"_navigate_result_next called with count={count}, result_items count: {len(self.result_items)}")
+        if not self.result_items:
+            self.debug_print("No result items available")
+            return
+        
+        if self.selected_result_index is None:
+            # No selection, select first result (or count-1 if count > 1)
+            self.debug_print(f"No selection, selecting result at index {min(count - 1, len(self.result_items) - 1)}")
+            self._select_result(min(count - 1, len(self.result_items) - 1))
+        else:
+            # Move down by count, but don't go past the end
+            new_index = min(self.selected_result_index + count, len(self.result_items) - 1)
+            self.debug_print(f"Selecting result: {new_index}")
+            self._select_result(new_index)
+    
+    def _navigate_result_previous(self):
+        """Navigate to the previous result (with optional count from number prefix)"""
+        # Don't navigate if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
+        # Don't navigate if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            self.debug_print("Search bar has focus, ignoring navigation")
+            return
+        
+        # Get count from number prefix (default 1)
+        count = self._get_count()
+        
+        self.debug_print(f"_navigate_result_previous called with count={count}, result_items count: {len(self.result_items)}")
         if not self.result_items:
             self.debug_print("No result items available")
             return
@@ -2163,48 +2297,22 @@ class RapidMomentNavigator:
             # No selection, select first result
             self.debug_print("No selection, selecting first result")
             self._select_result(0)
-        elif self.selected_result_index < len(self.result_items) - 1:
-            # Select next result
-            self.debug_print(f"Selecting next result: {self.selected_result_index + 1}")
-            self._select_result(self.selected_result_index + 1)
         else:
-            self.debug_print("Already at last result")
+            # Move up by count, but don't go before the beginning
+            new_index = max(self.selected_result_index - count, 0)
+            self.debug_print(f"Selecting result: {new_index}")
+            self._select_result(new_index)
     
-    def _navigate_result_previous(self):
-        """Navigate to the previous result"""
-        # Don't navigate if app window doesn't have focus
-        if not self._is_app_window_focused():
-            return
-        
-        # Don't navigate if search bar has focus (user is typing)
-        if self.root.focus_get() == self.search_entry:
-            self.debug_print("Search bar has focus, ignoring navigation")
-            return
-        
-        self.debug_print(f"_navigate_result_previous called, result_items count: {len(self.result_items)}")
-        if not self.result_items:
-            self.debug_print("No result items available")
-            return
-        
-        if self.selected_result_index is None:
-            # No selection, select first result (same as next)
-            self.debug_print("No selection, selecting first result")
-            self._select_result(0)
-        elif self.selected_result_index > 0:
-            # Select previous result
-            self.debug_print(f"Selecting previous result: {self.selected_result_index - 1}")
-            self._select_result(self.selected_result_index - 1)
-        else:
-            self.debug_print("Already at first result")
-    
-    def _handle_two_letter_sequence(self, first_key, second_key_map):
+    def _handle_two_letter_sequence(self, first_key, second_key_map, has_standalone_action=False):
         """
         Generic handler for two-letter sequence detection (e.g., 'gg', 'zt', 'zb')
         This just records the key press - it doesn't wait or block.
+        No timeout - waits indefinitely like Vim's notimeout behavior.
         
         Args:
             first_key: The first key character (e.g., 'g', 'z')
             second_key_map: Dict mapping second keys to (handler, action_id) tuples
+            has_standalone_action: If True, this key also has a standalone action (e.g., 'j', 'k')
         """
         # Don't navigate if app window doesn't have focus
         if not self._is_app_window_focused():
@@ -2214,28 +2322,42 @@ class RapidMomentNavigator:
         if self.root.focus_get() == self.search_entry:
             return
         
-        import time
-        current_time = time.time() * 1000  # Convert to milliseconds
-        
         # Get last press info for this key (default to None if not found)
         last_press_info = self.last_key_press_times.get(first_key, None)
         
-        # Check if this is the second key in a sequence (within timeout window)
-        if last_press_info and current_time - last_press_info['time'] < self.double_tap_timeout:
-            # Second press within timeout - check if we have a mapping for this key
+        # Check if this is the second press of the same key (for sequences like 'gg')
+        if last_press_info:
+            # Second press - check if we have a mapping for this key
             if first_key in second_key_map:
                 handler, action_id = second_key_map[first_key]
                 self.debug_print(f"Two-letter sequence '{first_key}{first_key}' detected - {action_id}")
                 handler()
+            # Clear the pending key display
+            self._clear_pending_key()
             # Reset timer regardless
             self.last_key_press_times[first_key] = None
         else:
-            # First press - just record the time, don't wait
-            self.debug_print(f"First '{first_key}' press detected")
-            self.last_key_press_times[first_key] = {'time': current_time, 'map': second_key_map}
+            # First press - record it
+            self.debug_print(f"First '{first_key}' press detected (standalone={has_standalone_action})")
+            self.last_key_press_times[first_key] = {'map': second_key_map}
+            # Only show pending key if this key doesn't have a standalone action
+            # (e.g., show 'g' or 'z' but not 'j' or 'k')
+            if not has_standalone_action:
+                self._show_pending_key(first_key)
+    
+    def _show_pending_key(self, key):
+        """Show pending key press in status bar (like Vim's operator pending)"""
+        self.number_prefix_var.set(key)
+        # No timeout - stays until second key is pressed or Escape is pressed (like Vim)
+    
+    def _clear_pending_key(self):
+        """Clear pending key display"""
+        # Only clear if it's not a number (number prefix has its own clearing logic)
+        if not self.number_prefix:
+            self.number_prefix_var.set("")
     
     def _jump_to_first_result(self):
-        """Jump to the first result on the current page"""
+        """Jump to the first result (or nth result if number prefix given, like Vim's gg)"""
         # Don't navigate if app window doesn't have focus
         if not self._is_app_window_focused():
             return
@@ -2250,14 +2372,26 @@ class RapidMomentNavigator:
             self.debug_print("No result items available")
             return
         
-        # Jump to first result (index 0)
-        self.debug_print("Jumping to first result")
-        self._select_result(0)
-        # Scroll all the way to the top
-        self.results_canvas.yview_moveto(0)
+        # Get count from number prefix (default 1 for first result)
+        count = self._get_count()
+        
+        if count == 1:
+            # No number prefix, jump to first result (index 0)
+            self.debug_print("Jumping to first result")
+            self._select_result(0)
+            # Scroll all the way to the top
+            self.results_canvas.yview_moveto(0)
+        else:
+            # Number prefix given (e.g., 50gg), jump to that result number (1-indexed)
+            # Convert to 0-indexed and clamp to valid range
+            target_index = min(max(count - 1, 0), len(self.result_items) - 1)
+            self.debug_print(f"Jumping to result #{count} (index {target_index})")
+            self._select_result(target_index)
+            # Scroll to make the result visible (centered if possible)
+            self._scroll_to_show_result(target_index)
     
     def _jump_to_last_result(self):
-        """Jump to the last result on the current page"""
+        """Jump to the last result (or nth result if number prefix given, like Vim's G)"""
         # Don't navigate if app window doesn't have focus
         if not self._is_app_window_focused():
             return
@@ -2272,12 +2406,25 @@ class RapidMomentNavigator:
             self.debug_print("No result items available")
             return
         
-        # Jump to last result
-        last_index = len(self.result_items) - 1
-        self.debug_print(f"Jumping to last result (index {last_index})")
-        self._select_result(last_index)
-        # Scroll all the way to the bottom
-        self.results_canvas.yview_moveto(1.0)
+        # Get count from number prefix (default 0 means last result)
+        count = int(self.number_prefix) if self.number_prefix else 0
+        self._clear_number_prefix()
+        
+        if count == 0:
+            # No number prefix, jump to last result
+            last_index = len(self.result_items) - 1
+            self.debug_print(f"Jumping to last result (index {last_index})")
+            self._select_result(last_index)
+            # Scroll all the way to the bottom
+            self.results_canvas.yview_moveto(1.0)
+        else:
+            # Number prefix given (e.g., 50G), jump to that result number (1-indexed)
+            # Convert to 0-indexed and clamp to valid range
+            target_index = min(max(count - 1, 0), len(self.result_items) - 1)
+            self.debug_print(f"Jumping to result #{count} (index {target_index})")
+            self._select_result(target_index)
+            # Scroll to make the result visible (centered if possible)
+            self._scroll_to_show_result(target_index)
     
     def _activate_selected_result(self):
         """Activate the currently selected result (simulate clicking timecode)"""
@@ -2413,7 +2560,7 @@ class RapidMomentNavigator:
             return None
     
     def _scroll_half_page_down(self):
-        """Scroll down half a page in the results canvas (Vim-style)"""
+        """Scroll down half a page in the results canvas (Vim-style, with optional count)"""
         # Don't scroll if app window doesn't have focus
         if not self._is_app_window_focused():
             return
@@ -2421,15 +2568,18 @@ class RapidMomentNavigator:
         if not self.result_items:
             return
         
+        # Get count from number prefix (default 1)
+        count = self._get_count()
+        
         try:
             # Get the current visual position of the selection (e.g., 3rd visible item)
             visual_position = self._get_selected_visible_position()
             
             # Calculate how many results to move based on currently visible results
             visible_count = self._get_visible_results_count()
-            results_per_half_page = max(1, visible_count // 2)
+            results_per_half_page = max(1, visible_count // 2) * count  # Multiply by count
             
-            # Move selection down by half a page of results
+            # Move selection down by (half page * count) results
             if self.selected_result_index is None:
                 # No selection, start at first result
                 self._select_result(0)
@@ -2448,7 +2598,7 @@ class RapidMomentNavigator:
             self.debug_print(f"Error scrolling down: {e}")
     
     def _scroll_half_page_up(self):
-        """Scroll up half a page in the results canvas (Vim-style)"""
+        """Scroll up half a page in the results canvas (Vim-style, with optional count)"""
         # Don't scroll if app window doesn't have focus
         if not self._is_app_window_focused():
             return
@@ -2456,15 +2606,18 @@ class RapidMomentNavigator:
         if not self.result_items:
             return
         
+        # Get count from number prefix (default 1)
+        count = self._get_count()
+        
         try:
             # Get the current visual position of the selection (e.g., 3rd visible item)
             visual_position = self._get_selected_visible_position()
             
             # Calculate how many results to move based on currently visible results
             visible_count = self._get_visible_results_count()
-            results_per_half_page = max(1, visible_count // 2)
+            results_per_half_page = max(1, visible_count // 2) * count  # Multiply by count
             
-            # Move selection up by half a page of results
+            # Move selection up by (half page * count) results
             if self.selected_result_index is None:
                 # No selection, start at first result
                 self._select_result(0)
@@ -2524,6 +2677,42 @@ class RapidMomentNavigator:
             self.debug_print(f"Scrolled to maintain visual position {target_visible_position}")
         except Exception as e:
             self.debug_print(f"Error in _scroll_to_visual_position: {e}")
+    
+    def _scroll_to_show_result(self, result_index):
+        """Scroll canvas to show a specific result, centered if possible"""
+        if result_index is None or not self.result_items or result_index >= len(self.result_items):
+            return
+        
+        try:
+            target_frame = self.result_items[result_index]['frame']
+            
+            # Get canvas dimensions
+            canvas_height = self.results_canvas.winfo_height()
+            
+            # Get scroll region
+            scroll_region = self.results_canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Get the target frame's position
+            frame_y = target_frame.winfo_y()
+            frame_height = target_frame.winfo_height()
+            
+            # Try to center the result in the viewport
+            # Calculate where the top of the viewport should be to center the result
+            desired_viewport_top = frame_y - (canvas_height / 2) + (frame_height / 2)
+            
+            # Convert to scroll fraction
+            new_scroll_pos = desired_viewport_top / total_height
+            
+            # Clamp to valid range [0, 1]
+            new_scroll_pos = max(0.0, min(1.0, new_scroll_pos))
+            
+            self.results_canvas.yview_moveto(new_scroll_pos)
+            self.debug_print(f"Scrolled to show result {result_index} (centered)")
+        except Exception as e:
+            self.debug_print(f"Error in _scroll_to_show_result: {e}")
     
     def _scroll_to_keep_selection_visible(self):
         """Scroll canvas to keep selected result visible at its current relative position (Vim-style)"""
@@ -2681,12 +2870,26 @@ class RapidMomentNavigator:
         self.debug_print("Focused search bar")
     
     def _escape_search_bar(self):
-        """Unfocus/escape the search bar"""
+        """Unfocus/escape the search bar (or cancel number prefix/pending key if active)"""
         # Don't unfocus if app window doesn't have focus
         if not self._is_app_window_focused():
             return
         
-        # Remove focus from search entry by focusing on the main frame
+        # Priority 1: If number prefix is active, clear it
+        if self.number_prefix:
+            self.debug_print("Clearing number prefix")
+            self._clear_number_prefix()
+            return
+        
+        # Priority 2: If pending two-letter sequence key is active, clear it
+        if self.number_prefix_var.get():  # Pending key is shown in same place as number
+            self.debug_print("Clearing pending key")
+            self._clear_pending_key()
+            # Also clear any stored key press times
+            self.last_key_press_times.clear()
+            return
+        
+        # Priority 3: Remove focus from search entry by focusing on the main frame
         self.main_frame.focus_set()
         self.debug_print("Unfocused search bar")
         
@@ -2726,6 +2929,46 @@ class RapidMomentNavigator:
         # Clear the tracking set
         self.bound_shortcut_keys.clear()
     
+    def _handle_number_key(self, digit):
+        """Handle digit key press for Vim-style number prefix"""
+        if not self._is_app_window_focused():
+            return
+        
+        # Don't capture numbers if search bar has focus
+        if self.search_entry == self.root.focus_get():
+            return
+        
+        # Add digit to prefix
+        self.number_prefix += str(digit)
+        self._update_status_bar()
+        
+        # No timeout - stays until used or Escape is pressed (like Vim)
+    
+    def _clear_number_prefix(self):
+        """Clear the number prefix"""
+        self.number_prefix = ""
+        self._update_status_bar()
+    
+    def _update_status_bar(self):
+        """Update the number prefix display in the status bar"""
+        # Simply update the number prefix label
+        if self.number_prefix:
+            self.number_prefix_var.set(self.number_prefix)
+        else:
+            self.number_prefix_var.set("")
+    
+    def _get_count(self):
+        """Get the current count from number prefix, default to 1"""
+        if self.number_prefix:
+            try:
+                count = int(self.number_prefix)
+                self._clear_number_prefix()
+                return count
+            except ValueError:
+                self._clear_number_prefix()
+                return 1
+        return 1
+    
     def _setup_keyboard_shortcuts(self):
         """Bind keyboard shortcuts from preferences to their actions"""
         # First unbind any existing shortcuts
@@ -2752,6 +2995,8 @@ class RapidMomentNavigator:
             "result_previous": self._navigate_result_previous,
             "result_first": self._jump_to_first_result,
             "result_last": self._jump_to_last_result,
+            "increase_items_per_page": self._increase_items_per_page,
+            "decrease_items_per_page": self._decrease_items_per_page,
             "result_activate": self._activate_selected_result,
             "result_import_media": self._import_media_for_selected_result,
             "result_import_clip": self._import_clip_for_selected_result,
@@ -2773,6 +3018,7 @@ class RapidMomentNavigator:
         
         # Track two-letter sequences (both same-letter like 'gg' and different-letter like 'zt')
         two_letter_sequences = {}  # Maps first letter to dict of {second_letter: (handler, action_id)}
+        single_letter_actions = set()  # Track which letters have standalone actions
         
         # Bind each shortcut
         for action_id, handler in action_handlers.items():
@@ -2799,16 +3045,25 @@ class RapidMomentNavigator:
                         # Single character keys without angle brackets
                         elif not key.startswith('<') and len(key) == 1:
                             bind_key = f"<KeyPress-{key}>"
+                            # Track that this letter has a standalone action
+                            single_letter_actions.add(key)
                             # Use bind_all for single character keys to catch them globally
-                            self.root.bind_all(bind_key, lambda e, h=handler: h())
+                            # Pass event to handler in case it needs to check modifier state
+                            self.root.bind_all(bind_key, lambda e, h=handler: h(e) if action_id in ["increase_items_per_page", "decrease_items_per_page"] else h())
                             self.bound_shortcut_keys.add(bind_key)
                             self.debug_print(f"Bound (globally) {bind_key} (from {key}) to {action_id}")
                         
                         # Special keys with angle brackets (like <Control-F>, <Home>, etc.)
                         else:
                             bind_key = key
+                            # Special handling for +/- keys (need event for modifier checking)
+                            if action_id in ["increase_items_per_page", "decrease_items_per_page"]:
+                                # Use bind_all and pass event to handler
+                                self.root.bind_all(bind_key, lambda e, h=handler: h(e))
+                                self.bound_shortcut_keys.add(bind_key)
+                                self.debug_print(f"Bound (globally) {bind_key} to {action_id} (with event)")
                             # Check if this is a modifier key combo that might be intercepted
-                            if "Control" in bind_key or "Alt" in bind_key or "Shift" in bind_key:
+                            elif "Control" in bind_key or "Alt" in bind_key or "Shift" in bind_key:
                                 # Use bind_all for modifier combos to override widget-specific bindings
                                 # Track last call time to prevent duplicate calls from case variants
                                 def make_handler(h, aid):
@@ -2852,11 +3107,13 @@ class RapidMomentNavigator:
         # Now bind all the first keys for two-letter sequences
         for first_key, second_key_map in two_letter_sequences.items():
             bind_key = f"<KeyPress-{first_key}>"
+            # Check if this key has a standalone action
+            has_standalone = first_key in single_letter_actions
             # Bind the key to record it as a potential first key
-            self.root.bind_all(bind_key, lambda e, fk=first_key, skm=second_key_map: 
-                self._handle_two_letter_sequence(fk, skm))
+            self.root.bind_all(bind_key, lambda e, fk=first_key, skm=second_key_map, standalone=has_standalone: 
+                self._handle_two_letter_sequence(fk, skm, standalone), add="+")
             self.bound_shortcut_keys.add(bind_key)
-            self.debug_print(f"Bound (globally) {bind_key} for two-letter sequences starting with '{first_key}'")
+            self.debug_print(f"Bound (globally) {bind_key} for two-letter sequences starting with '{first_key}' (standalone={has_standalone})")
             
             # Also bind handlers for each possible second key to complete the sequence
             for second_key, (handler, action_id) in second_key_map.items():
@@ -2868,16 +3125,16 @@ class RapidMomentNavigator:
                 # Bind to check if this completes a sequence
                 def make_sequence_completer(fk, sk, h, aid):
                     def completer(event):
-                        # Check if the first key was recently pressed
-                        import time
-                        current_time = time.time() * 1000
+                        # Check if the first key was pressed (no timeout check - like Vim's notimeout)
                         last_press_info = self.last_key_press_times.get(fk, None)
                         
-                        if last_press_info and current_time - last_press_info['time'] < self.double_tap_timeout:
+                        if last_press_info:
                             # Complete the sequence
                             self.debug_print(f"Two-letter sequence '{fk}{sk}' detected - {aid}")
                             h()
                             self.last_key_press_times[fk] = None
+                            # Clear the pending key display
+                            self._clear_pending_key()
                             return "break"  # Prevent the single-key action from also firing
                         # If not completing a sequence, let the key work normally
                     return completer
@@ -2885,6 +3142,13 @@ class RapidMomentNavigator:
                 self.root.bind_all(second_bind_key, make_sequence_completer(first_key, second_key, handler, action_id), add="+")
                 self.bound_shortcut_keys.add(second_bind_key)
                 self.debug_print(f"Bound (globally) {second_bind_key} to complete sequence '{first_key}{second_key}'")
+        
+        # Bind digit keys (0-9) for number prefix
+        for digit in range(10):
+            bind_key = f"<KeyPress-{digit}>"
+            self.root.bind_all(bind_key, lambda e, d=digit: self._handle_number_key(d))
+            self.bound_shortcut_keys.add(bind_key)
+            self.debug_print(f"Bound (globally) {bind_key} for number prefix")
     
     def _display_main_current_page(self):
         """Display the current page of results in main navigator"""
