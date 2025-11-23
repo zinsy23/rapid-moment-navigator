@@ -3482,33 +3482,41 @@ class RapidMomentNavigator:
             self.debug_print("No result selected, auto-selecting first result")
             self._select_result(0)
     
-    def _show_fuzzy_search(self):
-        """Show fuzzy search overlay near the show dropdown"""
+    def _show_dropdown_fuzzy_search(self, dropdown_widget, var_to_set, on_select_callback=None, overlay_height=300):
+        """
+        Generic fuzzy search overlay for any dropdown.
+        
+        Args:
+            dropdown_widget: The combobox widget to search
+            var_to_set: The StringVar to update when selection is made
+            on_select_callback: Optional callback to run after selection (receives None as event)
+            overlay_height: Height of the overlay window (default 300)
+        """
         # Don't show if app window doesn't have focus
         if not self._is_app_window_focused():
             self.debug_print("App window doesn't have focus, ignoring fuzzy search")
             return
         
-        # Get available shows
-        available_shows = list(self.show_dropdown['values'])
-        if not available_shows:
-            messagebox.showinfo("No Shows", "No shows available to search.")
+        # Get available options from dropdown
+        available_options = list(dropdown_widget['values'])
+        if not available_options:
+            messagebox.showinfo("No Options", "No options available to search.")
             return
         
         # Create a borderless toplevel overlay
         fuzzy_overlay = tk.Toplevel(self.root)
-        fuzzy_overlay.overrideredirect(True)  # Remove window decorations
+        fuzzy_overlay.overrideredirect(True)
         fuzzy_overlay.transient(self.root)
         
         # Store reference for focus checking
         self.fuzzy_search_overlay = fuzzy_overlay
         
-        # Position near the show dropdown
-        dropdown_x = self.show_dropdown.winfo_rootx()
-        dropdown_y = self.show_dropdown.winfo_rooty() + self.show_dropdown.winfo_height()
-        dropdown_width = max(self.show_dropdown.winfo_width(), 400)
+        # Position near the dropdown
+        dropdown_x = dropdown_widget.winfo_rootx()
+        dropdown_y = dropdown_widget.winfo_rooty() + dropdown_widget.winfo_height()
+        dropdown_width = max(dropdown_widget.winfo_width(), 300)
         
-        fuzzy_overlay.geometry(f"{dropdown_width}x300+{dropdown_x}+{dropdown_y}")
+        fuzzy_overlay.geometry(f"{dropdown_width}x{overlay_height}+{dropdown_x}+{dropdown_y}")
         
         # Main frame with border
         main_frame = ttk.Frame(fuzzy_overlay, relief="solid", borderwidth=2, padding=5)
@@ -3532,9 +3540,9 @@ class RapidMomentNavigator:
         results_listbox.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=results_listbox.yview)
         
-        # Store all shows and filtered results
-        all_shows = available_shows[:]
-        filtered_shows = [None]  # Use list to allow modification in nested function
+        # Store all options and filtered results
+        all_options = available_options[:]
+        filtered_options = [None]  # Use list to allow modification in nested function
         
         def fuzzy_match_with_score(query, text):
             """
@@ -3605,22 +3613,22 @@ class RapidMomentNavigator:
             """Update the results listbox based on search query"""
             query = search_var.get()
             
-            # Filter and score shows using fuzzy matching
+            # Filter and score options using fuzzy matching
             scored_matches = []
-            for show in all_shows:
-                matched, score = fuzzy_match_with_score(query, show)
+            for option in all_options:
+                matched, score = fuzzy_match_with_score(query, option)
                 if matched:
-                    scored_matches.append((show, score))
+                    scored_matches.append((option, score))
             
             # Sort by score (descending - higher score first)
             scored_matches.sort(key=lambda x: x[1], reverse=True)
-            matches = [show for show, score in scored_matches]
-            filtered_shows[0] = matches
+            matches = [option for option, score in scored_matches]
+            filtered_options[0] = matches
             
             # Update listbox
             results_listbox.delete(0, tk.END)
-            for show in matches:
-                results_listbox.insert(tk.END, show)
+            for option in matches:
+                results_listbox.insert(tk.END, option)
             
             # Select first item if available
             if matches:
@@ -3628,16 +3636,19 @@ class RapidMomentNavigator:
                 results_listbox.selection_set(0)
                 results_listbox.see(0)
         
-        def select_show():
-            """Select the currently highlighted show and close overlay"""
+        def select_option():
+            """Select the currently highlighted option and close overlay"""
             selection = results_listbox.curselection()
-            if selection and filtered_shows[0]:
-                selected_show = filtered_shows[0][selection[0]]
-                # Set the show in the main dropdown
-                self.show_var.set(selected_show)
+            if selection and filtered_options[0]:
+                selected_option = filtered_options[0][selection[0]]
+                # Set the variable
+                var_to_set.set(selected_option)
+                # Call optional callback
+                if on_select_callback:
+                    on_select_callback(None)
                 fuzzy_overlay.destroy()
                 self.fuzzy_search_overlay = None  # Clear reference
-                # Ensure main window has focus first, then focus search entry and select all
+                # Return focus to main window and search entry
                 self.root.focus_force()
                 self.root.after(50, lambda: self.search_entry.focus_set())
                 self.root.after(100, lambda: self.search_entry.select_range(0, tk.END))
@@ -3718,7 +3729,7 @@ class RapidMomentNavigator:
         
         # Bind events
         search_var.trace_add("write", lambda *args: update_results())
-        search_entry.bind("<Return>", lambda e: select_show())
+        search_entry.bind("<Return>", lambda e: select_option())
         search_entry.bind("<Escape>", lambda e: close_overlay())
         search_entry.bind("<Control-c>", lambda e: close_overlay())
         
@@ -3733,181 +3744,30 @@ class RapidMomentNavigator:
         
         fuzzy_overlay.bind("<FocusOut>", on_focus_out)
         
-        # Initialize with all shows
+        # Initialize with all options
         update_results()
         
         # Focus search entry and grab focus
         fuzzy_overlay.focus_force()
         search_entry.focus_set()
     
+    def _show_fuzzy_search(self):
+        """Show fuzzy search for shows dropdown"""
+        self._show_dropdown_fuzzy_search(
+            dropdown_widget=self.show_dropdown,
+            var_to_set=self.show_var,
+            on_select_callback=None,
+            overlay_height=300
+        )
+    
     def _show_editor_fuzzy_search(self):
-        """Show fuzzy search overlay near the editor dropdown"""
-        # Don't show if app window doesn't have focus
-        if not self._is_app_window_focused():
-            self.debug_print("App window doesn't have focus, ignoring editor fuzzy search")
-            return
-        
-        # Get available editors
-        available_editors = list(self.editor_dropdown['values'])
-        if not available_editors:
-            messagebox.showinfo("No Editors", "No editors available to search.")
-            return
-        
-        # Create a borderless toplevel overlay
-        fuzzy_overlay = tk.Toplevel(self.root)
-        fuzzy_overlay.overrideredirect(True)
-        fuzzy_overlay.transient(self.root)
-        
-        # Store reference for focus checking
-        self.fuzzy_search_overlay = fuzzy_overlay
-        
-        # Position near the editor dropdown
-        dropdown_x = self.editor_dropdown.winfo_rootx()
-        dropdown_y = self.editor_dropdown.winfo_rooty() + self.editor_dropdown.winfo_height()
-        dropdown_width = max(self.editor_dropdown.winfo_width(), 300)
-        
-        fuzzy_overlay.geometry(f"{dropdown_width}x200+{dropdown_x}+{dropdown_y}")
-        
-        # Main frame with border
-        main_frame = ttk.Frame(fuzzy_overlay, relief="solid", borderwidth=2, padding=5)
-        main_frame.pack(fill="both", expand=True)
-        
-        # Search entry
-        search_var = tk.StringVar()
-        search_entry = ttk.Entry(main_frame, textvariable=search_var, font=("TkDefaultFont", 11))
-        search_entry.pack(fill="x", pady=(0, 5))
-        
-        # Results listbox
-        results_frame = ttk.Frame(main_frame)
-        results_frame.pack(fill="both", expand=True)
-        
-        scrollbar = ttk.Scrollbar(results_frame)
-        scrollbar.pack(side="right", fill="y")
-        
-        results_listbox = tk.Listbox(results_frame, yscrollcommand=scrollbar.set, 
-                                     font=("TkDefaultFont", 10), activestyle="none",
-                                     highlightthickness=0)
-        results_listbox.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=results_listbox.yview)
-        
-        # Store all editors and filtered results
-        all_editors = available_editors[:]
-        filtered_editors = [None]
-        
-        def fuzzy_match_with_score(query, text):
-            """Fuzzy match with scoring"""
-            if not query:
-                return (True, 0)
-            
-            query_lower = query.lower()
-            text_lower = text.lower()
-            query_idx = 0
-            score = 0
-            consecutive_bonus = 0
-            last_match_idx = -1
-            
-            for i, char in enumerate(text_lower):
-                if query_idx < len(query_lower) and char == query_lower[query_idx]:
-                    score += 1
-                    if last_match_idx == i - 1:
-                        consecutive_bonus += 5
-                        score += consecutive_bonus
-                    else:
-                        consecutive_bonus = 0
-                    if i == 0 or text[i-1] in (' ', '-', '_', '.', '/'):
-                        score += 10
-                    if i == 0:
-                        score += 15
-                    if query[query_idx] == text[i]:
-                        score += 2
-                    score -= i * 0.1
-                    last_match_idx = i
-                    query_idx += 1
-                    if query_idx == len(query_lower):
-                        break
-            
-            if query_idx != len(query_lower):
-                return (False, 0)
-            score += 100 / (len(text) + 1)
-            return (True, score)
-        
-        def update_results():
-            """Update results based on search query"""
-            query = search_var.get()
-            scored_matches = []
-            for editor in all_editors:
-                matched, score = fuzzy_match_with_score(query, editor)
-                if matched:
-                    scored_matches.append((editor, score))
-            scored_matches.sort(key=lambda x: x[1], reverse=True)
-            matches = [editor for editor, score in scored_matches]
-            filtered_editors[0] = matches
-            results_listbox.delete(0, tk.END)
-            for editor in matches:
-                results_listbox.insert(tk.END, editor)
-            if matches:
-                results_listbox.selection_clear(0, tk.END)
-                results_listbox.selection_set(0)
-                results_listbox.see(0)
-        
-        def select_editor():
-            """Select editor and close"""
-            selection = results_listbox.curselection()
-            if selection and filtered_editors[0]:
-                selected_editor = filtered_editors[0][selection[0]]
-                self.editor_var.set(selected_editor)
-                self._on_editor_changed(None)
-                fuzzy_overlay.destroy()
-                self.fuzzy_search_overlay = None  # Clear reference
-                self.root.focus_force()
-                self.root.after(50, lambda: self.search_entry.focus_set())
-        
-        def close_overlay():
-            """Close without selecting"""
-            fuzzy_overlay.destroy()
-            self.fuzzy_search_overlay = None  # Clear reference
-            self.root.focus_force()
-        
-        def navigate_up():
-            selection = results_listbox.curselection()
-            if selection:
-                current = selection[0]
-                if current > 0:
-                    results_listbox.selection_clear(0, tk.END)
-                    results_listbox.selection_set(current - 1)
-                    results_listbox.see(current - 1)
-        
-        def navigate_down():
-            selection = results_listbox.curselection()
-            if selection:
-                current = selection[0]
-                if current < results_listbox.size() - 1:
-                    results_listbox.selection_clear(0, tk.END)
-                    results_listbox.selection_set(current + 1)
-                    results_listbox.see(current + 1)
-        
-        # Bind Ctrl+Up/Down for navigation
-        search_entry.bind("<Control-Up>", lambda e: navigate_up())
-        search_entry.bind("<Control-Down>", lambda e: navigate_down())
-        
-        # Bind events
-        search_var.trace_add("write", lambda *args: update_results())
-        search_entry.bind("<Return>", lambda e: select_editor())
-        search_entry.bind("<Escape>", lambda e: close_overlay())
-        search_entry.bind("<Control-c>", lambda e: close_overlay())
-        search_entry.bind("<FocusIn>", lambda e: self.root.after(50, lambda: self._select_all_text(search_entry)))
-        
-        # Close overlay when clicking outside (focus lost)
-        def on_focus_out(event):
-            # Small delay to allow click events to process first
-            fuzzy_overlay.after(100, lambda: close_overlay() if fuzzy_overlay.winfo_exists() else None)
-        
-        fuzzy_overlay.bind("<FocusOut>", on_focus_out)
-        
-        # Initialize
-        update_results()
-        fuzzy_overlay.focus_force()
-        search_entry.focus_set()
+        """Show fuzzy search for editor dropdown"""
+        self._show_dropdown_fuzzy_search(
+            dropdown_widget=self.editor_dropdown,
+            var_to_set=self.editor_var,
+            on_select_callback=self._on_editor_changed,
+            overlay_height=200
+        )
     
     def _unbind_keyboard_shortcuts(self):
         """Unbind all keyboard shortcuts to prepare for rebinding"""
