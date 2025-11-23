@@ -111,6 +111,26 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "category": "Results Navigation",
         "keys": ["H"]
     },
+    "search_in_results": {
+        "description": "Search within current results (forward)",
+        "category": "Results Navigation",
+        "keys": ["<slash>"]
+    },
+    "search_in_results_reverse": {
+        "description": "Search within current results (backward)",
+        "category": "Results Navigation",
+        "keys": ["<question>"]
+    },
+    "next_search_match": {
+        "description": "Go to next search match",
+        "category": "Results Navigation",
+        "keys": ["n"]
+    },
+    "previous_search_match": {
+        "description": "Go to previous search match",
+        "category": "Results Navigation",
+        "keys": ["N"]
+    },
     "result_activate": {
         "description": "Activate selected result (play at timecode)",
         "category": "Results Actions",
@@ -527,6 +547,13 @@ class RapidMomentNavigator:
         self.number_prefix_timeout = None  # Timer to clear number after inactivity
         self.number_prefix_label = None  # Visual indicator for number prefix
         
+        # Search within results tracking
+        self.search_mode_active = False  # Whether / search is active
+        self.search_matches = []  # List of indices that match search
+        self.current_search_match_index = None  # Current position in search_matches
+        self.search_query = ""  # Current search query
+        self.search_direction = 1  # 1 for forward (/), -1 for backward (?)
+        
         # Setup exception handling for Tkinter
         self.setup_exception_handler()
         
@@ -542,9 +569,10 @@ class RapidMomentNavigator:
         self.main_frame = ttk.Frame(root)
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
         
-        # Setup styles for result selection
+        # Setup styles for result selection and search highlighting
         style = ttk.Style()
         style.configure('Selected.TFrame', background='#cce5ff', relief='solid', borderwidth=2)
+        style.configure('SearchHighlight.TFrame', background='#ffffcc', relief='solid', borderwidth=1)
         
         # Create directory management frame
         self.dir_frame = ttk.LabelFrame(self.main_frame, text="Media Directories")
@@ -2047,9 +2075,19 @@ class RapidMomentNavigator:
             )
             timecode_label.pack(anchor="w")
             
-            # Add text label
-            subtitle_label = ttk.Label(content_frame, text=result['clean_text'], wraplength=700)
-            subtitle_label.pack(anchor="w", padx=10)
+            # Add text widget (allows highlighting of search matches)
+            text_widget = tk.Text(content_frame, height=2, wrap="word", relief="flat", 
+                                 background=self.root.cget('bg'), font=("TkDefaultFont", 10),
+                                 cursor="arrow", state="disabled", highlightthickness=0)
+            text_widget.pack(anchor="w", padx=10, fill="x")
+            
+            # Insert text and make read-only
+            text_widget.config(state="normal")
+            text_widget.insert("1.0", result['clean_text'])
+            text_widget.config(state="disabled")
+            
+            # Configure tag for search highlighting
+            text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
             
             # Debug output to compare text formatting
             self.debug_print(f"MAIN SEARCH - Original text: {repr(result['text'])}")
@@ -2064,7 +2102,8 @@ class RapidMomentNavigator:
                 'result_data': result,
                 'timecode_label': timecode_label,
                 'import_media_btn': import_media_btn,
-                'import_clip_btn': import_clip_btn
+                'import_clip_btn': import_clip_btn,
+                'text_widget': text_widget  # Store text widget for search highlighting
             })
             self.debug_print(f"Tracked result {len(self.result_items)} for keyboard navigation")
             
@@ -2213,6 +2252,332 @@ class RapidMomentNavigator:
             # Auto-select first result on new page
             if self.result_items:
                 self._select_result(0)
+    
+    def _search_in_results(self, reverse=False):
+        """Start search mode to search within current results (Vim-like / or ? search)"""
+        # Don't start search if app window doesn't have focus
+        if not self._is_app_window_focused():
+            self.debug_print("App window doesn't have focus, ignoring search")
+            return
+        
+        # Don't start if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            self.debug_print("Search bar has focus, ignoring / search")
+            return
+        
+        # Only allow if we have results and one is selected
+        if not self.result_items:
+            self.debug_print("No results available for search")
+            return
+        
+        if self.selected_result_index is None:
+            self.debug_print("No result selected, cannot start search")
+            return
+        
+        # Don't start if already in search mode
+        if self.search_mode_active:
+            self.debug_print("Already in search mode")
+            return
+        
+        self.debug_print("Starting search in results mode")
+        self.search_mode_active = True
+        self.search_direction = -1 if reverse else 1  # Track search direction for n/N
+        
+        # Create mini search overlay
+        search_overlay = tk.Toplevel(self.root)
+        search_overlay.overrideredirect(True)
+        search_overlay.transient(self.root)
+        
+        # Update to get accurate dimensions
+        self.root.update_idletasks()
+        
+        # Position at bottom of results canvas
+        try:
+            canvas_x = self.results_canvas.winfo_rootx()
+            canvas_y = self.results_canvas.winfo_rooty() + self.results_canvas.winfo_height() - 40
+            canvas_width = max(self.results_canvas.winfo_width(), 400)
+        except:
+            # Fallback positioning
+            canvas_x = self.root.winfo_rootx() + 50
+            canvas_y = self.root.winfo_rooty() + self.root.winfo_height() - 100
+            canvas_width = self.root.winfo_width() - 100
+        
+        search_overlay.geometry(f"{canvas_width}x40+{canvas_x}+{canvas_y}")
+        self.debug_print(f"Created search overlay at {canvas_x},{canvas_y} with width {canvas_width}")
+        
+        # Frame with border
+        frame = ttk.Frame(search_overlay, relief="solid", borderwidth=2, padding=5)
+        frame.pack(fill="both", expand=True)
+        
+        # Search label and entry (show / or ? based on direction)
+        search_char = "?" if reverse else "/"
+        ttk.Label(frame, text=search_char).pack(side="left", padx=(0, 5))
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(frame, textvariable=search_var, font=("TkDefaultFont", 10))
+        search_entry.pack(side="left", fill="x", expand=True)
+        
+        def update_search():
+            """Update search matches as user types"""
+            query = search_var.get().lower()
+            self.search_query = query
+            self.search_matches = []
+            
+            if not query:
+                # Clear all highlights
+                for item in self.result_items:
+                    item['frame'].configure(style='TFrame')
+                return
+            
+            # Find matching results
+            for i, item in enumerate(self.result_items):
+                # Get the subtitle text from the result data
+                result_data = item.get('result_data')
+                text_widget = item.get('text_widget')
+                if not result_data:
+                    continue
+                
+                # Result data is a dict with 'clean_text' key
+                result_text = result_data.get('clean_text', '')
+                result_text_lower = result_text.lower()
+                
+                # Clear previous text highlights (if text widget exists)
+                if text_widget:
+                    try:
+                        text_widget.config(state="normal")
+                        text_widget.tag_remove("search_match", "1.0", "end")
+                        text_widget.config(state="disabled")
+                    except Exception as e:
+                        self.debug_print(f"Error clearing text highlights: {e}")
+                
+                if query in result_text_lower:
+                    self.search_matches.append(i)
+                    # Highlight frame
+                    item['frame'].configure(style='SearchHighlight.TFrame')
+                    
+                    # Highlight matching words in text (if text widget exists)
+                    if text_widget:
+                        try:
+                            text_widget.config(state="normal")
+                            start_pos = 0
+                            while True:
+                                # Find next occurrence of query
+                                pos = result_text_lower.find(query, start_pos)
+                                if pos == -1:
+                                    break
+                                
+                                # Calculate tkinter text indices
+                                line = result_text[:pos].count('\n') + 1
+                                col = pos - result_text[:pos].rfind('\n') - 1
+                                start_idx = f"{line}.{col}"
+                                end_idx = f"{line}.{col + len(query)}"
+                                
+                                # Apply highlight tag
+                                text_widget.tag_add("search_match", start_idx, end_idx)
+                                start_pos = pos + 1
+                            
+                            text_widget.config(state="disabled")
+                        except Exception as e:
+                            self.debug_print(f"Error highlighting text: {e}")
+                            try:
+                                text_widget.config(state="disabled")
+                            except:
+                                pass
+                else:
+                    # Remove frame highlight
+                    item['frame'].configure(style='TFrame')
+            
+            # Select first match based on search direction (wraps around)
+            if self.search_matches:
+                start_index = 0
+                if self.selected_result_index is not None:
+                    # Check if current result is a match - if so, stay on it
+                    if self.selected_result_index in self.search_matches:
+                        start_index = self.search_matches.index(self.selected_result_index)
+                    else:
+                        if reverse:
+                            # Reverse search: look for first match above current position
+                            found_above = False
+                            for i in range(len(self.search_matches) - 1, -1, -1):
+                                match_idx = self.search_matches[i]
+                                if match_idx < self.selected_result_index:
+                                    start_index = i
+                                    found_above = True
+                                    break
+                            
+                            # If no match found above, wrap to last match (which is below)
+                            if not found_above:
+                                start_index = len(self.search_matches) - 1
+                        else:
+                            # Forward search: look for first match below current position
+                            found_below = False
+                            for i, match_idx in enumerate(self.search_matches):
+                                if match_idx > self.selected_result_index:
+                                    start_index = i
+                                    found_below = True
+                                    break
+                            
+                            # If no match found below, wrap to first match (which is above)
+                            if not found_below:
+                                start_index = 0
+                
+                self.current_search_match_index = start_index
+                self._select_result(self.search_matches[start_index])
+        
+        def close_search():
+            """Close search mode"""
+            self.search_mode_active = False
+            self.search_matches = []
+            self.current_search_match_index = None
+            self.search_query = ""
+            
+            # Clear all search highlights (frame and text)
+            for item in self.result_items:
+                item['frame'].configure(style='TFrame')
+                
+                # Clear text highlights
+                text_widget = item.get('text_widget')
+                if text_widget:
+                    text_widget.config(state="normal")
+                    text_widget.tag_remove("search_match", "1.0", "end")
+                    text_widget.config(state="disabled")
+            
+            # Restore selection highlight if there was one
+            if self.selected_result_index is not None:
+                self._select_result(self.selected_result_index)
+            
+            search_overlay.destroy()
+        
+        def select_match():
+            """Select current match and close overlay (but keep search active for n/N)"""
+            self.debug_print(f"select_match called: matches={len(self.search_matches)}, index={self.current_search_match_index}")
+            
+            if self.search_matches and self.current_search_match_index is not None:
+                selected_index = self.search_matches[self.current_search_match_index]
+                self.debug_print(f"Selecting match at index {selected_index}")
+                
+                # Close the overlay but keep search state for n/N
+                search_overlay.destroy()
+                self.search_overlay = None
+                self.search_mode_active = False  # Allow / to be pressed again
+                
+                # Clear all highlights (frame and text)
+                for item in self.result_items:
+                    item['frame'].configure(style='TFrame')
+                    
+                    # Clear text highlights
+                    text_widget = item.get('text_widget')
+                    if text_widget:
+                        try:
+                            text_widget.config(state="normal")
+                            text_widget.tag_remove("search_match", "1.0", "end")
+                            text_widget.config(state="disabled")
+                        except:
+                            pass
+                
+                # Select the result
+                self._select_result(selected_index)
+                
+                # Return focus to main window
+                self.root.focus_force()
+                self.main_frame.focus_set()
+            else:
+                # No matches or no selection, just close search
+                self.debug_print("No matches to select, closing search")
+                close_search()
+        
+        # Bind events
+        search_var.trace_add("write", lambda *args: update_search())
+        search_entry.bind("<Return>", lambda e: select_match())
+        search_entry.bind("<Escape>", lambda e: close_search())
+        search_entry.bind("<Control-c>", lambda e: close_search())
+        
+        # Focus search entry
+        search_overlay.focus_force()
+        search_entry.focus_set()
+    
+    def _next_search_match(self):
+        """Go to next search match (Vim-like n) - respects search direction"""
+        if not self.search_matches:
+            return
+        
+        if self.current_search_match_index is not None:
+            # n goes in the direction of the search (forward for /, backward for ?)
+            self.current_search_match_index = (self.current_search_match_index + self.search_direction) % len(self.search_matches)
+            match_index = self.search_matches[self.current_search_match_index]
+            self._select_result(match_index)
+            self._flash_search_highlight(match_index)
+            self.debug_print(f"Next match: {self.current_search_match_index + 1}/{len(self.search_matches)}")
+    
+    def _previous_search_match(self):
+        """Go to previous search match (Vim-like N) - opposite of search direction"""
+        if not self.search_matches:
+            return
+        
+        if self.current_search_match_index is not None:
+            # N goes opposite to the search direction (backward for /, forward for ?)
+            self.current_search_match_index = (self.current_search_match_index - self.search_direction) % len(self.search_matches)
+            match_index = self.search_matches[self.current_search_match_index]
+            self._select_result(match_index)
+            self._flash_search_highlight(match_index)
+            self.debug_print(f"Previous match: {self.current_search_match_index + 1}/{len(self.search_matches)}")
+    
+    def _flash_search_highlight(self, result_index):
+        """Briefly flash the search highlight on a result"""
+        if result_index < 0 or result_index >= len(self.result_items):
+            return
+        
+        item = self.result_items[result_index]
+        text_widget = item.get('text_widget')
+        
+        if not text_widget or not self.search_query:
+            return
+        
+        # Get the result text
+        result_data = item.get('result_data')
+        if not result_data:
+            return
+        
+        result_text = result_data.get('clean_text', '')
+        result_text_lower = result_text.lower()
+        query = self.search_query.lower()
+        
+        # Highlight matching words
+        try:
+            text_widget.config(state="normal")
+            start_pos = 0
+            while True:
+                pos = result_text_lower.find(query, start_pos)
+                if pos == -1:
+                    break
+                
+                # Calculate tkinter text indices
+                line = result_text[:pos].count('\n') + 1
+                col = pos - result_text[:pos].rfind('\n') - 1
+                start_idx = f"{line}.{col}"
+                end_idx = f"{line}.{col + len(query)}"
+                
+                # Apply highlight tag
+                text_widget.tag_add("search_match", start_idx, end_idx)
+                start_pos = pos + 1
+            
+            text_widget.config(state="disabled")
+            
+            # Remove highlight after 300ms
+            def clear_flash():
+                try:
+                    text_widget.config(state="normal")
+                    text_widget.tag_remove("search_match", "1.0", "end")
+                    text_widget.config(state="disabled")
+                except:
+                    pass
+            
+            self.root.after(300, clear_flash)
+        except Exception as e:
+            self.debug_print(f"Error flashing highlight: {e}")
+            try:
+                text_widget.config(state="disabled")
+            except:
+                pass
     
     # ===== Result Navigation Methods =====
     
@@ -3328,6 +3693,10 @@ class RapidMomentNavigator:
             "decrease_items_per_page": self._decrease_items_per_page,
             "page_next": self._go_to_next_page,
             "page_previous": self._go_to_previous_page,
+            "search_in_results": self._search_in_results,
+            "search_in_results_reverse": lambda: self._search_in_results(reverse=True),
+            "next_search_match": self._next_search_match,
+            "previous_search_match": self._previous_search_match,
             "result_activate": self._activate_selected_result,
             "result_import_media": self._import_media_for_selected_result,
             "result_import_clip": self._import_clip_for_selected_result,
@@ -3608,9 +3977,19 @@ class RapidMomentNavigator:
             )
             timecode_label.pack(anchor="w")
             
-            # Add text label
-            subtitle_label = ttk.Label(content_frame, text=result['clean_text'], wraplength=700)
-            subtitle_label.pack(anchor="w", padx=10)
+            # Add text widget (allows highlighting of search matches)
+            text_widget = tk.Text(content_frame, height=2, wrap="word", relief="flat", 
+                                 background=self.root.cget('bg'), font=("TkDefaultFont", 10),
+                                 cursor="arrow", state="disabled", highlightthickness=0)
+            text_widget.pack(anchor="w", padx=10, fill="x")
+            
+            # Insert text and make read-only
+            text_widget.config(state="normal")
+            text_widget.insert("1.0", result['clean_text'])
+            text_widget.config(state="disabled")
+            
+            # Configure tag for search highlighting
+            text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
             
             # Add some space after each result
             ttk.Separator(self.results_container, orient="horizontal").pack(fill="x", pady=5)
@@ -3621,7 +4000,8 @@ class RapidMomentNavigator:
                 'result_data': result,
                 'timecode_label': timecode_label,
                 'import_media_btn': import_media_btn,
-                'import_clip_btn': import_clip_btn
+                'import_clip_btn': import_clip_btn,
+                'text_widget': text_widget  # Store text widget for search highlighting
             })
             self.debug_print(f"Tracked result {len(self.result_items)} for keyboard navigation")
         
