@@ -2262,9 +2262,10 @@ class RapidMomentNavigator:
             self.debug_print("App window doesn't have focus, ignoring search")
             return
         
-        # Don't start if search bar has focus (user is typing)
-        if self.root.focus_get() == self.search_entry:
-            self.debug_print("Search bar has focus, ignoring / search")
+        # Don't start if ANY Entry widget has focus (user is typing)
+        focused_widget = self.root.focus_get()
+        if focused_widget and isinstance(focused_widget, (ttk.Entry, tk.Entry)):
+            self.debug_print(f"Entry widget has focus ({focused_widget}), ignoring / search")
             return
         
         # Only allow if we have results and one is selected
@@ -2289,34 +2290,41 @@ class RapidMomentNavigator:
         search_overlay = tk.Toplevel(self.root)
         search_overlay.overrideredirect(True)
         search_overlay.transient(self.root)
+        search_overlay.attributes('-topmost', True)  # Always on top
         
         # Update to get accurate dimensions
         self.root.update_idletasks()
+        search_overlay.update_idletasks()
         
         # Position at bottom of results canvas
         try:
             canvas_x = self.results_canvas.winfo_rootx()
-            canvas_y = self.results_canvas.winfo_rooty() + self.results_canvas.winfo_height() - 40
+            canvas_y = self.results_canvas.winfo_rooty() + self.results_canvas.winfo_height() - 50
             canvas_width = max(self.results_canvas.winfo_width(), 400)
-        except:
-            # Fallback positioning
+        except Exception as e:
+            self.debug_print(f"Error getting canvas position: {e}")
+            # Fallback positioning - use main window
             canvas_x = self.root.winfo_rootx() + 50
             canvas_y = self.root.winfo_rooty() + self.root.winfo_height() - 100
             canvas_width = self.root.winfo_width() - 100
         
-        search_overlay.geometry(f"{canvas_width}x40+{canvas_x}+{canvas_y}")
+        # Ensure minimum width
+        canvas_width = max(canvas_width, 400)
+        
+        search_overlay.geometry(f"{canvas_width}x50+{canvas_x}+{canvas_y}")
         self.debug_print(f"Created search overlay at {canvas_x},{canvas_y} with width {canvas_width}")
         
-        # Frame with border
-        frame = ttk.Frame(search_overlay, relief="solid", borderwidth=2, padding=5)
+        # Frame with border and background
+        frame = tk.Frame(search_overlay, relief="solid", borderwidth=2, bg="white", padx=10, pady=8)
         frame.pack(fill="both", expand=True)
         
         # Search label and entry (show / or ? based on direction)
         search_char = "?" if reverse else "/"
-        ttk.Label(frame, text=search_char).pack(side="left", padx=(0, 5))
+        search_label = tk.Label(frame, text=search_char, font=("TkDefaultFont", 12, "bold"), bg="white")
+        search_label.pack(side="left", padx=(0, 8))
         search_var = tk.StringVar()
-        search_entry = ttk.Entry(frame, textvariable=search_var, font=("TkDefaultFont", 10))
-        search_entry.pack(side="left", fill="x", expand=True)
+        search_entry = ttk.Entry(frame, textvariable=search_var, font=("TkDefaultFont", 11))
+        search_entry.pack(side="left", fill="both", expand=True)
         
         def update_search():
             """Update search matches as user types"""
