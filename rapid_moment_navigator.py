@@ -417,6 +417,9 @@ class ClickableImport(Label):
             self.tooltip_timer = None
 
 class RapidMomentNavigator:
+    # Pagination options
+    ITEMS_PER_PAGE_OPTIONS = ["25", "50", "100", "200", "500"]
+    
     # Editor registry - makes it easy to add new editors
     EDITOR_REGISTRY = {
         "DaVinci Resolve": {
@@ -659,7 +662,7 @@ class RapidMomentNavigator:
         main_items_combo = ttk.Combobox(
             pagination_frame,
             textvariable=self.main_items_per_page_var,
-            values=["25", "50", "100", "200", "500"],
+            values=self.ITEMS_PER_PAGE_OPTIONS,
             state="readonly",
             width=8
         )
@@ -2088,18 +2091,17 @@ class RapidMomentNavigator:
                 self.debug_print("Alt key held, ignoring")
                 return
         
-        # Get available options
-        options = ["25", "50", "100", "200", "500"]
+        # Get current value
         current = self.main_items_per_page_var.get()
         
         try:
-            current_index = options.index(current)
+            current_index = self.ITEMS_PER_PAGE_OPTIONS.index(current)
             # Move to next option (clamped to last)
-            next_index = min(current_index + 1, len(options) - 1)
+            next_index = min(current_index + 1, len(self.ITEMS_PER_PAGE_OPTIONS) - 1)
             if next_index != current_index:
-                self.main_items_per_page_var.set(options[next_index])
+                self.main_items_per_page_var.set(self.ITEMS_PER_PAGE_OPTIONS[next_index])
                 self._on_main_items_per_page_changed()
-                self.debug_print(f"Increased items per page to {options[next_index]}")
+                self.debug_print(f"Increased items per page to {self.ITEMS_PER_PAGE_OPTIONS[next_index]}")
         except (ValueError, IndexError) as e:
             self.debug_print(f"Error increasing items per page: {e}")
     
@@ -2128,18 +2130,17 @@ class RapidMomentNavigator:
                 self.debug_print("Shift key held, ignoring")
                 return
         
-        # Get available options
-        options = ["25", "50", "100", "200", "500"]
+        # Get current value
         current = self.main_items_per_page_var.get()
         
         try:
-            current_index = options.index(current)
+            current_index = self.ITEMS_PER_PAGE_OPTIONS.index(current)
             # Move to previous option (clamped to first)
             prev_index = max(current_index - 1, 0)
             if prev_index != current_index:
-                self.main_items_per_page_var.set(options[prev_index])
+                self.main_items_per_page_var.set(self.ITEMS_PER_PAGE_OPTIONS[prev_index])
                 self._on_main_items_per_page_changed()
-                self.debug_print(f"Decreased items per page to {options[prev_index]}")
+                self.debug_print(f"Decreased items per page to {self.ITEMS_PER_PAGE_OPTIONS[prev_index]}")
         except (ValueError, IndexError) as e:
             self.debug_print(f"Error decreasing items per page: {e}")
     
