@@ -2292,22 +2292,42 @@ class RapidMomentNavigator:
         search_overlay.transient(self.root)
         search_overlay.attributes('-topmost', True)
         
-        # Update to get accurate dimensions
+        # Force multiple updates to ensure accurate positioning info (especially on Windows)
         self.root.update_idletasks()
+        self.root.update()
         search_overlay.update_idletasks()
         
         # Position at bottom of results canvas
         try:
             canvas_x = self.results_canvas.winfo_rootx()
-            canvas_y = self.results_canvas.winfo_rooty() + self.results_canvas.winfo_height() - 50
-            canvas_width = max(self.results_canvas.winfo_width(), 400)
-            self.debug_print(f"Canvas position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
+            canvas_y = self.results_canvas.winfo_rooty()
+            canvas_height = self.results_canvas.winfo_height()
+            canvas_width = self.results_canvas.winfo_width()
+            
+            self.debug_print(f"Canvas raw values: rootx={canvas_x}, rooty={canvas_y}, height={canvas_height}, width={canvas_width}")
+            
+            # Validate that we got real coordinates (not 0,0 or 1,1)
+            if canvas_x <= 1 or canvas_y <= 1:
+                raise ValueError("Invalid canvas coordinates, using fallback")
+            
+            # Calculate final position
+            canvas_y = canvas_y + canvas_height - 50
+            canvas_width = max(canvas_width, 400)
+            
+            self.debug_print(f"Canvas calculated position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
         except Exception as e:
             self.debug_print(f"Error getting canvas position: {e}")
             # Fallback positioning - use main window
-            canvas_x = self.root.winfo_rootx() + 50
-            canvas_y = self.root.winfo_rooty() + self.root.winfo_height() - 100
-            canvas_width = self.root.winfo_width() - 100
+            root_x = self.root.winfo_rootx()
+            root_y = self.root.winfo_rooty()
+            root_height = self.root.winfo_height()
+            root_width = self.root.winfo_width()
+            
+            self.debug_print(f"Root window values: rootx={root_x}, rooty={root_y}, height={root_height}, width={root_width}")
+            
+            canvas_x = root_x + 50
+            canvas_y = root_y + root_height - 100
+            canvas_width = root_width - 100
             self.debug_print(f"Using fallback position: x={canvas_x}, y={canvas_y}, width={canvas_width}")
         
         # Ensure minimum width
