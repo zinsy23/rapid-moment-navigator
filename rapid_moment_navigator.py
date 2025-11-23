@@ -101,6 +101,16 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "category": "Results Navigation",
         "keys": ["<minus>"]
     },
+    "page_next": {
+        "description": "Go to next page",
+        "category": "Results Navigation",
+        "keys": ["L"]
+    },
+    "page_previous": {
+        "description": "Go to previous page",
+        "category": "Results Navigation",
+        "keys": ["H"]
+    },
     "result_activate": {
         "description": "Activate selected result (play at timecode)",
         "category": "Results Actions",
@@ -2164,6 +2174,46 @@ class RapidMomentNavigator:
         except ValueError:
             pass
     
+    def _go_to_next_page(self):
+        """Go to next page in pagination"""
+        # Don't navigate if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
+        # Don't navigate if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            self.debug_print("Search bar has focus, ignoring pagination")
+            return
+        
+        if self.main_current_page < self.main_total_pages:
+            self.main_current_page += 1
+            self._display_main_current_page()
+            self.debug_print(f"Navigated to page {self.main_current_page}/{self.main_total_pages}")
+            
+            # Auto-select first result on new page
+            if self.result_items:
+                self._select_result(0)
+    
+    def _go_to_previous_page(self):
+        """Go to previous page in pagination"""
+        # Don't navigate if app window doesn't have focus
+        if not self._is_app_window_focused():
+            return
+        
+        # Don't navigate if search bar has focus (user is typing)
+        if self.root.focus_get() == self.search_entry:
+            self.debug_print("Search bar has focus, ignoring pagination")
+            return
+        
+        if self.main_current_page > 1:
+            self.main_current_page -= 1
+            self._display_main_current_page()
+            self.debug_print(f"Navigated to page {self.main_current_page}/{self.main_total_pages}")
+            
+            # Auto-select first result on new page
+            if self.result_items:
+                self._select_result(0)
+    
     # ===== Result Navigation Methods =====
     
     def _select_result(self, index):
@@ -3276,6 +3326,8 @@ class RapidMomentNavigator:
             "result_last": self._jump_to_last_result,
             "increase_items_per_page": self._increase_items_per_page,
             "decrease_items_per_page": self._decrease_items_per_page,
+            "page_next": self._go_to_next_page,
+            "page_previous": self._go_to_previous_page,
             "result_activate": self._activate_selected_result,
             "result_import_media": self._import_media_for_selected_result,
             "result_import_clip": self._import_clip_for_selected_result,
