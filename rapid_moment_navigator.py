@@ -4188,32 +4188,50 @@ class RapidMomentNavigator:
         return True
     
     def _editor_dialog_navigate_next(self):
-        """Navigate to next result in editor dialog"""
+        """Navigate to next result in editor dialog (with optional count from number prefix)"""
         if not self._editor_dialog_can_navigate():
+            return
+        
+        # Get count from number prefix (default 1)
+        count = self._get_count()
+        
+        self.debug_print(f"Editor dialog: _navigate_result_next called with count={count}, result_items count: {len(self.editor_result_items)}")
+        if not self.editor_result_items:
+            self.debug_print("Editor dialog: No result items available")
+            return
+        
+        if self.editor_selected_result_index is None:
+            # No selection, select first result (or count-1 if count > 1)
+            self.debug_print(f"Editor dialog: No selection, selecting result at index {min(count - 1, len(self.editor_result_items) - 1)}")
+            self._editor_dialog_select_result(min(count - 1, len(self.editor_result_items) - 1))
+        else:
+            # Move down by count, but don't go past the end
+            new_index = min(self.editor_selected_result_index + count, len(self.editor_result_items) - 1)
+            self.debug_print(f"Editor dialog: Selecting result: {new_index}")
+            self._editor_dialog_select_result(new_index)
+    
+    def _editor_dialog_navigate_prev(self):
+        """Navigate to previous result in editor dialog (with optional count from number prefix)"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        # Get count from number prefix (default 1)
+        count = self._get_count()
+        
+        self.debug_print(f"Editor dialog: _navigate_result_previous called with count={count}, result_items count: {len(self.editor_result_items)}")
+        if not self.editor_result_items:
+            self.debug_print("Editor dialog: No result items available")
             return
         
         if self.editor_selected_result_index is None:
             # No selection, select first result
+            self.debug_print("Editor dialog: No selection, selecting first result")
             self._editor_dialog_select_result(0)
-        elif self.editor_selected_result_index < len(self.editor_result_items) - 1:
-            # Move to next result
-            self._editor_dialog_select_result(self.editor_selected_result_index + 1)
-        
-        self.debug_print(f"Editor dialog: Selected result {self.editor_selected_result_index + 1} of {len(self.editor_result_items)}")
-    
-    def _editor_dialog_navigate_prev(self):
-        """Navigate to previous result in editor dialog"""
-        if not self._editor_dialog_can_navigate():
-            return
-        
-        if self.editor_selected_result_index is None:
-            # No selection, select last result
-            self._editor_dialog_select_result(len(self.editor_result_items) - 1)
-        elif self.editor_selected_result_index > 0:
-            # Move to previous result
-            self._editor_dialog_select_result(self.editor_selected_result_index - 1)
-        
-        self.debug_print(f"Editor dialog: Selected result {self.editor_selected_result_index + 1} of {len(self.editor_result_items)}")
+        else:
+            # Move up by count, but don't go before the beginning
+            new_index = max(self.editor_selected_result_index - count, 0)
+            self.debug_print(f"Editor dialog: Selecting result: {new_index}")
+            self._editor_dialog_select_result(new_index)
     
     def _editor_dialog_select_result(self, index):
         """Select a specific result in the editor dialog"""
@@ -4810,8 +4828,11 @@ class RapidMomentNavigator:
         if not self._is_app_window_focused():
             return
         
-        # Don't capture numbers if search bar has focus
-        if self.search_entry == self.root.focus_get():
+        # Don't capture numbers if any search bar has focus (main window or editor dialog)
+        focused = self.root.focus_get()
+        if focused == self.search_entry:
+            return
+        if hasattr(self, 'editor_search_entry') and focused == self.editor_search_entry:
             return
         
         # Add digit to prefix
@@ -7566,19 +7587,19 @@ except Exception as e:
         # Keyboard shortcuts to close dialog
         def handle_close(e):
             # Plain Escape only closes if NOT in a text entry (to allow escaping from typing)
-            # Shift+Escape, Ctrl+Shift+C, Ctrl+Shift+X always close (force close)
+            # Shift+Escape and Ctrl+Shift+X always close (force close)
+            # Note: Ctrl+Shift+C is for unfocusing search bar (handled by global shortcuts), not closing
             if e.keysym == "Escape" and e.state & 0x1 == 0:  # Check if Shift is NOT pressed
                 # Plain Escape - only close if focus is not on an Entry widget
                 focused = editor_dialog.focus_get()
                 if focused and isinstance(focused, (ttk.Entry, tk.Entry)):
                     return  # Don't close, user is typing
-            # Close the dialog (Shift+Escape or Ctrl+Shift+C/X or Escape when not in Entry)
+            # Close the dialog (Shift+Escape or Ctrl+Shift+X or Escape when not in Entry)
             on_dialog_close()
             return "break"
         
         editor_dialog.bind("<Escape>", handle_close)
         editor_dialog.bind("<Shift-Escape>", handle_close)
-        editor_dialog.bind("<Control-Shift-C>", handle_close)
         editor_dialog.bind("<Control-Shift-X>", handle_close)
         
         # Special binding for Shift+Return (activate with marker - editor-specific behavior)
