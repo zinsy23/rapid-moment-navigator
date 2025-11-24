@@ -4298,6 +4298,8 @@ class RapidMomentNavigator:
             return
         
         self._editor_dialog_select_result(0)
+        # Scroll all the way to the top
+        self.editor_results_canvas.yview_moveto(0)
         self.debug_print(f"Editor dialog: Jumped to first result")
     
     def _editor_dialog_goto_last(self):
@@ -4306,6 +4308,8 @@ class RapidMomentNavigator:
             return
         
         self._editor_dialog_select_result(len(self.editor_result_items) - 1)
+        # Scroll all the way to the bottom
+        self.editor_results_canvas.yview_moveto(1.0)
         self.debug_print(f"Editor dialog: Jumped to last result")
     
     
