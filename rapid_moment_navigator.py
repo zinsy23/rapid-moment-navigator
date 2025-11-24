@@ -6835,14 +6835,14 @@ except Exception as e:
         
         # Keyboard shortcuts to close dialog
         def handle_close(e):
-            # Escape only closes if NOT in a text entry (to allow escaping from typing)
-            # Ctrl+Shift+C always closes (alternative when you need to copy text)
-            if e.keysym == "Escape":
-                # Only close if focus is not on an Entry widget
+            # Plain Escape only closes if NOT in a text entry (to allow escaping from typing)
+            # Shift+Escape, Ctrl+Shift+C, Ctrl+Shift+X always close (force close)
+            if e.keysym == "Escape" and e.state & 0x1 == 0:  # Check if Shift is NOT pressed
+                # Plain Escape - only close if focus is not on an Entry widget
                 focused = editor_dialog.focus_get()
                 if focused and isinstance(focused, (ttk.Entry, tk.Entry)):
                     return  # Don't close, user is typing
-            # Close the dialog
+            # Close the dialog (Shift+Escape or Ctrl+Shift+C/X or Escape when not in Entry)
             on_dialog_close()
             return "break"
         
