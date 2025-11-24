@@ -68,52 +68,52 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "keys": ["<Control-Shift-O>"]
     },
     "focus_search": {
-        "description": "Focus search bar",
+        "description": "Focus search bar (works in Main & Editor Navigator)",
         "category": "Navigation",
         "keys": ["<Control-F>", "i", "<braceleft>"]
     },
     "escape_search": {
-        "description": "Unfocus/escape search bar",
+        "description": "Unfocus/escape search bar (works in Main & Editor Navigator)",
         "category": "Navigation",
         "keys": ["<Escape>", "<Control-C>", "<braceright>"]
     },
     "result_next": {
-        "description": "Navigate to next result",
+        "description": "Navigate to next result (works in Main & Editor Navigator)",
         "category": "Results Navigation",
         "keys": ["<Down>", "j"]
     },
     "result_previous": {
-        "description": "Navigate to previous result",
+        "description": "Navigate to previous result (works in Main & Editor Navigator)",
         "category": "Results Navigation",
         "keys": ["<Up>", "k"]
     },
     "result_first": {
-        "description": "Jump to first result on page",
+        "description": "Jump to first result on page (works in Main & Editor Navigator)",
         "category": "Results Navigation",
         "keys": ["<Home>", "gg"]
     },
     "result_last": {
-        "description": "Jump to last result on page",
+        "description": "Jump to last result on page (works in Main & Editor Navigator)",
         "category": "Results Navigation",
         "keys": ["<End>", "G"]
     },
     "increase_items_per_page": {
-        "description": "Increase items per page",
+        "description": "Increase items per page (works in Main & Editor Navigator)",
         "category": "Results Navigation",
         "keys": ["<plus>", "<equal>"]
     },
     "decrease_items_per_page": {
-        "description": "Decrease items per page",
+        "description": "Decrease items per page (works in Main & Editor Navigator)",
         "category": "Results Navigation",
         "keys": ["<minus>"]
     },
     "page_next": {
-        "description": "Go to next page",
+        "description": "Go to next page (works in Main & Editor Navigator)",
         "category": "Results Navigation",
         "keys": ["<Right>", "L"]
     },
     "page_previous": {
-        "description": "Go to previous page",
+        "description": "Go to previous page (works in Main & Editor Navigator)",
         "category": "Results Navigation",
         "keys": ["<Left>", "H"]
     },
@@ -138,7 +138,7 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "keys": ["N"]
     },
     "result_activate": {
-        "description": "Activate selected result (play at timecode)",
+        "description": "Activate selected result (play at timecode in Main / jump to timecode in Editor Navigator)",
         "category": "Results Actions",
         "keys": ["<Return>"]
     },
@@ -183,27 +183,27 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "keys": ["<Control-Shift-D>"]
     },
     "scroll_half_page_down": {
-        "description": "Scroll down half a page",
+        "description": "Scroll down half a page (works in Main & Editor Navigator)",
         "category": "Scrolling",
         "keys": ["d"]
     },
     "scroll_half_page_up": {
-        "description": "Scroll up half a page",
+        "description": "Scroll up half a page (works in Main & Editor Navigator)",
         "category": "Scrolling",
         "keys": ["u"]
     },
     "center_result": {
-        "description": "Center selected result in viewport",
+        "description": "Center selected result in viewport (works in Main & Editor Navigator)",
         "category": "View Control",
         "keys": ["zz"]
     },
     "result_to_top": {
-        "description": "Move selected result to top of viewport",
+        "description": "Move selected result to top of viewport (works in Main & Editor Navigator)",
         "category": "View Control",
         "keys": ["zt"]
     },
     "result_to_bottom": {
-        "description": "Move selected result to bottom of viewport",
+        "description": "Move selected result to bottom of viewport (works in Main & Editor Navigator)",
         "category": "View Control",
         "keys": ["zb"]
     }
@@ -527,6 +527,11 @@ class RapidMomentNavigator:
         # Track focus state for cache invalidation
         self.was_focused = True
         self.editor_dialog = None  # Reference to editor dialog when open
+        
+        # Editor dialog result navigation tracking
+        self.editor_result_items = []  # List of dicts with {frame, timecode_label, text_label, match_data}
+        self.editor_selected_result_index = None  # Currently selected result in editor dialog
+        self.editor_selected_result_frame = None  # Currently highlighted frame widget in editor dialog
         
         # Menu references for dynamic updates
         self.editor_menu = None
@@ -2902,6 +2907,31 @@ class RapidMomentNavigator:
         except:
             return False
     
+    def _is_editor_dialog_focused(self):
+        """
+        Check if the editor dialog specifically has focus
+        Returns True if editor dialog is open and has focus, False otherwise
+        """
+        try:
+            if not hasattr(self, 'editor_dialog') or self.editor_dialog is None:
+                return False
+            
+            if not self.editor_dialog.winfo_exists():
+                return False
+            
+            # Get the currently focused widget
+            focused_widget = self.root.focus_get()
+            if focused_widget is None:
+                return False
+            
+            # Get the top-level window of the focused widget
+            toplevel = focused_widget.winfo_toplevel()
+            
+            # Check if it's the editor dialog
+            return toplevel == self.editor_dialog
+        except:
+            return False
+    
     def _navigate_result_next(self):
         """Navigate to the next result (with optional count from number prefix)"""
         if not self._can_navigate_results():
@@ -4049,13 +4079,710 @@ class RapidMomentNavigator:
         )
     
     def _show_editor_fuzzy_search(self):
-        """Show fuzzy search for editor dropdown"""
-        self._show_dropdown_fuzzy_search(
-            dropdown_widget=self.editor_dropdown,
-            var_to_set=self.editor_var,
-            on_select_callback=self._on_editor_changed,
-            focus_widget_after=self.search_entry
+        """Show fuzzy search for editor dropdown (context-aware: works in main window and editor dialog)"""
+        # TECHNICAL DEBT: This function hardcodes checks for specific windows (main vs editor dialog).
+        # This pattern works fine for the current two dropdown types (shows and editor) across two
+        # window contexts (main window and editor dialog), but doesn't scale well if we add more
+        # dialogs with similar dropdowns. A more scalable approach would be a registry-based system
+        # where each window registers its dropdowns and the fuzzy search automatically detects the
+        # focused window's dropdown. For now, this is acceptable given we only have two main dropdown
+        # types and two window contexts.
+        
+        # Check if we're in the editor dialog
+        if self._is_editor_dialog_focused() and hasattr(self, 'editor_dialog_combobox'):
+            # Editor dialog context
+            self._show_dropdown_fuzzy_search(
+                dropdown_widget=self.editor_dialog_combobox,
+                var_to_set=self.editor_var,
+                on_select_callback=self._on_editor_changed,
+                focus_widget_after=self.editor_search_entry
+            )
+        else:
+            # Main window context
+            self._show_dropdown_fuzzy_search(
+                dropdown_widget=self.editor_dropdown,
+                var_to_set=self.editor_var,
+                on_select_callback=self._on_editor_changed,
+                focus_widget_after=self.search_entry
+            )
+    
+    def _editor_dialog_focus_search(self):
+        """Focus the search entry in editor dialog and select all text"""
+        # Only work if editor dialog is focused
+        if not self._is_editor_dialog_focused():
+            return
+        
+        # Don't focus if we're in an overlay (fuzzy search)
+        focused_widget = self.root.focus_get()
+        if focused_widget:
+            toplevel = focused_widget.winfo_toplevel()
+            if toplevel != self.editor_dialog:
+                # We're in an overlay, don't steal focus
+                return
+        
+        if not hasattr(self, 'editor_search_entry'):
+            return
+        
+        # Check if search bar already has focus
+        already_focused = (focused_widget == self.editor_search_entry)
+        
+        self.editor_search_entry.focus_set()
+        
+        # Only select all text if we're gaining focus (not already focused)
+        if not already_focused:
+            self.editor_search_entry.after(50, lambda: self.editor_search_entry.select_range(0, tk.END) if self.editor_search_entry.winfo_exists() else None)
+        
+        self.debug_print("Focused editor dialog search bar")
+    
+    def _editor_dialog_unfocus_search(self):
+        """Unfocus the search entry in editor dialog (or cancel number prefix/pending key if active)"""
+        # Only work if editor dialog is focused
+        if not self._is_editor_dialog_focused():
+            return
+        
+        # Priority 1: If number prefix is active, clear it
+        if self.number_prefix:
+            self.debug_print("Editor dialog: Clearing number prefix")
+            self._clear_number_prefix()
+            return
+        
+        # Priority 2: If pending two-letter sequence key is active, clear it
+        if self.number_prefix_var.get():  # Pending key is shown in same place as number
+            self.debug_print("Editor dialog: Clearing pending key")
+            self._clear_pending_key()
+            # Also clear any stored key press times
+            self.last_key_press_times.clear()
+            return
+        
+        # Priority 3: Only unfocus if there are results (otherwise keep focus on search bar)
+        if not self.editor_result_items:
+            self.debug_print("Editor dialog: No results available, keeping focus on search bar")
+            return
+        
+        # Only unfocus if currently in the search entry
+        focused = self.root.focus_get()
+        if focused == getattr(self, 'editor_search_entry', None):
+            self.editor_main_frame.focus_set()
+            self.debug_print("Editor dialog: Unfocused search bar")
+            
+            # If no result is selected, select the first one
+            if self.editor_selected_result_index is None:
+                self.debug_print("Editor dialog: No result selected, auto-selecting first result")
+                self._editor_dialog_select_result(0)
+    
+    def _editor_dialog_can_navigate(self):
+        """Check if we can navigate results in editor dialog - uses same logic as main window"""
+        # Use the same navigation check as main window
+        # This ensures consistent behavior across all windows
+        if not self._can_navigate_results():
+            return False
+        
+        # Additional check: must be in editor dialog context
+        if not self._is_editor_dialog_focused():
+            return False
+        
+        # Must have results to navigate
+        if not self.editor_result_items:
+            return False
+        
+        return True
+    
+    def _editor_dialog_navigate_next(self):
+        """Navigate to next result in editor dialog"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        if self.editor_selected_result_index is None:
+            # No selection, select first result
+            self._editor_dialog_select_result(0)
+        elif self.editor_selected_result_index < len(self.editor_result_items) - 1:
+            # Move to next result
+            self._editor_dialog_select_result(self.editor_selected_result_index + 1)
+        
+        self.debug_print(f"Editor dialog: Selected result {self.editor_selected_result_index + 1} of {len(self.editor_result_items)}")
+    
+    def _editor_dialog_navigate_prev(self):
+        """Navigate to previous result in editor dialog"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        if self.editor_selected_result_index is None:
+            # No selection, select last result
+            self._editor_dialog_select_result(len(self.editor_result_items) - 1)
+        elif self.editor_selected_result_index > 0:
+            # Move to previous result
+            self._editor_dialog_select_result(self.editor_selected_result_index - 1)
+        
+        self.debug_print(f"Editor dialog: Selected result {self.editor_selected_result_index + 1} of {len(self.editor_result_items)}")
+    
+    def _editor_dialog_select_result(self, index):
+        """Select a specific result in the editor dialog"""
+        if not self.editor_result_items or index < 0 or index >= len(self.editor_result_items):
+            return
+        
+        # Deselect previous result
+        if self.editor_selected_result_frame is not None:
+            try:
+                self.editor_selected_result_frame.configure(style='TFrame')
+            except:
+                pass
+        
+        # Select new result
+        self.editor_selected_result_index = index
+        result_item = self.editor_result_items[index]
+        self.editor_selected_result_frame = result_item['frame']
+        
+        # Highlight the frame
+        result_item['frame'].configure(style='Selected.TFrame')
+        
+        # Scroll to show the result
+        self._editor_dialog_scroll_to_result(index)
+    
+    def _editor_dialog_scroll_to_result(self, index):
+        """Scroll the editor dialog canvas to show a specific result"""
+        if not self.editor_result_items or index < 0 or index >= len(self.editor_result_items):
+            return
+        
+        try:
+            result_frame = self.editor_result_items[index]['frame']
+            canvas = self.editor_results_canvas
+            
+            # Get frame position and height
+            frame_y = result_frame.winfo_y()
+            frame_height = result_frame.winfo_height()
+            canvas_height = canvas.winfo_height()
+            
+            # Get scroll region
+            scroll_region = canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Current viewport
+            current_view = canvas.yview()
+            viewport_top = current_view[0] * total_height
+            viewport_bottom = current_view[1] * total_height
+            
+            # Check if result is visible
+            if frame_y < viewport_top:
+                # Scroll up to show result at top
+                canvas.yview_moveto(frame_y / total_height)
+            elif frame_y + frame_height > viewport_bottom:
+                # Scroll down to show result at bottom
+                target_y = frame_y + frame_height - canvas_height
+                canvas.yview_moveto(max(0, target_y / total_height))
+        except Exception as e:
+            self.debug_print(f"Error scrolling to editor result: {e}")
+    
+    def _editor_dialog_goto_first(self):
+        """Go to first result in editor dialog (gg)"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        self._editor_dialog_select_result(0)
+        self.debug_print(f"Editor dialog: Jumped to first result")
+    
+    def _editor_dialog_goto_last(self):
+        """Go to last result in editor dialog (G)"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        self._editor_dialog_select_result(len(self.editor_result_items) - 1)
+        self.debug_print(f"Editor dialog: Jumped to last result")
+    
+    
+    def _editor_dialog_get_visible_results_count(self):
+        """Calculate how many results are currently visible in the editor dialog canvas"""
+        if not self.editor_result_items:
+            return 0
+        
+        try:
+            canvas = self.editor_results_canvas
+            canvas_height = canvas.winfo_height()
+            
+            # Get average result height (approximate)
+            if len(self.editor_result_items) > 0:
+                first_frame = self.editor_result_items[0]['frame']
+                result_height = first_frame.winfo_height()
+                if result_height > 0:
+                    visible_count = max(1, int(canvas_height / result_height))
+                    self.debug_print(f"Editor dialog: Visible results count: {visible_count}")
+                    return visible_count
+            
+            # Fallback
+            return 5
+        except Exception as e:
+            self.debug_print(f"Editor dialog: Error calculating visible results: {e}")
+            return 5
+    
+    def _editor_dialog_get_selected_visible_position(self):
+        """Get which visible position (1st, 2nd, 3rd, etc.) the selected result is at in editor dialog"""
+        if self.editor_selected_result_index is None or not self.editor_result_items:
+            return None
+        
+        try:
+            canvas = self.editor_results_canvas
+            selected_frame = self.editor_result_items[self.editor_selected_result_index]['frame']
+            
+            # Get canvas viewport
+            canvas_top = canvas.canvasy(0)
+            canvas_bottom = canvas.canvasy(canvas.winfo_height())
+            
+            # Get selected result position
+            result_y = selected_frame.winfo_y()
+            result_height = selected_frame.winfo_height()
+            
+            # Count how many results are above the selected one in the viewport
+            visible_position = 0
+            for i, item in enumerate(self.editor_result_items):
+                frame = item['frame']
+                frame_y = frame.winfo_y()
+                frame_bottom = frame_y + frame.winfo_height()
+                
+                # Is this frame visible?
+                if frame_bottom > canvas_top and frame_y < canvas_bottom:
+                    if i < self.editor_selected_result_index:
+                        visible_position += 1
+                    elif i == self.editor_selected_result_index:
+                        break
+            
+            self.debug_print(f"Editor dialog: Selected result visible position: {visible_position}")
+            return visible_position
+        except Exception as e:
+            self.debug_print(f"Editor dialog: Error getting visible position: {e}")
+            return None
+    
+    def _editor_dialog_scroll_to_visual_position(self, target_visible_position):
+        """Scroll canvas so selected result is at the target visible position in editor dialog"""
+        if self.editor_selected_result_index is None or not self.editor_result_items:
+            return
+        
+        try:
+            canvas = self.editor_results_canvas
+            selected_frame = self.editor_result_items[self.editor_selected_result_index]['frame']
+            
+            # Get canvas and result measurements
+            canvas_height = canvas.winfo_height()
+            result_y = selected_frame.winfo_y()
+            result_height = selected_frame.winfo_height()
+            
+            # Calculate target Y position (where we want the result to appear)
+            target_y = target_visible_position * result_height
+            
+            # Calculate scroll position to achieve this
+            scroll_region = canvas.cget("scrollregion")
+            if scroll_region:
+                total_height = int(scroll_region.split()[3])
+                if total_height > 0:
+                    scroll_position = (result_y - target_y) / total_height
+                    scroll_position = max(0.0, min(1.0, scroll_position))
+                    canvas.yview_moveto(scroll_position)
+                    self.debug_print(f"Editor dialog: Scrolled to visual position {target_visible_position}")
+        except Exception as e:
+            self.debug_print(f"Editor dialog: Error scrolling to visual position: {e}")
+    
+    def _editor_dialog_scroll_half_page_down(self):
+        """Scroll down half a page in editor dialog (Vim-style, with optional count) - adapted from main window"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        if not self.editor_result_items:
+            return
+        
+        # Get count from number prefix (default 1)
+        count = self._get_count()
+        
+        try:
+            # Get the current visual position of the selection
+            visual_position = self._editor_dialog_get_selected_visible_position()
+            
+            # Calculate how many results to move based on currently visible results
+            visible_count = self._editor_dialog_get_visible_results_count()
+            results_per_half_page = max(1, visible_count // 2) * count
+            
+            # Move selection down by (half page * count) results
+            if self.editor_selected_result_index is None:
+                # No selection, start at first result
+                self._editor_dialog_select_result(0)
+            else:
+                new_index = min(self.editor_selected_result_index + results_per_half_page, len(self.editor_result_items) - 1)
+                self._editor_dialog_select_result(new_index)
+                
+                # Scroll to maintain the same visual position (Vim behavior)
+                if visual_position is not None:
+                    self._editor_dialog_scroll_to_visual_position(visual_position)
+                else:
+                    self._editor_dialog_scroll_to_result(new_index)
+            
+            self.debug_print(f"Editor dialog: Scrolled down {results_per_half_page} results (visible: {visible_count}, visual_pos: {visual_position})")
+        except Exception as e:
+            self.debug_print(f"Editor dialog: Error scrolling down: {e}")
+    
+    def _editor_dialog_scroll_half_page_up(self):
+        """Scroll up half a page in editor dialog (Vim-style, with optional count) - adapted from main window"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        if not self.editor_result_items:
+            return
+        
+        # Get count from number prefix (default 1)
+        count = self._get_count()
+        
+        try:
+            # Get the current visual position of the selection
+            visual_position = self._editor_dialog_get_selected_visible_position()
+            
+            # Calculate how many results to move based on currently visible results
+            visible_count = self._editor_dialog_get_visible_results_count()
+            results_per_half_page = max(1, visible_count // 2) * count
+            
+            # Move selection up by (half page * count) results
+            if self.editor_selected_result_index is None:
+                # No selection, start at first result
+                self._editor_dialog_select_result(0)
+            else:
+                new_index = max(self.editor_selected_result_index - results_per_half_page, 0)
+                self._editor_dialog_select_result(new_index)
+                
+                # Scroll to maintain the same visual position (Vim behavior)
+                if visual_position is not None:
+                    self._editor_dialog_scroll_to_visual_position(visual_position)
+                else:
+                    self._editor_dialog_scroll_to_result(new_index)
+            
+            self.debug_print(f"Editor dialog: Scrolled up {results_per_half_page} results (visible: {visible_count}, visual_pos: {visual_position})")
+        except Exception as e:
+            self.debug_print(f"Editor dialog: Error scrolling up: {e}")
+    
+    def _editor_dialog_prev_page(self):
+        """Go to previous page in editor dialog (Shift+H)"""
+        if not self._is_editor_dialog_focused():
+            return
+        
+        # Don't navigate if typing in a text field
+        focused = self.root.focus_get()
+        if focused and isinstance(focused, (ttk.Entry, tk.Entry, tk.Text)):
+            return
+        
+        if hasattr(self, 'current_page') and self.current_page > 1:
+            self.current_page -= 1
+            self._display_current_page()
+            # Auto-select first result on new page
+            if self.editor_result_items:
+                self._editor_dialog_select_result(0)
+            self.debug_print(f"Editor dialog: Moved to page {self.current_page}")
+    
+    def _editor_dialog_next_page(self):
+        """Go to next page in editor dialog (Shift+L)"""
+        if not self._is_editor_dialog_focused():
+            return
+        
+        # Don't navigate if typing in a text field
+        focused = self.root.focus_get()
+        if focused and isinstance(focused, (ttk.Entry, tk.Entry, tk.Text)):
+            return
+        
+        if hasattr(self, 'current_page') and hasattr(self, 'total_pages') and self.current_page < self.total_pages:
+            self.current_page += 1
+            self._display_current_page()
+            # Auto-select first result on new page
+            if self.editor_result_items:
+                self._editor_dialog_select_result(0)
+            self.debug_print(f"Editor dialog: Moved to page {self.current_page}")
+    
+    def _editor_dialog_activate_result(self, shift_held=False):
+        """Activate the selected result in editor dialog (Enter or Shift+Enter)"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        if self.editor_selected_result_index is None or not self.editor_result_items:
+            return
+        
+        # Get the selected result
+        result_item = self.editor_result_items[self.editor_selected_result_index]
+        match_data = result_item['match_data']
+        timeline = result_item['timeline']
+        
+        # Create a mock event with shift state
+        class MockEvent:
+            def __init__(self, shift):
+                self.state = 0x0001 if shift else 0
+        
+        event = MockEvent(shift_held)
+        
+        # Call the timecode click handler
+        self._handle_editor_timecode_click(
+            timeline=timeline,
+            start_frame=match_data['start'],
+            item_ref=match_data.get('item'),
+            event=event
         )
+        
+        self.debug_print(f"Editor dialog: Activated result {self.editor_selected_result_index + 1} (shift={shift_held})")
+    
+    def _editor_dialog_center_result(self):
+        """Center the selected result in the viewport (zz)"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        if self.editor_selected_result_index is None or not self.editor_result_items:
+            return
+        
+        try:
+            result_frame = self.editor_result_items[self.editor_selected_result_index]['frame']
+            canvas = self.editor_results_canvas
+            
+            # Get frame position and height
+            frame_y = result_frame.winfo_y()
+            frame_height = result_frame.winfo_height()
+            canvas_height = canvas.winfo_height()
+            
+            # Get scroll region
+            scroll_region = canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Calculate position to center the result
+            target_y = frame_y - (canvas_height / 2) + (frame_height / 2)
+            new_scroll_pos = max(0.0, min(1.0, target_y / total_height))
+            
+            canvas.yview_moveto(new_scroll_pos)
+            self.debug_print(f"Editor dialog: Centered result in viewport")
+        except Exception as e:
+            self.debug_print(f"Error centering editor result: {e}")
+    
+    def _editor_dialog_top_result(self):
+        """Position the selected result at the top of the viewport (zt)"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        if self.editor_selected_result_index is None or not self.editor_result_items:
+            return
+        
+        try:
+            result_frame = self.editor_result_items[self.editor_selected_result_index]['frame']
+            canvas = self.editor_results_canvas
+            
+            # Get frame position
+            frame_y = result_frame.winfo_y()
+            
+            # Get scroll region
+            scroll_region = canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Scroll to position result at top
+            new_scroll_pos = max(0.0, min(1.0, frame_y / total_height))
+            canvas.yview_moveto(new_scroll_pos)
+            self.debug_print(f"Editor dialog: Positioned result at top")
+        except Exception as e:
+            self.debug_print(f"Error positioning editor result at top: {e}")
+    
+    def _editor_dialog_bottom_result(self):
+        """Position the selected result at the bottom of the viewport (zb)"""
+        if not self._editor_dialog_can_navigate():
+            return
+        
+        if self.editor_selected_result_index is None or not self.editor_result_items:
+            return
+        
+        try:
+            result_frame = self.editor_result_items[self.editor_selected_result_index]['frame']
+            canvas = self.editor_results_canvas
+            
+            # Get frame position and height
+            frame_y = result_frame.winfo_y()
+            frame_height = result_frame.winfo_height()
+            canvas_height = canvas.winfo_height()
+            
+            # Get scroll region
+            scroll_region = canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Calculate position to place result at bottom
+            target_y = frame_y + frame_height - canvas_height
+            new_scroll_pos = max(0.0, min(1.0, target_y / total_height))
+            
+            canvas.yview_moveto(new_scroll_pos)
+            self.debug_print(f"Editor dialog: Positioned result at bottom")
+        except Exception as e:
+            self.debug_print(f"Error positioning editor result at bottom: {e}")
+    
+    
+    def _editor_dialog_increase_items_per_page(self):
+        """Increase items per page in editor dialog - uses same logic as main window"""
+        if not self._is_editor_dialog_focused():
+            return
+        
+        # Don't change if typing in a text field
+        focused = self.root.focus_get()
+        if focused and isinstance(focused, (ttk.Entry, tk.Entry, tk.Text)):
+            return
+        
+        if not hasattr(self, 'items_per_page_var'):
+            return
+        
+        current = self.items_per_page_var.get()
+        
+        try:
+            current_index = self.ITEMS_PER_PAGE_OPTIONS.index(current)
+            next_index = min(current_index + 1, len(self.ITEMS_PER_PAGE_OPTIONS) - 1)
+            if next_index != current_index:
+                self.items_per_page_var.set(self.ITEMS_PER_PAGE_OPTIONS[next_index])
+                self._on_items_per_page_changed()
+                self.debug_print(f"Editor dialog: Increased items per page to {self.ITEMS_PER_PAGE_OPTIONS[next_index]}")
+        except (ValueError, IndexError) as e:
+            self.debug_print(f"Editor dialog: Error increasing items per page: {e}")
+    
+    def _editor_dialog_decrease_items_per_page(self):
+        """Decrease items per page in editor dialog - uses same logic as main window"""
+        if not self._is_editor_dialog_focused():
+            return
+        
+        # Don't change if typing in a text field
+        focused = self.root.focus_get()
+        if focused and isinstance(focused, (ttk.Entry, tk.Entry, tk.Text)):
+            return
+        
+        if not hasattr(self, 'items_per_page_var'):
+            return
+        
+        current = self.items_per_page_var.get()
+        
+        try:
+            current_index = self.ITEMS_PER_PAGE_OPTIONS.index(current)
+            prev_index = max(current_index - 1, 0)
+            if prev_index != current_index:
+                self.items_per_page_var.set(self.ITEMS_PER_PAGE_OPTIONS[prev_index])
+                self._on_items_per_page_changed()
+                self.debug_print(f"Editor dialog: Decreased items per page to {self.ITEMS_PER_PAGE_OPTIONS[prev_index]}")
+        except (ValueError, IndexError) as e:
+            self.debug_print(f"Editor dialog: Error decreasing items per page: {e}")
+    
+    # Context-aware wrapper functions that route to the appropriate window
+    # TECHNICAL DEBT: These wrapper functions use if/else to check which window is focused.
+    # This pattern works well for two window contexts (main window and editor dialog), but
+    # would require if/elif/else chains if we add more dialogs with similar functionality
+    # (e.g., a Timeline Navigator dialog). A more scalable approach would be polymorphic
+    # window objects or a registry pattern. For now, this is acceptable given we only have
+    # two contexts where result navigation shortcuts apply.
+    
+    def _context_aware_focus_search(self):
+        """Focus search bar - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_focus_search()
+        else:
+            self._focus_search_bar()
+    
+    def _context_aware_escape_search(self):
+        """Escape/unfocus search bar - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_unfocus_search()
+        else:
+            self._escape_search_bar()
+    
+    def _context_aware_navigate_next(self):
+        """Navigate to next result - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_navigate_next()
+        else:
+            self._navigate_result_next()
+    
+    def _context_aware_navigate_prev(self):
+        """Navigate to previous result - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_navigate_prev()
+        else:
+            self._navigate_result_previous()
+    
+    def _context_aware_goto_first(self):
+        """Go to first result - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_goto_first()
+        else:
+            self._jump_to_first_result()
+    
+    def _context_aware_goto_last(self):
+        """Go to last result - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_goto_last()
+        else:
+            self._jump_to_last_result()
+    
+    def _context_aware_increase_items(self, event=None):
+        """Increase items per page - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_increase_items_per_page()
+        else:
+            self._increase_items_per_page(event)
+    
+    def _context_aware_decrease_items(self, event=None):
+        """Decrease items per page - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_decrease_items_per_page()
+        else:
+            self._decrease_items_per_page(event)
+    
+    def _context_aware_next_page(self):
+        """Go to next page - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_next_page()
+        else:
+            self._go_to_next_page()
+    
+    def _context_aware_prev_page(self):
+        """Go to previous page - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_prev_page()
+        else:
+            self._go_to_previous_page()
+    
+    def _context_aware_activate_result(self):
+        """Activate selected result - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_activate_result(shift_held=False)
+        else:
+            self._activate_selected_result()
+    
+    def _context_aware_scroll_down(self):
+        """Scroll down half page - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_scroll_half_page_down()
+        else:
+            self._scroll_half_page_down()
+    
+    def _context_aware_scroll_up(self):
+        """Scroll up half page - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_scroll_half_page_up()
+        else:
+            self._scroll_half_page_up()
+    
+    def _context_aware_center_result(self):
+        """Center result in viewport - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_center_result()
+        else:
+            self._center_result()
+    
+    def _context_aware_result_to_top(self):
+        """Position result at top - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_top_result()
+        else:
+            self._result_to_top()
+    
+    def _context_aware_result_to_bottom(self):
+        """Position result at bottom - routes to appropriate window"""
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_bottom_result()
+        else:
+            self._result_to_bottom()
     
     def _unbind_keyboard_shortcuts(self):
         """Unbind all keyboard shortcuts to prepare for rebinding"""
@@ -4176,32 +4903,32 @@ class RapidMomentNavigator:
             if action_id in shortcuts:
                 shortcuts[action_id]["keys"] = custom_data.get("keys", shortcuts[action_id]["keys"])
         
-        # Map action IDs to their handler functions
+        # Map action IDs to their handler functions (context-aware)
         action_handlers = {
             "show_fuzzy_search": self._show_fuzzy_search,
             "editor_fuzzy_search": self._show_editor_fuzzy_search,
-            "focus_search": self._focus_search_bar,
-            "escape_search": self._escape_search_bar,
-            "result_next": self._navigate_result_next,
-            "result_previous": self._navigate_result_previous,
-            "result_first": self._jump_to_first_result,
-            "result_last": self._jump_to_last_result,
-            "increase_items_per_page": self._increase_items_per_page,
-            "decrease_items_per_page": self._decrease_items_per_page,
-            "page_next": self._go_to_next_page,
-            "page_previous": self._go_to_previous_page,
+            "focus_search": self._context_aware_focus_search,
+            "escape_search": self._context_aware_escape_search,
+            "result_next": self._context_aware_navigate_next,
+            "result_previous": self._context_aware_navigate_prev,
+            "result_first": self._context_aware_goto_first,
+            "result_last": self._context_aware_goto_last,
+            "increase_items_per_page": self._context_aware_increase_items,
+            "decrease_items_per_page": self._context_aware_decrease_items,
+            "page_next": self._context_aware_next_page,
+            "page_previous": self._context_aware_prev_page,
             "search_in_results": self._search_in_results,
             "search_in_results_reverse": lambda: self._search_in_results(reverse=True),
             "next_search_match": self._next_search_match,
             "previous_search_match": self._previous_search_match,
-            "result_activate": self._activate_selected_result,
+            "result_activate": self._context_aware_activate_result,
             "result_import_media": self._import_media_for_selected_result,
             "result_import_clip": self._import_clip_for_selected_result,
-            "scroll_half_page_down": self._scroll_half_page_down,
-            "scroll_half_page_up": self._scroll_half_page_up,
-            "center_result": self._center_result,
-            "result_to_top": self._result_to_top,
-            "result_to_bottom": self._result_to_bottom,
+            "scroll_half_page_down": self._context_aware_scroll_down,
+            "scroll_half_page_up": self._context_aware_scroll_up,
+            "center_result": self._context_aware_center_result,
+            "result_to_top": self._context_aware_result_to_top,
+            "result_to_bottom": self._context_aware_result_to_bottom,
             "open_editor_dialog": lambda: self._is_app_window_focused() and self._show_editor_dialog(),
             "open_media_settings": lambda: self._is_app_window_focused() and self._show_media_player_dialog(),
             "open_marker_settings": lambda: self._is_app_window_focused() and self._show_marker_settings_dialog(),
@@ -6781,6 +7508,9 @@ except Exception as e:
         editor_combobox.set(selected_editor)
 
         editor_combobox.bind("<<ComboboxSelected>>", self._on_editor_changed)
+        
+        # Store reference for fuzzy search
+        self.editor_dialog_combobox = editor_combobox
 
         self.editor_results_frame = ttk.LabelFrame(self.editor_main_frame, text="Search Results")
         self.editor_results_frame.pack(fill="both", expand=True, pady=10)
@@ -6850,6 +7580,12 @@ except Exception as e:
         editor_dialog.bind("<Shift-Escape>", handle_close)
         editor_dialog.bind("<Control-Shift-C>", handle_close)
         editor_dialog.bind("<Control-Shift-X>", handle_close)
+        
+        # Special binding for Shift+Return (activate with marker - editor-specific behavior)
+        editor_dialog.bind("<Shift-Return>", lambda e: self._editor_dialog_activate_result(shift_held=True))
+        
+        # Note: All other shortcuts are handled by the global shortcut system
+        # which checks context and calls appropriate functions
         
         # Set focus to search entry after dialog is fully created
         self.root.after(100, lambda: self.editor_search_entry.focus_set())
@@ -7150,9 +7886,14 @@ except Exception as e:
                 self.status_var.set("No matches found in current timeline")
                 return
 
-            # Clear previous search results
+            # Clear previous search results and tracking
             for widget in self.editor_results_container.winfo_children():
                 widget.destroy()
+            
+            # Reset result tracking
+            self.editor_result_items = []
+            self.editor_selected_result_index = None
+            self.editor_selected_result_frame = None
             
             # If no timeline object provided, try to get it from Resolve
             if not timeline:
@@ -7168,7 +7909,7 @@ except Exception as e:
             timeline_fps = self._get_resolve_timeline_fps(timeline) if timeline else 24.0
 
             # Create a frame for each match
-            for match in matches:
+            for idx, match in enumerate(matches):
                 result_frame = ttk.Frame(self.editor_results_container)
                 result_frame.pack(fill="x", pady=5)
                 timecode_string = f"{self._format_timecode(match['start'], timeline_fps)} - {self._format_timecode(match['end'], timeline_fps)}"
@@ -7189,6 +7930,18 @@ except Exception as e:
                 
                 subtitle_label = ttk.Label(result_frame, text=self._restore_subtitle_line_breaks(match['text']), wraplength=700)
                 subtitle_label.pack(pady=5, anchor="w")
+                
+                # Track this result item for keyboard navigation
+                self.editor_result_items.append({
+                    'frame': result_frame,
+                    'timecode_label': timecode_label,
+                    'text_label': subtitle_label,
+                    'match_data': match,
+                    'timeline': timeline,
+                    'timeline_fps': timeline_fps
+                })
+                
+                self.debug_print(f"Tracked editor result {idx + 1} for keyboard navigation")
                 
         except Exception as e:
             self.debug_print(f"Error displaying search results: {e}")
@@ -8919,7 +9672,8 @@ except Exception as e:
             categories[category].append({
                 "id": action_id,
                 "description": action_data["description"],
-                "keys": current_keys.copy()
+                "keys": current_keys.copy(),
+                "informational": action_data.get("informational", False)
             })
         
         # Store references to key entry widgets for later access
