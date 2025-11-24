@@ -6833,11 +6833,22 @@ except Exception as e:
         items_per_page_combo.pack(side="left", padx=5)
         items_per_page_combo.bind("<<ComboboxSelected>>", self._on_items_per_page_changed)
         
-        # Keyboard shortcuts: Shift+Escape or Ctrl+Shift+X to close (but not when text entry has focus)
+        # Keyboard shortcuts to close dialog
         def handle_close(e):
-            if not isinstance(e.widget, ttk.Entry):
-                on_dialog_close()
+            # Escape only closes if NOT in a text entry (to allow escaping from typing)
+            # Ctrl+Shift+C always closes (alternative when you need to copy text)
+            if e.keysym == "Escape":
+                # Only close if focus is not on an Entry widget
+                focused = editor_dialog.focus_get()
+                if focused and isinstance(focused, (ttk.Entry, tk.Entry)):
+                    return  # Don't close, user is typing
+            # Close the dialog
+            on_dialog_close()
+            return "break"
+        
+        editor_dialog.bind("<Escape>", handle_close)
         editor_dialog.bind("<Shift-Escape>", handle_close)
+        editor_dialog.bind("<Control-Shift-C>", handle_close)
         editor_dialog.bind("<Control-Shift-X>", handle_close)
         
         # Set focus to search entry after dialog is fully created
