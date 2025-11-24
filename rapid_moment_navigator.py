@@ -2635,7 +2635,7 @@ class RapidMomentNavigator:
         
         # Bind events
         trace_id = search_var.trace_add("write", lambda *args: update_search())
-        search_entry.bind("<Return>", lambda e: select_match())
+        search_entry.bind("<Return>", lambda e: select_match() or "break")
         search_entry.bind("<Escape>", lambda e: close_search())
         search_entry.bind("<Control-c>", lambda e: close_search())
         
