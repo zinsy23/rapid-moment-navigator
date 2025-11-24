@@ -3689,12 +3689,46 @@ class RapidMomentNavigator:
         self.fuzzy_search_overlay = fuzzy_overlay
         
         # Position near the dropdown
-        dropdown_x = dropdown_widget.winfo_rootx()
-        dropdown_y = dropdown_widget.winfo_rooty() + dropdown_widget.winfo_height()
-        dropdown_width = max(dropdown_widget.winfo_width(), 300)
+        if sys.platform == 'win32':
+            # Windows: Force multiple updates to ensure accurate positioning info
+            fuzzy_overlay.attributes('-topmost', True)
+            self.root.update_idletasks()
+            self.root.update()
+            fuzzy_overlay.update_idletasks()
+            
+            dropdown_x = dropdown_widget.winfo_rootx()
+            dropdown_y = dropdown_widget.winfo_rooty() + dropdown_widget.winfo_height()
+            dropdown_width = max(dropdown_widget.winfo_width(), 300)
+            
+            # Windows workaround: winfo_rootx/y sometimes returns 0
+            if dropdown_x <= 1 or dropdown_y <= 1:
+                self.debug_print(f"Windows: Invalid dropdown position ({dropdown_x}, {dropdown_y}), using geometry fallback")
+                # Parse root window geometry to get absolute position
+                geometry = self.root.geometry()
+                match = re.match(r'(\d+)x(\d+)\+(-?\d+)\+(-?\d+)', geometry)
+                if match:
+                    root_x = int(match.group(3))
+                    root_y = int(match.group(4))
+                else:
+                    root_x = self.root.winfo_x()
+                    root_y = self.root.winfo_y()
+                
+                # Get dropdown position relative to root
+                dropdown_rel_x = dropdown_widget.winfo_x()
+                dropdown_rel_y = dropdown_widget.winfo_y()
+                
+                # Calculate absolute position
+                dropdown_x = root_x + dropdown_rel_x
+                dropdown_y = root_y + dropdown_rel_y + dropdown_widget.winfo_height()
+                
+                self.debug_print(f"Calculated from geometry: x={dropdown_x}, y={dropdown_y}")
+        else:
+            # Linux/Mac: Simple positioning
+            dropdown_x = dropdown_widget.winfo_rootx()
+            dropdown_y = dropdown_widget.winfo_rooty() + dropdown_widget.winfo_height()
+            dropdown_width = max(dropdown_widget.winfo_width(), 300)
         
         # Calculate height as proportion of available screen space below dropdown
-        # Get screen height and calculate available space
         screen_height = self.root.winfo_screenheight()
         available_height_below = screen_height - dropdown_y - 50  # 50px margin from bottom
         
@@ -3702,7 +3736,15 @@ class RapidMomentNavigator:
         overlay_height = int(available_height_below * 0.4)
         overlay_height = min(max(overlay_height, 150), 500)  # Min 150px, max 500px
         
-        fuzzy_overlay.geometry(f"{dropdown_width}x{overlay_height}+{dropdown_x}+{dropdown_y}")
+        geometry_string = f"{dropdown_width}x{overlay_height}+{dropdown_x}+{dropdown_y}"
+        fuzzy_overlay.geometry(geometry_string)
+        
+        if sys.platform == 'win32':
+            # Windows: Force window to update and reposition (sometimes ignores first geometry call)
+            fuzzy_overlay.update_idletasks()
+            fuzzy_overlay.geometry(geometry_string)  # Set again after update
+        
+        self.debug_print(f"Created fuzzy overlay at {dropdown_x},{dropdown_y} with size {dropdown_width}x{overlay_height}")
         
         # Main frame with border
         main_frame = ttk.Frame(fuzzy_overlay, relief="solid", borderwidth=2, padding=5)
@@ -3927,17 +3969,51 @@ class RapidMomentNavigator:
         
         # Close overlay when clicking outside (focus lost)
         def on_focus_out(event):
-            # Small delay to allow click events to process first
+            # Check if focus went to a widget within the overlay
+            try:
+                focused = fuzzy_overlay.focus_get()
+                if focused:
+                    # Check if focused widget is a descendant of fuzzy_overlay
+                    widget = focused
+                    while widget:
+                        if widget == fuzzy_overlay:
+                            # Focus is still within overlay, don't close
+                            return
+                        try:
+                            widget = widget.master
+                        except:
+                            break
+            except:
+                pass
+            
+            # Focus went outside overlay, close it after a small delay
             fuzzy_overlay.after(100, lambda: fuzzy_overlay.destroy() if fuzzy_overlay.winfo_exists() else None)
         
-        fuzzy_overlay.bind("<FocusOut>", on_focus_out)
+        # Only bind FocusOut on Windows (Linux/Mac have issues with spurious FocusOut events)
+        if sys.platform == 'win32':
+            fuzzy_overlay.bind("<FocusOut>", on_focus_out)
         
         # Initialize with all options
         update_results()
         
-        # Focus search entry and grab focus
-        fuzzy_overlay.focus_force()
-        search_entry.focus_set()
+        # Force window to be visible and focused (with platform-specific handling)
+        if sys.platform == 'win32':
+            # Windows needs extra steps
+            fuzzy_overlay.deiconify()
+            fuzzy_overlay.lift()
+            fuzzy_overlay.attributes('-topmost', True)
+            self.root.update()
+            fuzzy_overlay.focus_force()
+            search_entry.focus_set()
+            search_entry.icursor(0)
+            self.root.update()
+        else:
+            # Linux/Mac - simpler approach
+            fuzzy_overlay.lift()
+            fuzzy_overlay.focus_force()
+            search_entry.focus_set()
+        
+        self.debug_print(f"Fuzzy search overlay created and focused")
     
     def _show_fuzzy_search(self):
         """Show fuzzy search for shows dropdown"""
