@@ -70,12 +70,12 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
     "focus_search": {
         "description": "Focus search bar",
         "category": "Navigation",
-        "keys": ["<Control-F>", "i"]
+        "keys": ["<Control-F>", "i", "<braceleft>"]
     },
     "escape_search": {
         "description": "Unfocus/escape search bar",
         "category": "Navigation",
-        "keys": ["<Escape>", "<Control-Shift-C>"]
+        "keys": ["<Escape>", "<Control-C>", "<braceright>"]
     },
     "result_next": {
         "description": "Navigate to next result",
@@ -110,12 +110,12 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
     "page_next": {
         "description": "Go to next page",
         "category": "Results Navigation",
-        "keys": ["L"]
+        "keys": ["<Right>", "L"]
     },
     "page_previous": {
         "description": "Go to previous page",
         "category": "Results Navigation",
-        "keys": ["H"]
+        "keys": ["<Left>", "H"]
     },
     "search_in_results": {
         "description": "Search within current results (forward)",
@@ -640,6 +640,30 @@ class RapidMomentNavigator:
         
         # Select all text when search entry gains focus
         self.search_entry.bind("<FocusIn>", lambda e: self._select_all_on_focus(e.widget))
+        
+        # Track last character typed for escape key detection
+        self._last_search_value = ""
+        
+        def validate_search_entry(*args):
+            """Remove escape characters if they were just typed"""
+            current = self.search_var.get()
+            # Check if an escape character was just added
+            if len(current) > len(self._last_search_value):
+                # A character was added
+                added_char = current[len(self._last_search_value):]
+                # Check if it's an escape character (}, Escape won't be typed)
+                if added_char in ['}']:
+                    # Remove it
+                    self.search_var.set(self._last_search_value)
+                    self.debug_print(f"Removed escape character: {repr(added_char)}")
+                    return
+            self._last_search_value = current
+        
+        self.search_var.trace_add("write", validate_search_entry)
+        
+        # Bind escape_search keys directly to search entry to intercept before typing
+        # This will be updated when keyboard shortcuts are loaded
+        self._bind_escape_keys_to_search_entry()
         
         # Use a direct binding approach for Ctrl+Backspace without KeyRelease complication
         self.search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
@@ -4094,10 +4118,51 @@ class RapidMomentNavigator:
                 return 1
         return 1
     
+    def _bind_escape_keys_to_search_entry(self):
+        """Bind escape_search keys directly to search entry to prevent typing"""
+        # Get escape_search keys from preferences
+        shortcuts = self.preferences.get("keyboard_shortcuts", {})
+        escape_keys = shortcuts.get("escape_search", {}).get("keys", [])
+        
+        # Create a unique bindtag for our custom bindings
+        custom_tag = "SearchEntryEscape"
+        
+        # Get current bindtags and reorder to put our custom tag before Entry class
+        current_tags = list(self.search_entry.bindtags())
+        # Remove Entry class tag temporarily
+        try:
+            entry_class_idx = current_tags.index("Entry")
+            # Insert our custom tag before Entry class
+            current_tags.insert(entry_class_idx, custom_tag)
+            self.search_entry.bindtags(tuple(current_tags))
+            self.debug_print(f"Reordered bindtags: {current_tags}")
+        except ValueError:
+            # Entry class not found, just add our tag
+            current_tags.insert(0, custom_tag)
+            self.search_entry.bindtags(tuple(current_tags))
+        
+        # Now bind our handlers to the custom tag
+        for key in escape_keys:
+            def make_handler(k):
+                def handler(e):
+                    self.debug_print(f"Intercepted {k} before Entry class binding")
+                    # Call unfocus
+                    self._unfocus_search_bar()
+                    # Return "break" to prevent Entry class from processing
+                    return "break"
+                return handler
+            
+            # Bind to our custom tag, not the widget
+            self.search_entry.bind_class(custom_tag, key, make_handler(key))
+            self.debug_print(f"Bound {key} to {custom_tag} tag for escape_search")
+    
     def _setup_keyboard_shortcuts(self):
         """Bind keyboard shortcuts from preferences to their actions"""
         # First unbind any existing shortcuts
         self._unbind_keyboard_shortcuts()
+        
+        # Re-bind escape keys to search entry after unbinding
+        self._bind_escape_keys_to_search_entry()
         
         # Get keyboard shortcuts from preferences and merge with defaults
         # Start with defaults, then override with any custom shortcuts
@@ -4178,7 +4243,43 @@ class RapidMomentNavigator:
                             single_letter_actions.add(key)
                             # Use bind_all for single character keys to catch them globally
                             # Pass event to handler in case it needs to check modifier state
-                            self.root.bind_all(bind_key, lambda e, h=handler: h(e) if action_id in ["increase_items_per_page", "decrease_items_per_page"] else h())
+                            def make_handler_wrapper(h, aid):
+                                def wrapper(e):
+                                    # Check if we're specifically in the main search bar
+                                    focused = self.root.focus_get()
+                                    in_main_search = focused == self.search_entry
+                                    
+                                    # Also check if in editor dialog search bar (if it exists)
+                                    in_editor_search = False
+                                    if hasattr(self, 'editor_search_entry') and self.editor_search_entry:
+                                        try:
+                                            in_editor_search = focused == self.editor_search_entry
+                                        except:
+                                            pass
+                                    
+                                    if in_main_search or in_editor_search:
+                                        # If in a search bar, only handle "escape_search" action (unfocus shortcuts)
+                                        # These should work while typing and prevent the character from being typed
+                                        if aid == "escape_search":
+                                            # Call handler and return "break" to prevent character typing
+                                            h()
+                                            return "break"
+                                        else:
+                                            # For all other shortcuts, ignore them (let character be typed)
+                                            return None
+                                    
+                                    # Not in entry widget - handle all shortcuts normally
+                                    # Call handler (with event if needed)
+                                    if aid in ["increase_items_per_page", "decrease_items_per_page"]:
+                                        h(e)
+                                    else:
+                                        h()
+                                    
+                                    # Return "break" to prevent character from being typed
+                                    return "break"
+                                return wrapper
+                            
+                            self.root.bind_all(bind_key, make_handler_wrapper(handler, action_id))
                             self.bound_shortcut_keys.add(bind_key)
                             self.debug_print(f"Bound (globally) {bind_key} (from {key}) to {action_id}")
                         
@@ -4226,10 +4327,41 @@ class RapidMomentNavigator:
                                 
                                 self.debug_print(f"Bound (globally, override) {bind_key} (from {key}) to {action_id}")
                             else:
-                                # Use regular bind for non-modifier special keys like <Home>, <End>
-                                self.root.bind(bind_key, lambda e, h=handler: h())
+                                # Use regular bind for non-modifier special keys like <Home>, <End>, <braceright>, etc.
+                                # Add wrapper for escape_search to prevent typing in search bar
+                                def make_special_key_wrapper(h, aid):
+                                    def wrapper(e):
+                                        # Check if we're specifically in the main search bar
+                                        focused = self.root.focus_get()
+                                        in_main_search = focused == self.search_entry
+                                        
+                                        # Also check if in editor dialog search bar (if it exists)
+                                        in_editor_search = False
+                                        if hasattr(self, 'editor_search_entry') and self.editor_search_entry:
+                                            try:
+                                                in_editor_search = focused == self.editor_search_entry
+                                            except:
+                                                pass
+                                        
+                                        if in_main_search or in_editor_search:
+                                            # If in a search bar, only handle "escape_search" action
+                                            if aid == "escape_search":
+                                                # Call handler and return "break" to prevent character typing
+                                                h()
+                                                return "break"
+                                            else:
+                                                # For all other shortcuts, ignore them (let character be typed)
+                                                return None
+                                        
+                                        # Not in search bar - handle normally
+                                        h()
+                                        return "break"
+                                    return wrapper
+                                
+                                # Use bind_all to catch before Entry widget processes it
+                                self.root.bind_all(bind_key, make_special_key_wrapper(handler, action_id))
                                 self.bound_shortcut_keys.add(bind_key)
-                                self.debug_print(f"Bound {bind_key} (from {key}) to {action_id}")
+                                self.debug_print(f"Bound (globally) {bind_key} (from {key}) to {action_id}")
                     except Exception as e:
                         self.debug_print(f"Error binding {key} for {action_id}: {e}")
         
