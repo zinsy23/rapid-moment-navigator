@@ -26,6 +26,7 @@ DEFAULT_PREFS = {
     "selected_editor": "None",
     "min_duration_enabled": True,  # Changed from False to True
     "min_duration_seconds": 10.0,
+    "scrolloff": 2,  # Number of results to keep visible above/below cursor (Vim-like behavior)
     "auto_cache_update": True,  # Enable automatic cache updates when app gains focus
     "always_consecutive_search": False,  # Always run consecutive search regardless of individual results (slower but most comprehensive)
     "enable_pagination": True,  # Enable pagination for search results (improves performance with many results)
@@ -558,6 +559,12 @@ class RapidMomentNavigator:
         self.current_search_match_index = None  # Current position in search_matches
         self.search_query = ""  # Current search query
         self.search_direction = 1  # 1 for forward (/), -1 for backward (?)
+        self.search_overlay = None  # Reference to search overlay window
+        self.search_overlay_var = None  # StringVar for search overlay
+        self.search_overlay_trace_id = None  # Trace ID for cleanup
+        
+        # Fuzzy search overlay tracking
+        self.fuzzy_search_overlay = None  # Reference to fuzzy search overlay window
         
         # Setup exception handling for Tkinter
         self.setup_exception_handler()
@@ -618,6 +625,7 @@ class RapidMomentNavigator:
         self.show_var = tk.StringVar()
         self.show_dropdown = ttk.Combobox(self.search_frame, textvariable=self.show_var, state="readonly", width=30)
         self.show_dropdown.pack(side="left", padx=5)
+        self.show_dropdown.bind("<<ComboboxSelected>>", self._on_show_changed)
         
         # Create search entry and button
         ttk.Label(self.search_frame, text="Search:").pack(side="left", padx=5)
@@ -1822,18 +1830,7 @@ class RapidMomentNavigator:
         selected_show_path = self.show_name_to_path_map[selected_show_name]
         
         # Clear previous results
-        for widget in self.results_container.winfo_children():
-            widget.destroy()
-        
-        self.search_results = []
-        self.result_items = []  # Clear result navigation tracking
-        self.selected_result_index = None
-        self.selected_result_frame = None
-        
-        # Reset pagination state
-        self.main_all_results = []
-        self.main_current_page = 1
-        self.main_total_pages = 0
+        self._clear_results()
         self._update_main_pagination_controls()
         
         self.debug_print(f"Searching for '{keyword}' in {selected_show_name} ({selected_show_path})")
@@ -2282,10 +2279,11 @@ class RapidMomentNavigator:
             self.debug_print("App window doesn't have focus, ignoring search")
             return
         
-        # Don't start if ANY Entry widget has focus (user is typing)
+        # Don't start if user is typing in ANY Entry or Combobox widget
+        # This automatically blocks / and ? in fuzzy search, settings dialogs, etc.
         focused_widget = self.root.focus_get()
-        if focused_widget and isinstance(focused_widget, (ttk.Entry, tk.Entry)):
-            self.debug_print(f"Entry widget has focus ({focused_widget}), ignoring / search")
+        if focused_widget and isinstance(focused_widget, (ttk.Entry, tk.Entry, ttk.Combobox)):
+            self.debug_print(f"Entry/Combobox widget has focus ({focused_widget}), ignoring / search")
             return
         
         # Only allow if we have results and one is selected
@@ -2404,7 +2402,25 @@ class RapidMomentNavigator:
         
         def update_search():
             """Update search matches as user types"""
+            self.debug_print(f"update_search called: search_mode_active={self.search_mode_active}, overlay={self.search_overlay}")
+            
+            # Only update if search mode is still active and overlay exists and is visible
+            if not self.search_mode_active:
+                self.debug_print("Search mode not active, returning")
+                return
+            if self.search_overlay is None:
+                self.debug_print("Search overlay is None, returning")
+                return
+            try:
+                if not self.search_overlay.winfo_exists() or not self.search_overlay.winfo_viewable():
+                    self.debug_print("Search overlay not visible, returning")
+                    return
+            except:
+                self.debug_print("Error checking overlay visibility, returning")
+                return
+            
             query = search_var.get().lower()
+            self.debug_print(f"Processing search query: '{query}'")
             self.search_query = query
             self.search_matches = []
             
@@ -2531,12 +2547,22 @@ class RapidMomentNavigator:
             if self.selected_result_index is not None:
                 self._select_result(self.selected_result_index)
             
-            # Destroy overlay and clear reference
+            # Remove trace callback before destroying
+            if hasattr(self, 'search_overlay_var') and hasattr(self, 'search_overlay_trace_id'):
+                try:
+                    self.search_overlay_var.trace_remove("write", self.search_overlay_trace_id)
+                    self.debug_print("Removed search overlay trace callback")
+                except:
+                    pass
+            
+            # Destroy overlay and clear references
             try:
                 search_overlay.destroy()
             except:
                 pass
             self.search_overlay = None
+            self.search_overlay_var = None
+            self.search_overlay_trace_id = None
             
             # Return focus to main window
             self.root.focus_force()
@@ -2572,22 +2598,27 @@ class RapidMomentNavigator:
                 # Select the result
                 self._select_result(selected_index)
                 
-                # Return focus to main window
+                # Return focus to main window FIRST (needed for _center_result focus check)
                 self.root.focus_force()
                 self.main_frame.focus_set()
+                
+                # Center the selected result in viewport (Vim zz behavior)
+                self._center_result()
             else:
                 # No matches or no selection, just close search
                 self.debug_print("No matches to select, closing search")
                 close_search()
         
         # Bind events
-        search_var.trace_add("write", lambda *args: update_search())
+        trace_id = search_var.trace_add("write", lambda *args: update_search())
         search_entry.bind("<Return>", lambda e: select_match())
         search_entry.bind("<Escape>", lambda e: close_search())
         search_entry.bind("<Control-c>", lambda e: close_search())
         
-        # Store reference to overlay for cleanup
+        # Store references for cleanup
         self.search_overlay = search_overlay
+        self.search_overlay_var = search_var
+        self.search_overlay_trace_id = trace_id
         
         # Force window to be visible and focused
         search_overlay.deiconify()  # Ensure window is not minimized
@@ -2603,6 +2634,9 @@ class RapidMomentNavigator:
     
     def _next_search_match(self):
         """Go to next search match (Vim-like n) - respects search direction"""
+        if not self._can_navigate_results():
+            return
+        
         if not self.search_matches:
             return
         
@@ -2611,11 +2645,15 @@ class RapidMomentNavigator:
             self.current_search_match_index = (self.current_search_match_index + self.search_direction) % len(self.search_matches)
             match_index = self.search_matches[self.current_search_match_index]
             self._select_result(match_index)
+            self._scroll_with_scrolloff(match_index)  # Apply scrolloff behavior
             self._flash_search_highlight(match_index)
             self.debug_print(f"Next match: {self.current_search_match_index + 1}/{len(self.search_matches)}")
     
     def _previous_search_match(self):
         """Go to previous search match (Vim-like N) - opposite of search direction"""
+        if not self._can_navigate_results():
+            return
+        
         if not self.search_matches:
             return
         
@@ -2624,6 +2662,7 @@ class RapidMomentNavigator:
             self.current_search_match_index = (self.current_search_match_index - self.search_direction) % len(self.search_matches)
             match_index = self.search_matches[self.current_search_match_index]
             self._select_result(match_index)
+            self._scroll_with_scrolloff(match_index)  # Apply scrolloff behavior
             self._flash_search_highlight(match_index)
             self.debug_print(f"Previous match: {self.current_search_match_index + 1}/{len(self.search_matches)}")
     
@@ -2742,6 +2781,54 @@ class RapidMomentNavigator:
         except Exception as e:
             self.debug_print(f"Error scrolling to result: {e}")
     
+    def _is_fuzzy_search_active(self):
+        """Check if fuzzy search overlay is currently active"""
+        if self.fuzzy_search_overlay is not None:
+            try:
+                return self.fuzzy_search_overlay.winfo_exists()
+            except:
+                pass
+        return False
+    
+    def _can_navigate_results(self):
+        """
+        Check if result navigation shortcuts should be active.
+        Only allow navigation when:
+        - App window has focus
+        - User isn't typing in a text field (Entry/Combobox)
+        - Exception: Search overlay (/ or ?) is part of result navigation
+        
+        This automatically blocks navigation in ANY overlay with text input,
+        except the search overlay which is specifically part of result navigation.
+        """
+        # Must have app window focus
+        if not self._is_app_window_focused():
+            return False
+        
+        # Check if user is typing in an entry or combobox
+        focused_widget = self.root.focus_get()
+        if focused_widget and isinstance(focused_widget, (ttk.Entry, tk.Entry, ttk.Combobox)):
+            # Exception: Allow navigation if the focused widget is in the search overlay (/ or ?)
+            # because that's part of result navigation
+            if self.search_overlay is not None:
+                try:
+                    if self.search_overlay.winfo_exists():
+                        # Check if focused widget is a descendant of search overlay
+                        widget = focused_widget
+                        while widget:
+                            if widget == self.search_overlay:
+                                return True  # Allow navigation in search overlay
+                            try:
+                                widget = widget.master
+                            except:
+                                break
+                except:
+                    pass
+            # User is typing in some other text field - block navigation
+            return False
+        
+        return True
+    
     def _is_app_window_focused(self):
         """
         Check if any application window has focus (main window, overlays, or editor dialog)
@@ -2793,8 +2880,7 @@ class RapidMomentNavigator:
     
     def _navigate_result_next(self):
         """Navigate to the next result (with optional count from number prefix)"""
-        # Don't navigate if app window doesn't have focus
-        if not self._is_app_window_focused():
+        if not self._can_navigate_results():
             return
         
         # Don't navigate if search bar has focus (user is typing)
@@ -2822,8 +2908,7 @@ class RapidMomentNavigator:
     
     def _navigate_result_previous(self):
         """Navigate to the previous result (with optional count from number prefix)"""
-        # Don't navigate if app window doesn't have focus
-        if not self._is_app_window_focused():
+        if not self._can_navigate_results():
             return
         
         # Don't navigate if search bar has focus (user is typing)
@@ -3107,8 +3192,7 @@ class RapidMomentNavigator:
     
     def _scroll_half_page_down(self):
         """Scroll down half a page in the results canvas (Vim-style, with optional count)"""
-        # Don't scroll if app window doesn't have focus
-        if not self._is_app_window_focused():
+        if not self._can_navigate_results():
             return
         
         if not self.result_items:
@@ -3145,8 +3229,7 @@ class RapidMomentNavigator:
     
     def _scroll_half_page_up(self):
         """Scroll up half a page in the results canvas (Vim-style, with optional count)"""
-        # Don't scroll if app window doesn't have focus
-        if not self._is_app_window_focused():
+        if not self._can_navigate_results():
             return
         
         if not self.result_items:
@@ -3300,9 +3383,64 @@ class RapidMomentNavigator:
         except Exception as e:
             self.debug_print(f"Error in _scroll_to_keep_selection_visible: {e}")
     
+    def _scroll_with_scrolloff(self, result_index):
+        """
+        Scroll to keep result visible with scrolloff margin (Vim-like behavior).
+        Keeps N results visible above/below the target result when possible.
+        """
+        if result_index is None or result_index >= len(self.result_items):
+            return
+        
+        scrolloff = self.preferences.get("scrolloff", 2)
+        
+        try:
+            selected_frame = self.result_items[result_index]['frame']
+            canvas_height = self.results_canvas.winfo_height()
+            
+            # Get scroll region
+            scroll_region = self.results_canvas.cget("scrollregion")
+            if not scroll_region:
+                return
+            total_height = int(scroll_region.split()[3])
+            
+            # Get current viewport position
+            current_scroll = self.results_canvas.yview()
+            viewport_top = current_scroll[0] * total_height
+            viewport_bottom = current_scroll[1] * total_height
+            
+            # Get selected frame position
+            frame_y = selected_frame.winfo_y()
+            frame_height = selected_frame.winfo_height()
+            
+            # Calculate scrolloff margins in pixels
+            # Estimate average result height
+            avg_result_height = total_height / len(self.result_items) if self.result_items else 100
+            scrolloff_pixels = scrolloff * avg_result_height
+            
+            # Check if we need to scroll
+            target_top = frame_y - scrolloff_pixels
+            target_bottom = frame_y + frame_height + scrolloff_pixels
+            
+            new_scroll_pos = None
+            
+            # If result is too close to top, scroll up
+            if frame_y < viewport_top + scrolloff_pixels:
+                new_scroll_pos = max(0, target_top / total_height)
+            # If result is too close to bottom, scroll down
+            elif frame_y + frame_height > viewport_bottom - scrolloff_pixels:
+                new_scroll_pos = (target_bottom - canvas_height) / total_height
+                new_scroll_pos = max(0, min(1.0, new_scroll_pos))
+            
+            if new_scroll_pos is not None:
+                self.results_canvas.yview_moveto(new_scroll_pos)
+                self.debug_print(f"Scrolled with scrolloff={scrolloff}")
+        
+        except Exception as e:
+            self.debug_print(f"Error in _scroll_with_scrolloff: {e}")
+    
     def _center_result(self):
         """Center the selected result in the viewport (Vim zz)"""
-        if not self._is_app_window_focused():
+        if not self._can_navigate_results():
             return
         
         if self.selected_result_index is None or not self.result_items:
@@ -3339,7 +3477,7 @@ class RapidMomentNavigator:
     
     def _result_to_top(self):
         """Move selected result to top of viewport (Vim zt)"""
-        if not self._is_app_window_focused():
+        if not self._can_navigate_results():
             return
         
         if self.selected_result_index is None or not self.result_items:
@@ -3372,7 +3510,7 @@ class RapidMomentNavigator:
     
     def _result_to_bottom(self):
         """Move selected result to bottom of viewport (Vim zb)"""
-        if not self._is_app_window_focused():
+        if not self._can_navigate_results():
             return
         
         if self.selected_result_index is None or not self.result_items:
@@ -3497,6 +3635,44 @@ class RapidMomentNavigator:
         if not self._is_app_window_focused():
             self.debug_print("App window doesn't have focus, ignoring fuzzy search")
             return
+        
+        # Close any active search overlay (/ or ?) before opening fuzzy search
+        if self.search_overlay is not None:
+            # Remove trace callback first
+            if hasattr(self, 'search_overlay_var') and hasattr(self, 'search_overlay_trace_id'):
+                try:
+                    self.search_overlay_var.trace_remove("write", self.search_overlay_trace_id)
+                    self.debug_print("Removed search overlay trace before opening fuzzy search")
+                except:
+                    pass
+            
+            try:
+                self.search_overlay.destroy()
+            except:
+                pass
+            self.search_overlay = None
+            self.search_overlay_var = None
+            self.search_overlay_trace_id = None
+            self.search_mode_active = False
+            
+            # Clear search state
+            self.search_matches = []
+            self.current_search_match_index = None
+            self.search_query = ""
+            
+            # Clear all search highlights
+            for item in self.result_items:
+                item['frame'].configure(style='TFrame')
+                text_widget = item.get('text_widget')
+                if text_widget:
+                    try:
+                        text_widget.config(state="normal")
+                        text_widget.tag_remove("search_match", "1.0", "end")
+                        text_widget.config(state="disabled")
+                    except:
+                        pass
+            
+            self.debug_print("Closed active search overlay before opening fuzzy search")
         
         # Get available options from dropdown
         available_options = list(dropdown_widget['values'])
@@ -3768,7 +3944,7 @@ class RapidMomentNavigator:
         self._show_dropdown_fuzzy_search(
             dropdown_widget=self.show_dropdown,
             var_to_set=self.show_var,
-            on_select_callback=None,
+            on_select_callback=self._on_show_changed,
             focus_widget_after=self.search_entry
         )
     
@@ -4446,6 +4622,57 @@ class RapidMomentNavigator:
         # Prevent the default behavior
         return "break"
 
+    def _clear_results(self):
+        """Clear all search results from the display"""
+        # Clear result widgets (same as search_subtitles does)
+        for widget in self.results_container.winfo_children():
+            widget.destroy()
+        
+        # Clear result tracking (same as search_subtitles does)
+        self.search_results = []
+        self.result_items = []
+        self.selected_result_index = None
+        self.selected_result_frame = None
+        
+        # Reset pagination state (same as search_subtitles does)
+        self.main_all_results = []
+        self.main_current_page = 1
+        self.main_total_pages = 0
+        
+        # Update pagination display
+        if hasattr(self, 'main_page_label'):
+            self.main_page_label.config(text="Page 0 of 0")
+        if hasattr(self, 'main_prev_button'):
+            self.main_prev_button.config(state="disabled")
+        if hasattr(self, 'main_next_button'):
+            self.main_next_button.config(state="disabled")
+        
+        # Clear search state
+        self.search_matches = []
+        self.current_search_match_index = None
+        self.search_query = ""
+        
+        # Reset canvas scroll position to top
+        self.results_canvas.yview_moveto(0)
+        
+        # Update canvas scroll region
+        self.results_canvas.configure(scrollregion=self.results_canvas.bbox("all"))
+        
+        # Update status
+        self.status_var.set("Results cleared")
+        self.debug_print("Results cleared")
+    
+    def _on_show_changed(self, event):
+        """Handle show selection change"""
+        self.debug_print(f"Show changed to: {self.show_var.get()}")
+        
+        # Clear search results when show changes
+        self._clear_results()
+        
+        # Focus the search entry
+        self.search_entry.focus_set()
+        self.root.after(50, lambda: self._select_all_text(self.search_entry))
+    
     def _on_editor_changed(self, event):
         """Handle editor selection change"""
         # Get selected editor from event or directly from variable
