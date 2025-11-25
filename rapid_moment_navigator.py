@@ -3000,12 +3000,23 @@ class RapidMomentNavigator:
             second_key_map: Dict mapping second keys to (handler, action_id) tuples
             has_standalone_action: If True, this key also has a standalone action (e.g., 'j', 'k')
         """
-        # Don't navigate if app window doesn't have focus
-        if not self._is_app_window_focused():
+        # Don't navigate if app window doesn't have focus AND no dialogs are focused
+        # Allow two-letter sequences in keyboard shortcuts dialog, window sizing dialog, debug window, and editor dialog
+        app_focused = self._is_app_window_focused()
+        editor_focused = self._is_editor_dialog_focused() if hasattr(self, '_is_editor_dialog_focused') else False
+        keyboard_shortcuts_focused = hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas and self.keyboard_shortcuts_canvas.winfo_exists()
+        window_sizing_focused = hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas and self.window_sizing_canvas.winfo_exists()
+        debug_focused = hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area') and self.debug_window.text_area.winfo_exists()
+        
+        if not (app_focused or editor_focused or keyboard_shortcuts_focused or window_sizing_focused or debug_focused):
             return
         
         # Don't navigate if search bar has focus (user is typing)
-        if self.root.focus_get() == self.search_entry:
+        focused_widget = self.root.focus_get()
+        if focused_widget == self.search_entry:
+            return
+        # Also check editor search bar
+        if hasattr(self, 'editor_search_entry') and self.editor_search_entry and focused_widget == self.editor_search_entry:
             return
         
         # Get last press info for this key (default to None if not found)
