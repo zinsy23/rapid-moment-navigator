@@ -88,12 +88,12 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "keys": ["<Up>", "k"]
     },
     "result_first": {
-        "description": "Jump to first result on page (works in Main & Editor Navigator)",
+        "description": "Jump to first result / Scroll to top (works in Main & Editor Navigator, and Dialogs)",
         "category": "Results Navigation",
         "keys": ["<Home>", "gg"]
     },
     "result_last": {
-        "description": "Jump to last result on page (works in Main & Editor Navigator)",
+        "description": "Jump to last result / Scroll to bottom (works in Main & Editor Navigator, and Dialogs)",
         "category": "Results Navigation",
         "keys": ["<End>", "G"]
     },
@@ -183,12 +183,12 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "keys": ["<Control-Shift-D>"]
     },
     "scroll_half_page_down": {
-        "description": "Scroll down half a page (works in Main & Editor Navigator)",
+        "description": "Scroll down half a page (works in Main & Editor Navigator, and Dialogs)",
         "category": "Scrolling",
         "keys": ["d"]
     },
     "scroll_half_page_up": {
-        "description": "Scroll up half a page (works in Main & Editor Navigator)",
+        "description": "Scroll up half a page (works in Main & Editor Navigator, and Dialogs)",
         "category": "Scrolling",
         "keys": ["u"]
     },
@@ -3244,6 +3244,93 @@ class RapidMomentNavigator:
             self.debug_print(f"Error getting selected visible position: {e}")
             return None
     
+    def _unified_scroll_half_page(self, canvas, direction="down", mode="pixels", 
+                                   result_items=None, selected_index=None, 
+                                   select_callback=None, get_visible_count_callback=None,
+                                   get_visual_position_callback=None, scroll_to_visual_callback=None):
+        """
+        Unified scroll half-page function that handles both pixel-based and item-based scrolling.
+        Reuses all tested canvas scrolling primitives.
+        
+        Args:
+            canvas: The canvas widget to scroll
+            direction: "down" or "up"
+            mode: "pixels" for dialog scrolling, "items" for result navigation
+            result_items: List of result items (for item mode)
+            selected_index: Currently selected item index (for item mode)
+            select_callback: Function to select item by index (for item mode)
+            get_visible_count_callback: Function to get visible item count (for item mode)
+            get_visual_position_callback: Function to get visual position (for item mode)
+            scroll_to_visual_callback: Function to scroll to visual position (for item mode)
+        
+        Returns:
+            For item mode: new selected index or None
+            For pixel mode: None
+        """
+        if not canvas or not canvas.winfo_exists():
+            return None
+        
+        # Get count from number prefix (default 1) - shared system
+        count = self._get_count()
+        
+        try:
+            if mode == "pixels":
+                # Pixel-based scrolling for dialogs without item selection
+                canvas_height = canvas.winfo_height()
+                scroll_region = canvas.cget("scrollregion")
+                if not scroll_region:
+                    return None
+                
+                total_height = int(scroll_region.split()[3])
+                half_page_pixels = (canvas_height // 2) * count
+                
+                current_view = canvas.yview()
+                current_top_pixels = current_view[0] * total_height
+                
+                if direction == "down":
+                    new_top_pixels = current_top_pixels + half_page_pixels
+                else:
+                    new_top_pixels = current_top_pixels - half_page_pixels
+                
+                new_top_pixels = max(0, min(new_top_pixels, total_height - canvas_height))
+                new_scroll_pos = new_top_pixels / total_height if total_height > 0 else 0
+                new_scroll_pos = max(0.0, min(1.0, new_scroll_pos))
+                
+                canvas.yview_moveto(new_scroll_pos)
+                self.debug_print(f"Scrolled canvas {direction} by {half_page_pixels}px (count: {count})")
+                return None
+                
+            elif mode == "items":
+                # Item-based scrolling for result navigation
+                if not result_items or get_visible_count_callback is None:
+                    return None
+                
+                visual_position = get_visual_position_callback() if get_visual_position_callback else None
+                visible_count = get_visible_count_callback()
+                items_per_half_page = max(1, visible_count // 2) * count
+                
+                if selected_index is None:
+                    new_index = 0
+                else:
+                    if direction == "down":
+                        new_index = min(selected_index + items_per_half_page, len(result_items) - 1)
+                    else:
+                        new_index = max(selected_index - items_per_half_page, 0)
+                
+                if select_callback:
+                    select_callback(new_index)
+                    
+                    # Maintain visual position if available
+                    if visual_position is not None and scroll_to_visual_callback:
+                        scroll_to_visual_callback(visual_position)
+                
+                self.debug_print(f"Scrolled {direction} {items_per_half_page} items (visible: {visible_count}, visual_pos: {visual_position})")
+                return new_index
+                
+        except Exception as e:
+            self.debug_print(f"Error in unified scroll {direction}: {e}")
+            return None
+    
     def _scroll_half_page_down(self):
         """Scroll down half a page in the results canvas (Vim-style, with optional count)"""
         if not self._can_navigate_results():
@@ -3252,34 +3339,18 @@ class RapidMomentNavigator:
         if not self.result_items:
             return
         
-        # Get count from number prefix (default 1)
-        count = self._get_count()
-        
-        try:
-            # Get the current visual position of the selection (e.g., 3rd visible item)
-            visual_position = self._get_selected_visible_position()
-            
-            # Calculate how many results to move based on currently visible results
-            visible_count = self._get_visible_results_count()
-            results_per_half_page = max(1, visible_count // 2) * count  # Multiply by count
-            
-            # Move selection down by (half page * count) results
-            if self.selected_result_index is None:
-                # No selection, start at first result
-                self._select_result(0)
-            else:
-                new_index = min(self.selected_result_index + results_per_half_page, len(self.result_items) - 1)
-                self._select_result(new_index)
-                
-                # Scroll to maintain the same visual position (Vim behavior)
-                if visual_position is not None:
-                    self._scroll_to_visual_position(visual_position)
-                else:
-                    self._scroll_to_keep_selection_visible()
-            
-            self.debug_print(f"Scrolled down {results_per_half_page} results (visible: {visible_count}, visual_pos: {visual_position})")
-        except Exception as e:
-            self.debug_print(f"Error scrolling down: {e}")
+        # Use unified scroll function with item mode
+        self._unified_scroll_half_page(
+            canvas=self.results_canvas,
+            direction="down",
+            mode="items",
+            result_items=self.result_items,
+            selected_index=self.selected_result_index,
+            select_callback=self._select_result,
+            get_visible_count_callback=self._get_visible_results_count,
+            get_visual_position_callback=self._get_selected_visible_position,
+            scroll_to_visual_callback=self._scroll_to_visual_position
+        )
     
     def _scroll_half_page_up(self):
         """Scroll up half a page in the results canvas (Vim-style, with optional count)"""
@@ -3289,34 +3360,18 @@ class RapidMomentNavigator:
         if not self.result_items:
             return
         
-        # Get count from number prefix (default 1)
-        count = self._get_count()
-        
-        try:
-            # Get the current visual position of the selection (e.g., 3rd visible item)
-            visual_position = self._get_selected_visible_position()
-            
-            # Calculate how many results to move based on currently visible results
-            visible_count = self._get_visible_results_count()
-            results_per_half_page = max(1, visible_count // 2) * count  # Multiply by count
-            
-            # Move selection up by (half page * count) results
-            if self.selected_result_index is None:
-                # No selection, start at first result
-                self._select_result(0)
-            else:
-                new_index = max(self.selected_result_index - results_per_half_page, 0)
-                self._select_result(new_index)
-                
-                # Scroll to maintain the same visual position (Vim behavior)
-                if visual_position is not None:
-                    self._scroll_to_visual_position(visual_position)
-                else:
-                    self._scroll_to_keep_selection_visible()
-            
-            self.debug_print(f"Scrolled up {results_per_half_page} results (visible: {visible_count}, visual_pos: {visual_position})")
-        except Exception as e:
-            self.debug_print(f"Error scrolling up: {e}")
+        # Use unified scroll function with item mode
+        self._unified_scroll_half_page(
+            canvas=self.results_canvas,
+            direction="up",
+            mode="items",
+            result_items=self.result_items,
+            selected_index=self.selected_result_index,
+            select_callback=self._select_result,
+            get_visible_count_callback=self._get_visible_results_count,
+            get_visual_position_callback=self._get_selected_visible_position,
+            scroll_to_visual_callback=self._scroll_to_visual_position
+        )
     
     def _scroll_to_visual_position(self, target_visible_position):
         """Scroll canvas so selected result is at the target visible position (0=first visible, 1=second, etc.)"""
@@ -4404,78 +4459,46 @@ class RapidMomentNavigator:
             self.debug_print(f"Editor dialog: Error scrolling to visual position: {e}")
     
     def _editor_dialog_scroll_half_page_down(self):
-        """Scroll down half a page in editor dialog (Vim-style, with optional count) - adapted from main window"""
+        """Scroll down half a page in editor dialog (Vim-style, with optional count)"""
         if not self._editor_dialog_can_navigate():
             return
         
         if not self.editor_result_items:
             return
         
-        # Get count from number prefix (default 1)
-        count = self._get_count()
-        
-        try:
-            # Get the current visual position of the selection
-            visual_position = self._editor_dialog_get_selected_visible_position()
-            
-            # Calculate how many results to move based on currently visible results
-            visible_count = self._editor_dialog_get_visible_results_count()
-            results_per_half_page = max(1, visible_count // 2) * count
-            
-            # Move selection down by (half page * count) results
-            if self.editor_selected_result_index is None:
-                # No selection, start at first result
-                self._editor_dialog_select_result(0)
-            else:
-                new_index = min(self.editor_selected_result_index + results_per_half_page, len(self.editor_result_items) - 1)
-                self._editor_dialog_select_result(new_index)
-                
-                # Scroll to maintain the same visual position (Vim behavior)
-                if visual_position is not None:
-                    self._editor_dialog_scroll_to_visual_position(visual_position)
-                else:
-                    self._editor_dialog_scroll_to_result(new_index)
-            
-            self.debug_print(f"Editor dialog: Scrolled down {results_per_half_page} results (visible: {visible_count}, visual_pos: {visual_position})")
-        except Exception as e:
-            self.debug_print(f"Editor dialog: Error scrolling down: {e}")
+        # Use unified scroll function with item mode
+        self._unified_scroll_half_page(
+            canvas=self.editor_results_canvas,
+            direction="down",
+            mode="items",
+            result_items=self.editor_result_items,
+            selected_index=self.editor_selected_result_index,
+            select_callback=self._editor_dialog_select_result,
+            get_visible_count_callback=self._editor_dialog_get_visible_results_count,
+            get_visual_position_callback=self._editor_dialog_get_selected_visible_position,
+            scroll_to_visual_callback=self._editor_dialog_scroll_to_visual_position
+        )
     
     def _editor_dialog_scroll_half_page_up(self):
-        """Scroll up half a page in editor dialog (Vim-style, with optional count) - adapted from main window"""
+        """Scroll up half a page in editor dialog (Vim-style, with optional count)"""
         if not self._editor_dialog_can_navigate():
             return
         
         if not self.editor_result_items:
             return
         
-        # Get count from number prefix (default 1)
-        count = self._get_count()
-        
-        try:
-            # Get the current visual position of the selection
-            visual_position = self._editor_dialog_get_selected_visible_position()
-            
-            # Calculate how many results to move based on currently visible results
-            visible_count = self._editor_dialog_get_visible_results_count()
-            results_per_half_page = max(1, visible_count // 2) * count
-            
-            # Move selection up by (half page * count) results
-            if self.editor_selected_result_index is None:
-                # No selection, start at first result
-                self._editor_dialog_select_result(0)
-            else:
-                new_index = max(self.editor_selected_result_index - results_per_half_page, 0)
-                self._editor_dialog_select_result(new_index)
-                
-                # Scroll to maintain the same visual position (Vim behavior)
-                if visual_position is not None:
-                    self._editor_dialog_scroll_to_visual_position(visual_position)
-                else:
-                    self._editor_dialog_scroll_to_result(new_index)
-            
-            self.debug_print(f"Editor dialog: Scrolled up {results_per_half_page} results (visible: {visible_count}, visual_pos: {visual_position})")
-        except Exception as e:
-            self.debug_print(f"Editor dialog: Error scrolling up: {e}")
+        # Use unified scroll function with item mode
+        self._unified_scroll_half_page(
+            canvas=self.editor_results_canvas,
+            direction="up",
+            mode="items",
+            result_items=self.editor_result_items,
+            selected_index=self.editor_selected_result_index,
+            select_callback=self._editor_dialog_select_result,
+            get_visible_count_callback=self._editor_dialog_get_visible_results_count,
+            get_visual_position_callback=self._editor_dialog_get_selected_visible_position,
+            scroll_to_visual_callback=self._editor_dialog_scroll_to_visual_position
+        )
     
     def _editor_dialog_prev_page(self):
         """Go to previous page in editor dialog (Shift+H)"""
@@ -4722,20 +4745,6 @@ class RapidMomentNavigator:
         else:
             self._navigate_result_previous()
     
-    def _context_aware_goto_first(self):
-        """Go to first result - routes to appropriate window"""
-        if self._is_editor_dialog_focused():
-            self._editor_dialog_goto_first()
-        else:
-            self._jump_to_first_result()
-    
-    def _context_aware_goto_last(self):
-        """Go to last result - routes to appropriate window"""
-        if self._is_editor_dialog_focused():
-            self._editor_dialog_goto_last()
-        else:
-            self._jump_to_last_result()
-    
     def _context_aware_increase_items(self, event=None):
         """Increase items per page - routes to appropriate window"""
         if self._is_editor_dialog_focused():
@@ -4771,18 +4780,106 @@ class RapidMomentNavigator:
         else:
             self._activate_selected_result()
     
+    def _scroll_to_top_or_bottom(self, canvas, position="top"):
+        """
+        Scroll a canvas to the very top or bottom.
+        Reuses tested canvas scrolling primitives.
+        
+        Args:
+            canvas: The canvas widget to scroll
+            position: "top" or "bottom"
+        """
+        if not canvas or not canvas.winfo_exists():
+            return
+        
+        try:
+            if position == "top":
+                canvas.yview_moveto(0)
+                self.debug_print("Scrolled canvas to top")
+            else:  # bottom
+                canvas.yview_moveto(1.0)
+                self.debug_print("Scrolled canvas to bottom")
+        except Exception as e:
+            self.debug_print(f"Error scrolling canvas to {position}: {e}")
+    
     def _context_aware_scroll_down(self):
-        """Scroll down half page - routes to appropriate window"""
+        """Scroll down half page - routes to appropriate window or dialog"""
+        # Check for keyboard shortcuts dialog (pixel-based)
+        if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
+            try:
+                if self.keyboard_shortcuts_canvas.winfo_exists():
+                    self._unified_scroll_half_page(self.keyboard_shortcuts_canvas, "down", mode="pixels")
+                    return
+            except:
+                pass
+        
+        # Check for window sizing dialog (pixel-based)
+        if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
+            try:
+                if self.window_sizing_canvas.winfo_exists():
+                    self._unified_scroll_half_page(self.window_sizing_canvas, "down", mode="pixels")
+                    return
+            except:
+                pass
+        
+        # Check for debug window (ScrolledText - different widget type)
+        if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
+            try:
+                if self.debug_window.text_area.winfo_exists():
+                    count = self._get_count()
+                    visible_lines = int(self.debug_window.text_area.cget('height'))
+                    scroll_amount = max(1, visible_lines // 2) * count
+                    self.debug_window.text_area.yview_scroll(scroll_amount, "units")
+                    self.debug_print(f"Scrolled debug window down {scroll_amount} lines (count: {count})")
+                    return
+            except Exception as e:
+                self.debug_print(f"Error scrolling debug window: {e}")
+        
+        # Check for editor dialog (item-based scrolling)
         if self._is_editor_dialog_focused():
             self._editor_dialog_scroll_half_page_down()
         else:
+            # Main window (item-based scrolling)
             self._scroll_half_page_down()
     
     def _context_aware_scroll_up(self):
-        """Scroll up half page - routes to appropriate window"""
+        """Scroll up half page - routes to appropriate window or dialog"""
+        # Check for keyboard shortcuts dialog (pixel-based)
+        if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
+            try:
+                if self.keyboard_shortcuts_canvas.winfo_exists():
+                    self._unified_scroll_half_page(self.keyboard_shortcuts_canvas, "up", mode="pixels")
+                    return
+            except:
+                pass
+        
+        # Check for window sizing dialog (pixel-based)
+        if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
+            try:
+                if self.window_sizing_canvas.winfo_exists():
+                    self._unified_scroll_half_page(self.window_sizing_canvas, "up", mode="pixels")
+                    return
+            except:
+                pass
+        
+        # Check for debug window (ScrolledText - different widget type)
+        if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
+            try:
+                if self.debug_window.text_area.winfo_exists():
+                    count = self._get_count()
+                    visible_lines = int(self.debug_window.text_area.cget('height'))
+                    scroll_amount = max(1, visible_lines // 2) * count
+                    self.debug_window.text_area.yview_scroll(-scroll_amount, "units")
+                    self.debug_print(f"Scrolled debug window up {scroll_amount} lines (count: {count})")
+                    return
+            except Exception as e:
+                self.debug_print(f"Error scrolling debug window: {e}")
+        
+        # Check for editor dialog (item-based scrolling)
         if self._is_editor_dialog_focused():
             self._editor_dialog_scroll_half_page_up()
         else:
+            # Main window (item-based scrolling)
             self._scroll_half_page_up()
     
     def _context_aware_center_result(self):
@@ -4805,6 +4902,80 @@ class RapidMomentNavigator:
             self._editor_dialog_bottom_result()
         else:
             self._result_to_bottom()
+    
+    def _context_aware_scroll_to_top(self):
+        """Scroll to top - routes to appropriate window or dialog"""
+        # Check for keyboard shortcuts dialog
+        if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
+            try:
+                if self.keyboard_shortcuts_canvas.winfo_exists():
+                    self._scroll_to_top_or_bottom(self.keyboard_shortcuts_canvas, "top")
+                    return
+            except:
+                pass
+        
+        # Check for window sizing dialog
+        if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
+            try:
+                if self.window_sizing_canvas.winfo_exists():
+                    self._scroll_to_top_or_bottom(self.window_sizing_canvas, "top")
+                    return
+            except:
+                pass
+        
+        # Check for debug window
+        if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
+            try:
+                if self.debug_window.text_area.winfo_exists():
+                    self.debug_window.text_area.yview_moveto(0)
+                    self.debug_print("Scrolled debug window to top")
+                    return
+            except Exception as e:
+                self.debug_print(f"Error scrolling debug window to top: {e}")
+        
+        # Check for editor dialog (item-based)
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_goto_first()
+        else:
+            # Main window (item-based)
+            self._jump_to_first_result()
+    
+    def _context_aware_scroll_to_bottom(self):
+        """Scroll to bottom - routes to appropriate window or dialog"""
+        # Check for keyboard shortcuts dialog
+        if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
+            try:
+                if self.keyboard_shortcuts_canvas.winfo_exists():
+                    self._scroll_to_top_or_bottom(self.keyboard_shortcuts_canvas, "bottom")
+                    return
+            except:
+                pass
+        
+        # Check for window sizing dialog
+        if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
+            try:
+                if self.window_sizing_canvas.winfo_exists():
+                    self._scroll_to_top_or_bottom(self.window_sizing_canvas, "bottom")
+                    return
+            except:
+                pass
+        
+        # Check for debug window
+        if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
+            try:
+                if self.debug_window.text_area.winfo_exists():
+                    self.debug_window.text_area.yview_moveto(1.0)
+                    self.debug_print("Scrolled debug window to bottom")
+                    return
+            except Exception as e:
+                self.debug_print(f"Error scrolling debug window to bottom: {e}")
+        
+        # Check for editor dialog (item-based)
+        if self._is_editor_dialog_focused():
+            self._editor_dialog_goto_last()
+        else:
+            # Main window (item-based)
+            self._jump_to_last_result()
     
     def _unbind_keyboard_shortcuts(self):
         """Unbind all keyboard shortcuts to prepare for rebinding"""
@@ -4936,8 +5107,8 @@ class RapidMomentNavigator:
             "escape_search": self._context_aware_escape_search,
             "result_next": self._context_aware_navigate_next,
             "result_previous": self._context_aware_navigate_prev,
-            "result_first": self._context_aware_goto_first,
-            "result_last": self._context_aware_goto_last,
+            "result_first": self._context_aware_scroll_to_top,
+            "result_last": self._context_aware_scroll_to_bottom,
             "increase_items_per_page": self._context_aware_increase_items,
             "decrease_items_per_page": self._context_aware_decrease_items,
             "page_next": self._context_aware_next_page,
