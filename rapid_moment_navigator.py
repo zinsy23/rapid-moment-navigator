@@ -4712,12 +4712,13 @@ class RapidMomentNavigator:
     
     def _editor_search_in_results(self, reverse=False):
         """Start search mode to search within editor dialog results (Vim-like / or ? search)"""
-        # Only work if editor dialog is open and focused
+        # Don't start search if editor dialog doesn't have focus
         if not self._is_editor_dialog_focused():
-            self.debug_print("Editor dialog not focused, ignoring search")
+            self.debug_print("Editor dialog doesn't have focus, ignoring search")
             return
         
         # Don't start if user is typing in ANY Entry or Combobox widget
+        # This automatically blocks / and ? in fuzzy search, settings dialogs, etc.
         focused_widget = self.root.focus_get()
         if focused_widget and isinstance(focused_widget, (ttk.Entry, tk.Entry, ttk.Combobox)):
             self.debug_print(f"Entry/Combobox widget has focus ({focused_widget}), ignoring / search")
@@ -4739,20 +4740,20 @@ class RapidMomentNavigator:
         
         self.debug_print("Starting search in editor results mode")
         self.editor_search_mode_active = True
-        self.editor_search_direction = -1 if reverse else 1
+        self.editor_search_direction = -1 if reverse else 1  # Track search direction for n/N
         
-        # Create mini search overlay positioned over editor dialog's status area
+        # Create mini search overlay
         search_overlay = tk.Toplevel(self.editor_dialog)
         search_overlay.overrideredirect(True)
         search_overlay.transient(self.editor_dialog)
         search_overlay.attributes('-topmost', True)
         
-        # Force updates to ensure accurate positioning
+        # Force multiple updates to ensure accurate positioning info (especially on Windows)
         self.editor_dialog.update_idletasks()
         self.editor_dialog.update()
         search_overlay.update_idletasks()
         
-        # Position overlay at bottom of editor dialog (over status/button area)
+        # Position overlay at bottom of editor dialog
         try:
             # Get editor dialog position and size
             editor_x = self.editor_dialog.winfo_rootx()
@@ -4760,36 +4761,67 @@ class RapidMomentNavigator:
             editor_width = self.editor_dialog.winfo_width()
             editor_height = self.editor_dialog.winfo_height()
             
-            # Position at bottom of dialog
-            overlay_width = max(editor_width - 30, 400)  # Leave some margin
-            overlay_height = 40
-            overlay_x = editor_x + 15  # Centered with padding
-            overlay_y = editor_y + editor_height - overlay_height - 15  # Bottom with padding
+            self.debug_print(f"Editor dialog winfo values: rootx={editor_x}, rooty={editor_y}, width={editor_width}, height={editor_height}")
             
-            self.debug_print(f"Editor search overlay position: x={overlay_x}, y={overlay_y}, width={overlay_width}")
+            # Check if we got invalid coordinates (Windows issue)
+            if editor_x <= 1 or editor_y <= 1:
+                self.debug_print("Invalid rootx/rooty, using geometry-based positioning")
+                
+                # Windows fallback: parse geometry and use relative positioning
+                import re
+                dialog_geometry = self.editor_dialog.geometry()
+                self.debug_print(f"Editor dialog geometry string: {dialog_geometry}")
+                
+                match = re.match(r'(\d+)x(\d+)\+(-?\d+)\+(-?\d+)', dialog_geometry)
+                if match:
+                    editor_x = int(match.group(3))
+                    editor_y = int(match.group(4))
+                    editor_height = int(match.group(2))
+                else:
+                    editor_x = self.editor_dialog.winfo_x()
+                    editor_y = self.editor_dialog.winfo_y()
+                    editor_height = self.editor_dialog.winfo_height()
+                
+                self.debug_print(f"Calculated from geometry: x={editor_x}, y={editor_y}")
+            
+            # Position at bottom of editor dialog
+            overlay_width = max(editor_width - 30, 400)
+            overlay_height = 40
+            overlay_x = editor_x + 15
+            overlay_y = editor_y + editor_height - overlay_height - 15
+            
+            self.debug_print(f"Final overlay position: x={overlay_x}, y={overlay_y}, width={overlay_width}, height={overlay_height}")
             
         except Exception as e:
             self.debug_print(f"Error getting editor dialog position: {e}")
-            # Fallback positioning
+            # Last resort fallback - use editor dialog bottom
             overlay_x = self.editor_dialog.winfo_rootx() + 50
             overlay_y = self.editor_dialog.winfo_rooty() + self.editor_dialog.winfo_height() - 60
             overlay_width = self.editor_dialog.winfo_width() - 100
             overlay_height = 40
+            self.debug_print(f"Using fallback position: x={overlay_x}, y={overlay_y}, width={overlay_width}")
         
         # Set geometry
         geometry_string = f"{overlay_width}x{overlay_height}+{overlay_x}+{overlay_y}"
-        self.debug_print(f"Setting editor search geometry to: {geometry_string}")
+        self.debug_print(f"Setting geometry to: {geometry_string}")
         search_overlay.geometry(geometry_string)
         
-        # Force window to update and reposition
+        # Force window to update and reposition (Windows sometimes ignores first geometry call)
         search_overlay.update_idletasks()
-        search_overlay.geometry(geometry_string)
+        search_overlay.geometry(geometry_string)  # Set again after update
         
-        # Additional attributes for visibility
+        # Additional Windows-specific attributes for visibility
         try:
             search_overlay.wm_attributes("-topmost", 1)
         except:
             pass
+        
+        self.debug_print(f"Created search overlay at {overlay_x},{overlay_y} with size {overlay_width}x{overlay_height}")
+        
+        # Verify actual position after setting
+        search_overlay.update()
+        actual_geometry = search_overlay.geometry()
+        self.debug_print(f"Actual overlay geometry: {actual_geometry}")
         
         # Frame with border and background
         frame = tk.Frame(search_overlay, relief="solid", borderwidth=3, bg="white", padx=10, pady=8)
@@ -4805,15 +4837,21 @@ class RapidMomentNavigator:
         
         def update_search():
             """Update search matches as user types"""
-            # Only update if search mode is still active and overlay exists
+            self.debug_print(f"update_search called: editor_search_mode_active={self.editor_search_mode_active}, overlay={self.editor_search_overlay}")
+            
+            # Only update if search mode is still active and overlay exists and is visible
             if not self.editor_search_mode_active:
+                self.debug_print("Editor search mode not active, returning")
                 return
             if self.editor_search_overlay is None:
+                self.debug_print("Editor search overlay is None, returning")
                 return
             try:
                 if not self.editor_search_overlay.winfo_exists() or not self.editor_search_overlay.winfo_viewable():
+                    self.debug_print("Editor search overlay not visible, returning")
                     return
             except:
+                self.debug_print("Error checking editor overlay visibility, returning")
                 return
             
             query = search_var.get().lower()
@@ -4827,18 +4865,19 @@ class RapidMomentNavigator:
                     item['frame'].configure(style='TFrame')
                 return
             
-            # Find matching results in editor
+            # Find matching results
             for i, item in enumerate(self.editor_result_items):
-                result_data = item.get('result_data')
+                # Get the subtitle text from the match data
+                match_data = item.get('match_data')
                 text_widget = item.get('text_widget')
-                if not result_data:
+                if not match_data:
                     continue
                 
-                # Get the text to search
-                result_text = result_data.get('clean_text', '')
+                # Match data is a dict with 'text' key
+                result_text = match_data.get('text', '')
                 result_text_lower = result_text.lower()
                 
-                # Clear previous text highlights
+                # Clear previous text highlights (if text widget exists)
                 if text_widget:
                     try:
                         text_widget.config(state="normal")
@@ -4852,12 +4891,13 @@ class RapidMomentNavigator:
                     # Highlight frame
                     item['frame'].configure(style='SearchHighlight.TFrame')
                     
-                    # Highlight matching words in text
+                    # Highlight matching words in text (if text widget exists)
                     if text_widget:
                         try:
                             text_widget.config(state="normal")
                             start_pos = 0
                             while True:
+                                # Find next occurrence of query
                                 pos = result_text_lower.find(query, start_pos)
                                 if pos == -1:
                                     break
@@ -4868,6 +4908,7 @@ class RapidMomentNavigator:
                                 start_idx = f"{line}.{col}"
                                 end_idx = f"{line}.{col + len(query)}"
                                 
+                                # Apply highlight tag
                                 text_widget.tag_add("search_match", start_idx, end_idx)
                                 start_pos = pos + 1
                             
@@ -4882,11 +4923,11 @@ class RapidMomentNavigator:
                     # Remove frame highlight
                     item['frame'].configure(style='TFrame')
             
-            # Select first match based on search direction
+            # Select first match based on search direction (wraps around)
             if self.editor_search_matches:
                 start_index = 0
                 if self.editor_selected_result_index is not None:
-                    # Check if current result is a match
+                    # Check if current result is a match - if so, stay on it
                     if self.editor_selected_result_index in self.editor_search_matches:
                         start_index = self.editor_search_matches.index(self.editor_selected_result_index)
                     else:
@@ -4899,6 +4940,8 @@ class RapidMomentNavigator:
                                     start_index = i
                                     found_above = True
                                     break
+                            
+                            # If no match found above, wrap to last match (which is below)
                             if not found_above:
                                 start_index = len(self.editor_search_matches) - 1
                         else:
@@ -4909,6 +4952,8 @@ class RapidMomentNavigator:
                                     start_index = i
                                     found_below = True
                                     break
+                            
+                            # If no match found below, wrap to first match (which is above)
                             if not found_below:
                                 start_index = 0
                 
@@ -4922,28 +4967,30 @@ class RapidMomentNavigator:
             self.editor_current_search_match_index = None
             self.editor_search_query = ""
             
-            # Clear all search highlights
+            # Clear all search highlights (frame and text)
             for item in self.editor_result_items:
                 item['frame'].configure(style='TFrame')
                 
+                # Clear text highlights
                 text_widget = item.get('text_widget')
                 if text_widget:
                     text_widget.config(state="normal")
                     text_widget.tag_remove("search_match", "1.0", "end")
                     text_widget.config(state="disabled")
             
-            # Restore selection highlight
+            # Restore selection highlight if there was one
             if self.editor_selected_result_index is not None:
                 self._editor_dialog_select_result(self.editor_selected_result_index)
             
-            # Remove trace callback
+            # Remove trace callback before destroying
             if hasattr(self, 'editor_search_overlay_var') and hasattr(self, 'editor_search_overlay_trace_id'):
                 try:
                     self.editor_search_overlay_var.trace_remove("write", self.editor_search_overlay_trace_id)
+                    self.debug_print("Removed editor search overlay trace callback")
                 except:
                     pass
             
-            # Destroy overlay
+            # Destroy overlay and clear references
             try:
                 search_overlay.destroy()
             except:
@@ -4957,19 +5004,23 @@ class RapidMomentNavigator:
             self.editor_main_frame.focus_set()
         
         def select_match():
-            """Select current match and close overlay"""
+            """Select current match and close overlay (but keep search active for n/N)"""
+            self.debug_print(f"select_match called: matches={len(self.editor_search_matches)}, index={self.editor_current_search_match_index}")
+            
             if self.editor_search_matches and self.editor_current_search_match_index is not None:
                 selected_index = self.editor_search_matches[self.editor_current_search_match_index]
+                self.debug_print(f"Selecting match at index {selected_index}")
                 
                 # Close the overlay but keep search state for n/N
                 search_overlay.destroy()
                 self.editor_search_overlay = None
                 self.editor_search_mode_active = False  # Allow / to be pressed again
                 
-                # Clear all highlights
+                # Clear all highlights (frame and text)
                 for item in self.editor_result_items:
                     item['frame'].configure(style='TFrame')
                     
+                    # Clear text highlights
                     text_widget = item.get('text_widget')
                     if text_widget:
                         try:
@@ -4982,13 +5033,15 @@ class RapidMomentNavigator:
                 # Select the result
                 self._editor_dialog_select_result(selected_index)
                 
-                # Return focus to editor dialog
+                # Return focus to editor dialog FIRST (needed for _editor_dialog_center_result focus check)
                 self.editor_dialog.focus_force()
                 self.editor_main_frame.focus_set()
                 
-                # Center the selected result
+                # Center the selected result in viewport (Vim zz behavior)
                 self._editor_dialog_center_result()
             else:
+                # No matches or no selection, just close search
+                self.debug_print("No matches to select, closing search")
                 close_search()
         
         # Bind events
@@ -5002,10 +5055,17 @@ class RapidMomentNavigator:
         self.editor_search_overlay_var = search_var
         self.editor_search_overlay_trace_id = trace_id
         
-        # Focus the search entry
-        search_entry.focus_set()
+        # Force window to be visible and focused
+        search_overlay.deiconify()  # Ensure window is not minimized
+        search_overlay.lift()  # Bring to front
+        search_overlay.attributes('-topmost', True)  # Keep on top
+        self.editor_dialog.update()  # Force UI update
+        search_overlay.focus_force()  # Force focus to overlay
+        search_entry.focus_set()  # Focus the entry
+        search_entry.icursor(0)  # Set cursor position
+        self.editor_dialog.update()  # Another update to ensure everything is rendered
         
-        self.debug_print("Editor search overlay created and focused")
+        self.debug_print(f"Editor search overlay created and focused")
     
     def _editor_next_search_match(self):
         """Go to next search match in editor dialog (Vim-like n) - respects search direction"""
@@ -5016,7 +5076,7 @@ class RapidMomentNavigator:
             return
         
         if self.editor_current_search_match_index is not None:
-            # n goes in the direction of the search
+            # n goes in the direction of the search (forward for /, backward for ?)
             self.editor_current_search_match_index = (self.editor_current_search_match_index + self.editor_search_direction) % len(self.editor_search_matches)
             match_index = self.editor_search_matches[self.editor_current_search_match_index]
             self._editor_dialog_select_result(match_index)
@@ -5032,7 +5092,7 @@ class RapidMomentNavigator:
             return
         
         if self.editor_current_search_match_index is not None:
-            # N goes opposite to the search direction
+            # N goes opposite to the search direction (backward for /, forward for ?)
             self.editor_current_search_match_index = (self.editor_current_search_match_index - self.editor_search_direction) % len(self.editor_search_matches)
             match_index = self.editor_search_matches[self.editor_current_search_match_index]
             self._editor_dialog_select_result(match_index)
@@ -7996,7 +8056,7 @@ except Exception as e:
         self.editor_search_matches = []
         self.editor_current_search_match_index = None
         self.editor_search_query = ""
-        self.editor_search_direction = 1  # 1 for forward (/), -1 for backward (?)
+        self.editor_search_direction = 1
         self.editor_search_overlay = None
         self.editor_search_overlay_var = None
         self.editor_search_overlay_trace_id = None
@@ -8027,8 +8087,6 @@ except Exception as e:
                 except:
                     pass
             self.editor_search_overlay = None
-            self.editor_search_overlay_var = None
-            self.editor_search_overlay_trace_id = None
             
             self.editor_dialog = None
             editor_dialog.destroy()
@@ -8572,14 +8630,27 @@ except Exception as e:
                 # Debug output to compare text formatting
                 self.debug_print(f"EDITOR SEARCH - text: {repr(match['text'])}")
                 
-                subtitle_label = ttk.Label(result_frame, text=self._restore_subtitle_line_breaks(match['text']), wraplength=700)
-                subtitle_label.pack(pady=5, anchor="w")
+                # Add text widget (allows highlighting of search matches, same as main navigator)
+                text_widget = tk.Text(result_frame, wrap="word", relief="flat", 
+                                     background=self.root.cget('bg'), font=("TkDefaultFont", 10),
+                                     cursor="arrow", highlightthickness=0, width=100)
+                text_widget.pack(anchor="w", padx=10, fill="x")
+                
+                # Insert text and calculate height based on actual content
+                text_widget.insert("1.0", match['text'])
+                
+                # Get the actual number of lines after wrapping
+                line_count = int(text_widget.index('end-1c').split('.')[0])
+                text_widget.config(height=line_count, state="disabled")
+                
+                # Configure tag for search highlighting
+                text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
                 
                 # Track this result item for keyboard navigation
                 self.editor_result_items.append({
                     'frame': result_frame,
                     'timecode_label': timecode_label,
-                    'text_label': subtitle_label,
+                    'text_widget': text_widget,  # Store text widget for search highlighting
                     'match_data': match,
                     'timeline': timeline,
                     'timeline_fps': timeline_fps
