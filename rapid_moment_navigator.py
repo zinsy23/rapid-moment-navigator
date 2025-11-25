@@ -5041,43 +5041,60 @@ class RapidMomentNavigator:
                 return 1
         return 1
     
-    def _bind_escape_keys_to_search_entry(self):
-        """Bind escape_search keys directly to search entry to prevent typing"""
+    def _bind_escape_keys_to_entry_widget(self, entry_widget, custom_tag, unfocus_func, debug_label):
+        """
+        Helper to bind escape_search keys to an entry widget to prevent typing.
+        Shared logic extracted from main and editor search bar setup.
+        """
         # Get escape_search keys from preferences
         shortcuts = self.preferences.get("keyboard_shortcuts", {})
         escape_keys = shortcuts.get("escape_search", {}).get("keys", [])
         
-        # Create a unique bindtag for our custom bindings
-        custom_tag = "SearchEntryEscape"
-        
         # Get current bindtags and reorder to put our custom tag before Entry class
-        current_tags = list(self.search_entry.bindtags())
-        # Remove Entry class tag temporarily
+        current_tags = list(entry_widget.bindtags())
         try:
             entry_class_idx = current_tags.index("Entry")
             # Insert our custom tag before Entry class
             current_tags.insert(entry_class_idx, custom_tag)
-            self.search_entry.bindtags(tuple(current_tags))
-            self.debug_print(f"Reordered bindtags: {current_tags}")
+            entry_widget.bindtags(tuple(current_tags))
+            self.debug_print(f"Reordered {debug_label} bindtags: {current_tags}")
         except ValueError:
             # Entry class not found, just add our tag
             current_tags.insert(0, custom_tag)
-            self.search_entry.bindtags(tuple(current_tags))
+            entry_widget.bindtags(tuple(current_tags))
         
         # Now bind our handlers to the custom tag
         for key in escape_keys:
-            def make_handler(k):
+            def make_handler(k, func):
                 def handler(e):
-                    self.debug_print(f"Intercepted {k} before Entry class binding")
-                    # Call unfocus
-                    self._unfocus_search_bar()
+                    self.debug_print(f"Intercepted {k} before Entry class binding ({debug_label})")
+                    # Call unfocus function
+                    func()
                     # Return "break" to prevent Entry class from processing
                     return "break"
                 return handler
             
             # Bind to our custom tag, not the widget
-            self.search_entry.bind_class(custom_tag, key, make_handler(key))
-            self.debug_print(f"Bound {key} to {custom_tag} tag for escape_search")
+            entry_widget.bind_class(custom_tag, key, make_handler(key, unfocus_func))
+            self.debug_print(f"Bound {key} to {custom_tag} tag for {debug_label} escape_search")
+    
+    def _bind_escape_keys_to_search_entry(self):
+        """Bind escape_search keys directly to search entry to prevent typing"""
+        self._bind_escape_keys_to_entry_widget(
+            self.search_entry,
+            "SearchEntryEscape",
+            self._escape_search_bar,
+            "main"
+        )
+    
+    def _bind_escape_keys_to_editor_search_entry(self):
+        """Bind escape_search keys directly to editor search entry to prevent typing"""
+        self._bind_escape_keys_to_entry_widget(
+            self.editor_search_entry,
+            "EditorSearchEntryEscape",
+            self._editor_dialog_unfocus_search,
+            "editor"
+        )
     
     def _setup_keyboard_shortcuts(self):
         """Bind keyboard shortcuts from preferences to their actions"""
@@ -7629,6 +7646,10 @@ except Exception as e:
         # Fix Ctrl+A (select all) on Linux - bind it explicitly
         self.editor_search_entry.bind("<Control-a>", lambda e: self._select_all_text(e.widget))
         self.editor_search_entry.bind("<Control-A>", lambda e: self._select_all_text(e.widget))
+        
+        # Bind escape_search keys directly to editor search entry to intercept before typing
+        # Uses the exact same tested mechanism as the main search bar
+        self._bind_escape_keys_to_editor_search_entry()
         
         # Select all text when search entry gains focus
         self.editor_search_entry.bind("<FocusIn>", lambda e: self._select_all_on_focus(e.widget))
