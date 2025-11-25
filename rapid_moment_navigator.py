@@ -4100,12 +4100,12 @@ class RapidMomentNavigator:
         
         # Bind events
         search_var.trace_add("write", lambda *args: update_results())
-        search_entry.bind("<Return>", lambda e: select_option())
+        search_entry.bind("<Return>", lambda e: select_option() or "break")
         search_entry.bind("<Escape>", lambda e: close_overlay())
         search_entry.bind("<Control-c>", lambda e: close_overlay())
         
-        results_listbox.bind("<Double-Button-1>", lambda e: select_show())
-        results_listbox.bind("<Return>", lambda e: select_show())
+        results_listbox.bind("<Double-Button-1>", lambda e: select_show() or "break")
+        results_listbox.bind("<Return>", lambda e: select_show() or "break")
         results_listbox.bind("<Escape>", lambda e: close_overlay())
         
         # Close overlay when clicking outside (focus lost)
@@ -4995,22 +4995,23 @@ class RapidMomentNavigator:
                     if text_widget:
                         try:
                             text_widget.config(state="normal")
-                            start_pos = 0
+                            # Use tk.Text's built-in search instead of manual position calculation
+                            # This handles wrapping correctly
+                            start_idx = "1.0"
                             while True:
-                                # Find next occurrence of query
-                                pos = result_text_lower.find(query, start_pos)
-                                if pos == -1:
+                                # Search for next occurrence using tk.Text search
+                                start_idx = text_widget.search(query, start_idx, stopindex="end", nocase=True)
+                                if not start_idx:
                                     break
                                 
-                                # Calculate tkinter text indices
-                                line = result_text[:pos].count('\n') + 1
-                                col = pos - result_text[:pos].rfind('\n') - 1
-                                start_idx = f"{line}.{col}"
-                                end_idx = f"{line}.{col + len(query)}"
+                                # Calculate end index
+                                end_idx = f"{start_idx}+{len(query)}c"
                                 
                                 # Apply highlight tag
                                 text_widget.tag_add("search_match", start_idx, end_idx)
-                                start_pos = pos + 1
+                                
+                                # Move to next character after this match
+                                start_idx = end_idx
                             
                             text_widget.config(state="disabled")
                         except Exception as e:
@@ -8302,12 +8303,9 @@ except Exception as e:
 
         # Editor label and combobox for editor selection
         ttk.Label(self.editor_search_frame, text="Editor:").pack(side="left", padx=5)
-        editor_combobox = ttk.Combobox(self.editor_search_frame, values=self.editor_var, state="readonly")
+        editor_combobox = ttk.Combobox(self.editor_search_frame, textvariable=self.editor_var, state="readonly")
         editor_combobox.pack(side="left", padx=5)
         editor_combobox['values'] = self.editor_dropdown['values']
-        
-        selected_editor = self.preferences.get("selected_editor", "None")
-        editor_combobox.set(selected_editor)
 
         editor_combobox.bind("<<ComboboxSelected>>", self._on_editor_changed)
         
@@ -8975,7 +8973,7 @@ except Exception as e:
         apply_btn.pack(side="right", padx=5)
         
         # Keyboard shortcuts
-        marker_dialog.bind("<Return>", lambda e: apply_marker())
+        marker_dialog.bind("<Return>", lambda e: apply_marker() or "break")
         marker_dialog.bind("<Escape>", lambda e: cancel())
         
         self.debug_print(f"Manual marker dialog shown (auto_name={auto_apply_name}, auto_color={auto_apply_color})")
