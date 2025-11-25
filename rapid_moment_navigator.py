@@ -3149,6 +3149,14 @@ class RapidMomentNavigator:
         if not self._is_app_window_focused():
             return
         
+        # Don't activate if a modal dialog is open (prevents Enter leak from dialogs)
+        if hasattr(self, 'manual_marker_dialog') and self.manual_marker_dialog:
+            try:
+                if self.manual_marker_dialog.winfo_exists():
+                    return
+            except:
+                pass
+        
         if self.selected_result_index is None or not self.result_items:
             return
         
@@ -4641,6 +4649,14 @@ class RapidMomentNavigator:
         """Activate the selected result in editor dialog (Enter or Shift+Enter)"""
         if not self._editor_dialog_can_navigate():
             return
+        
+        # Don't activate if a modal dialog is open (prevents Enter leak from manual marker dialog)
+        if hasattr(self, 'manual_marker_dialog') and self.manual_marker_dialog:
+            try:
+                if self.manual_marker_dialog.winfo_exists():
+                    return
+            except:
+                pass
         
         if self.editor_selected_result_index is None or not self.editor_result_items:
             return
@@ -8734,12 +8750,25 @@ except Exception as e:
                                      cursor="arrow", highlightthickness=0, width=100)
                 text_widget.pack(anchor="w", padx=10, fill="x")
                 
-                # Insert text and calculate height based on actual content
+                # Insert text
                 text_widget.insert("1.0", match['text'])
                 
-                # Get the actual number of lines after wrapping
-                line_count = int(text_widget.index('end-1c').split('.')[0])
-                text_widget.config(height=line_count, state="disabled")
+                # Update the widget to ensure it's rendered and wrapped
+                text_widget.update_idletasks()
+                
+                # Get the actual number of display lines (including wrapped lines)
+                # Count display lines using dlineinfo which accounts for wrapping
+                line_count = 0
+                index = "1.0"
+                while True:
+                    dline = text_widget.dlineinfo(index)
+                    if dline is None:
+                        break
+                    line_count += 1
+                    index = text_widget.index(f"{index} + 1 display line")
+                
+                # Set height to accommodate all display lines, with a minimum of 1
+                text_widget.config(height=max(line_count, 1), state="disabled")
                 
                 # Configure tag for search highlighting
                 text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
@@ -8926,6 +8955,9 @@ except Exception as e:
             ttk.Label(name_frame, text="Marker Name:", width=12).pack(side="left", padx=(0, 10))
             name_entry = ttk.Entry(name_frame, textvariable=marker_name_var, width=30)
             name_entry.pack(side="left", fill="x", expand=True)
+            # Bind Enter and Shift+Enter to apply marker (prevents leak to parent window)
+            name_entry.bind("<Return>", lambda e: apply_marker() or "break")
+            name_entry.bind("<Shift-Return>", lambda e: apply_marker() or "break")
             name_entry.focus_set()
             name_entry.select_range(0, tk.END)
         
@@ -8972,8 +9004,9 @@ except Exception as e:
         apply_btn = ttk.Button(buttons_frame, text="Insert Marker", command=apply_marker)
         apply_btn.pack(side="right", padx=5)
         
-        # Keyboard shortcuts
+        # Keyboard shortcuts (dialog-level bindings for when no widget has focus)
         marker_dialog.bind("<Return>", lambda e: apply_marker() or "break")
+        marker_dialog.bind("<Shift-Return>", lambda e: apply_marker() or "break")
         marker_dialog.bind("<Escape>", lambda e: cancel())
         
         self.debug_print(f"Manual marker dialog shown (auto_name={auto_apply_name}, auto_color={auto_apply_color})")
