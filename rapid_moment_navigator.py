@@ -650,14 +650,15 @@ class RapidMomentNavigator:
         self._last_search_value = ""
         
         def validate_search_entry(*args):
-            """Remove escape characters if they were just typed"""
+            """Remove escape characters if they were just typed (fallback protection)"""
             current = self.search_var.get()
             # Check if an escape character was just added
             if len(current) > len(self._last_search_value):
                 # A character was added
                 added_char = current[len(self._last_search_value):]
-                # Check if it's an escape character (}, Escape won't be typed)
-                if added_char in ['}']:
+                # Get typeable escape characters dynamically from escape_search shortcuts
+                escape_chars = self._get_typeable_escape_chars()
+                if added_char in escape_chars:
                     # Remove it
                     self.search_var.set(self._last_search_value)
                     self.debug_print(f"Removed escape character: {repr(added_char)}")
@@ -5041,14 +5042,47 @@ class RapidMomentNavigator:
                 return 1
         return 1
     
+    def _get_typeable_escape_chars(self):
+        """
+        Get list of characters that should not be typed into search bars.
+        This is a fallback for the bindtags mechanism - it catches any characters
+        that somehow get through. The bindtags should prevent typing in the first place.
+        """
+        # Get the escape_search keys that are actually bound
+        shortcuts = self.preferences.get("keyboard_shortcuts", {})
+        if not shortcuts:
+            # Fallback to defaults if preferences not loaded yet
+            shortcuts = DEFAULT_KEYBOARD_SHORTCUTS
+        
+        escape_keys = shortcuts.get("escape_search", {}).get("keys", [])
+        
+        typeable_chars = set()
+        for key in escape_keys:
+            # Single character keys (not in angle brackets)
+            if len(key) == 1 and not key.startswith('<'):
+                typeable_chars.add(key)
+        
+        # Note: Keys like <braceright> should be intercepted by bindtags BEFORE
+        # they produce their character (}). This fallback only catches direct
+        # single-character mappings that somehow get through.
+        return list(typeable_chars)
+    
     def _bind_escape_keys_to_entry_widget(self, entry_widget, custom_tag, unfocus_func, debug_label):
         """
         Helper to bind escape_search keys to an entry widget to prevent typing.
         Shared logic extracted from main and editor search bar setup.
         """
-        # Get escape_search keys from preferences
-        shortcuts = self.preferences.get("keyboard_shortcuts", {})
+        # Get escape_search keys - merge defaults with custom preferences
+        shortcuts = {**DEFAULT_KEYBOARD_SHORTCUTS}
+        custom_shortcuts = self.preferences.get("keyboard_shortcuts", {})
+        for action_id, custom_data in custom_shortcuts.items():
+            if action_id in shortcuts:
+                shortcuts[action_id] = {**shortcuts[action_id], **custom_data}
+        
         escape_keys = shortcuts.get("escape_search", {}).get("keys", [])
+        
+        self.debug_print(f"Binding escape keys for {debug_label}: {escape_keys}")
+        self.debug_print(f"Unfocus function: {unfocus_func}")
         
         # Get current bindtags and reorder to put our custom tag before Entry class
         current_tags = list(entry_widget.bindtags())
@@ -5064,18 +5098,20 @@ class RapidMomentNavigator:
             entry_widget.bindtags(tuple(current_tags))
         
         # Now bind our handlers to the custom tag
+        # Capture unfocus_func in outer scope to avoid closure issues
+        captured_func = unfocus_func
         for key in escape_keys:
-            def make_handler(k, func):
+            def make_handler(k):
                 def handler(e):
                     self.debug_print(f"Intercepted {k} before Entry class binding ({debug_label})")
                     # Call unfocus function
-                    func()
+                    captured_func()
                     # Return "break" to prevent Entry class from processing
                     return "break"
                 return handler
             
             # Bind to our custom tag, not the widget
-            entry_widget.bind_class(custom_tag, key, make_handler(key, unfocus_func))
+            entry_widget.bind_class(custom_tag, key, make_handler(key))
             self.debug_print(f"Bound {key} to {custom_tag} tag for {debug_label} escape_search")
     
     def _bind_escape_keys_to_search_entry(self):
@@ -7642,6 +7678,26 @@ except Exception as e:
         self.editor_search_entry.bind("<Return>", lambda event: self.find_text_in_editor())
         self.editor_search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
         self.editor_search_entry.bind("<KeyPress>", self._on_search_entry_key)
+        
+        # Add trace to prevent escape_search characters from being typed (fallback protection)
+        self._last_editor_search_value = ""
+        def validate_editor_search_entry(*args):
+            """Remove escape characters if they were just typed (fallback protection)"""
+            current = self.editor_search_var.get()
+            # Check if an escape character was just added
+            if len(current) > len(self._last_editor_search_value):
+                # A character was added
+                added_char = current[len(self._last_editor_search_value):]
+                # Get typeable escape characters dynamically from escape_search shortcuts
+                escape_chars = self._get_typeable_escape_chars()
+                if added_char in escape_chars:
+                    # Remove it
+                    self.editor_search_var.set(self._last_editor_search_value)
+                    self.debug_print(f"Removed escape character from editor search: {repr(added_char)}")
+                    return
+            self._last_editor_search_value = current
+        
+        self.editor_search_var.trace_add("write", validate_editor_search_entry)
         
         # Fix Ctrl+A (select all) on Linux - bind it explicitly
         self.editor_search_entry.bind("<Control-a>", lambda e: self._select_all_text(e.widget))
