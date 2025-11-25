@@ -8750,25 +8750,12 @@ except Exception as e:
                                      cursor="arrow", highlightthickness=0, width=100)
                 text_widget.pack(anchor="w", padx=10, fill="x")
                 
-                # Insert text
+                # Insert text and calculate height based on actual content
                 text_widget.insert("1.0", match['text'])
                 
-                # Update the widget to ensure it's rendered and wrapped
-                text_widget.update_idletasks()
-                
-                # Get the actual number of display lines (including wrapped lines)
-                # Count display lines using dlineinfo which accounts for wrapping
-                line_count = 0
-                index = "1.0"
-                while True:
-                    dline = text_widget.dlineinfo(index)
-                    if dline is None:
-                        break
-                    line_count += 1
-                    index = text_widget.index(f"{index} + 1 display line")
-                
-                # Set height to accommodate all display lines, with a minimum of 1
-                text_widget.config(height=max(line_count, 1), state="disabled")
+                # Get the actual number of lines after wrapping (same as main navigator)
+                line_count = int(text_widget.index('end-1c').split('.')[0])
+                text_widget.config(height=line_count, state="disabled")
                 
                 # Configure tag for search highlighting
                 text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
