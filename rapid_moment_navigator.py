@@ -68,77 +68,77 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "keys": ["<Control-Shift-O>"]
     },
     "focus_search": {
-        "description": "Focus search bar (works in Main & Editor Navigator)",
+        "description": "Focus search bar",
         "category": "Navigation",
         "keys": ["<Control-F>", "i", "<braceleft>"]
     },
     "escape_search": {
-        "description": "Unfocus/escape search bar (works in Main & Editor Navigator)",
+        "description": "Unfocus/escape search bar",
         "category": "Navigation",
         "keys": ["<Escape>", "<Control-C>", "<braceright>"]
     },
     "result_next": {
-        "description": "Navigate to next result (works in Main & Editor Navigator)",
+        "description": "Navigate to next result",
         "category": "Results Navigation",
         "keys": ["<Down>", "j"]
     },
     "result_previous": {
-        "description": "Navigate to previous result (works in Main & Editor Navigator)",
+        "description": "Navigate to previous result",
         "category": "Results Navigation",
         "keys": ["<Up>", "k"]
     },
     "result_first": {
-        "description": "Jump to first result / Scroll to top (works in Main & Editor Navigator, and Dialogs)",
+        "description": "Jump to first result / Scroll to top",
         "category": "Results Navigation",
         "keys": ["<Home>", "gg"]
     },
     "result_last": {
-        "description": "Jump to last result / Scroll to bottom (works in Main & Editor Navigator, and Dialogs)",
+        "description": "Jump to last result / Scroll to bottom",
         "category": "Results Navigation",
         "keys": ["<End>", "G"]
     },
     "increase_items_per_page": {
-        "description": "Increase items per page (works in Main & Editor Navigator)",
+        "description": "Increase items per page",
         "category": "Results Navigation",
         "keys": ["<plus>", "<equal>"]
     },
     "decrease_items_per_page": {
-        "description": "Decrease items per page (works in Main & Editor Navigator)",
+        "description": "Decrease items per page",
         "category": "Results Navigation",
         "keys": ["<minus>"]
     },
     "page_next": {
-        "description": "Go to next page (works in Main & Editor Navigator)",
+        "description": "Go to next page",
         "category": "Results Navigation",
         "keys": ["<Right>", "L"]
     },
     "page_previous": {
-        "description": "Go to previous page (works in Main & Editor Navigator)",
+        "description": "Go to previous page",
         "category": "Results Navigation",
         "keys": ["<Left>", "H"]
     },
     "search_in_results": {
-        "description": "Search within current results (forward) - works in Main & Editor Navigator",
+        "description": "Search within current results (forward)",
         "category": "Results Navigation",
         "keys": ["<slash>"]
     },
     "search_in_results_reverse": {
-        "description": "Search within current results (backward) - works in Main & Editor Navigator",
+        "description": "Search within current results (backward)",
         "category": "Results Navigation",
         "keys": ["<question>"]
     },
     "next_search_match": {
-        "description": "Go to next search match - works in Main & Editor Navigator",
+        "description": "Go to next search match",
         "category": "Results Navigation",
         "keys": ["n"]
     },
     "previous_search_match": {
-        "description": "Go to previous search match - works in Main & Editor Navigator",
+        "description": "Go to previous search match",
         "category": "Results Navigation",
         "keys": ["N"]
     },
     "result_activate": {
-        "description": "Activate selected result (play at timecode in Main / jump to timecode in Editor Navigator)",
+        "description": "Activate selected result (play at timecode)",
         "category": "Results Actions",
         "keys": ["<Return>"]
     },
@@ -183,27 +183,27 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "keys": ["<Control-Shift-D>"]
     },
     "scroll_half_page_down": {
-        "description": "Scroll down half a page (works in Main & Editor Navigator, and Dialogs)",
+        "description": "Scroll down half a page",
         "category": "Scrolling",
         "keys": ["d"]
     },
     "scroll_half_page_up": {
-        "description": "Scroll up half a page (works in Main & Editor Navigator, and Dialogs)",
+        "description": "Scroll up half a page",
         "category": "Scrolling",
         "keys": ["u"]
     },
     "center_result": {
-        "description": "Center selected result in viewport (works in Main & Editor Navigator)",
+        "description": "Center selected result in viewport",
         "category": "View Control",
         "keys": ["zz"]
     },
     "result_to_top": {
-        "description": "Move selected result to top of viewport (works in Main & Editor Navigator)",
+        "description": "Move selected result to top of viewport",
         "category": "View Control",
         "keys": ["zt"]
     },
     "result_to_bottom": {
-        "description": "Move selected result to bottom of viewport (works in Main & Editor Navigator)",
+        "description": "Move selected result to bottom of viewport",
         "category": "View Control",
         "keys": ["zb"]
     }
