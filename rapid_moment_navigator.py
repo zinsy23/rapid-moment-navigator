@@ -656,7 +656,7 @@ class RapidMomentNavigator:
             if len(current) > len(self._last_search_value):
                 # A character was added
                 added_char = current[len(self._last_search_value):]
-                # Get typeable escape characters dynamically from escape_search shortcuts
+                # Get typeable escape characters from escape_search keys
                 escape_chars = self._get_typeable_escape_chars()
                 if added_char in escape_chars:
                     # Remove it
@@ -5044,27 +5044,26 @@ class RapidMomentNavigator:
     
     def _get_typeable_escape_chars(self):
         """
-        Get list of characters that should not be typed into search bars.
-        This is a fallback for the bindtags mechanism - it catches any characters
-        that somehow get through. The bindtags should prevent typing in the first place.
+        Get list of single-character keys mapped as escape_search shortcuts.
+        This is used as a fallback in StringVar trace to remove chars if they get through bindtags.
+        Note: Keys like <braceright> are intercepted by bindtags BEFORE they produce '}',
+        so this only needs to catch direct single-character mappings.
         """
-        # Get the escape_search keys that are actually bound
-        shortcuts = self.preferences.get("keyboard_shortcuts", {})
-        if not shortcuts:
-            # Fallback to defaults if preferences not loaded yet
-            shortcuts = DEFAULT_KEYBOARD_SHORTCUTS
+        # Get escape_search keys - merge defaults with custom preferences
+        shortcuts = {**DEFAULT_KEYBOARD_SHORTCUTS}
+        custom_shortcuts = self.preferences.get("keyboard_shortcuts", {})
+        for action_id, custom_data in custom_shortcuts.items():
+            if action_id in shortcuts:
+                shortcuts[action_id] = {**shortcuts[action_id], **custom_data}
         
         escape_keys = shortcuts.get("escape_search", {}).get("keys", [])
         
         typeable_chars = set()
         for key in escape_keys:
-            # Single character keys (not in angle brackets)
+            # Only single character keys (not wrapped in <>)
             if len(key) == 1 and not key.startswith('<'):
                 typeable_chars.add(key)
         
-        # Note: Keys like <braceright> should be intercepted by bindtags BEFORE
-        # they produce their character (}). This fallback only catches direct
-        # single-character mappings that somehow get through.
         return list(typeable_chars)
     
     def _bind_escape_keys_to_entry_widget(self, entry_widget, custom_tag, unfocus_func, debug_label):
@@ -7679,16 +7678,14 @@ except Exception as e:
         self.editor_search_entry.bind("<Control-BackSpace>", self._ctrl_backspace_handler)
         self.editor_search_entry.bind("<KeyPress>", self._on_search_entry_key)
         
-        # Add trace to prevent escape_search characters from being typed (fallback protection)
+        # Add trace to prevent escape_search characters from being typed
         self._last_editor_search_value = ""
         def validate_editor_search_entry(*args):
-            """Remove escape characters if they were just typed (fallback protection)"""
             current = self.editor_search_var.get()
-            # Check if an escape character was just added
             if len(current) > len(self._last_editor_search_value):
                 # A character was added
                 added_char = current[len(self._last_editor_search_value):]
-                # Get typeable escape characters dynamically from escape_search shortcuts
+                # Get typeable escape characters from escape_search keys
                 escape_chars = self._get_typeable_escape_chars()
                 if added_char in escape_chars:
                     # Remove it
