@@ -36,6 +36,8 @@ DEFAULT_PREFS = {
         "DaVinci Resolve": {
             "marker_color": "Blue",  # Default marker color for Shift+Click
             "marker_name": "Marker",  # Default marker name for Shift+Click
+            "auto_apply_marker_name": True,  # Automatically use default marker name (if False, prompt user)
+            "auto_apply_marker_color": True,  # Automatically use default marker color (if False, prompt user)
             "available_colors": ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", 
                                "Fuchsia", "Rose", "Lavender", "Sky", "Mint", "Lemon", "Sand", 
                                "Cocoa", "Cream"]  # Resolve's 16 marker colors
@@ -44,6 +46,8 @@ DEFAULT_PREFS = {
         # "Adobe Premiere": {
         #     "marker_color": "Blue",
         #     "marker_name": "Marker",
+        #     "auto_apply_marker_name": True,
+        #     "auto_apply_marker_color": True,
         #     "available_colors": ["Blue", "Cyan", "Green", "Yellow", "Red", "Pink", "Purple", "Orange"]
         # }
     },
@@ -2903,6 +2907,22 @@ class RapidMomentNavigator:
                 except:
                     pass
             
+            # Check if it's the marker settings dialog (if it exists and is open)
+            if hasattr(self, 'marker_settings_dialog') and self.marker_settings_dialog is not None:
+                try:
+                    if self.marker_settings_dialog.winfo_exists() and toplevel == self.marker_settings_dialog:
+                        return True
+                except:
+                    pass
+            
+            # Check if it's the manual marker dialog (if it exists and is open)
+            if hasattr(self, 'manual_marker_dialog') and self.manual_marker_dialog is not None:
+                try:
+                    if self.manual_marker_dialog.winfo_exists() and toplevel == self.manual_marker_dialog:
+                        return True
+                except:
+                    pass
+            
             # Not a recognized application window
             return False
         except:
@@ -4137,7 +4157,27 @@ class RapidMomentNavigator:
         self.debug_print(f"Fuzzy search overlay created and focused")
     
     def _show_fuzzy_search(self):
-        """Show fuzzy search for shows dropdown"""
+        """Show fuzzy search for shows dropdown (context-aware: also works for marker color in marker dialogs)"""
+        # Check if we're in a marker dialog with a color dropdown
+        # Priority 1: Manual marker dialog color
+        if hasattr(self, 'manual_marker_color_combo') and self.manual_marker_color_combo:
+            try:
+                if self.manual_marker_color_combo.winfo_exists():
+                    self._show_marker_color_fuzzy_search()
+                    return
+            except:
+                pass
+        
+        # Priority 2: Marker settings dialog color
+        if hasattr(self, 'marker_settings_color_combo') and self.marker_settings_color_combo:
+            try:
+                if self.marker_settings_color_combo.winfo_exists():
+                    self._show_marker_color_fuzzy_search()
+                    return
+            except:
+                pass
+        
+        # Default: Show fuzzy search for shows dropdown
         self._show_dropdown_fuzzy_search(
             dropdown_widget=self.show_dropdown,
             var_to_set=self.show_var,
@@ -4146,16 +4186,30 @@ class RapidMomentNavigator:
         )
     
     def _show_editor_fuzzy_search(self):
-        """Show fuzzy search for editor dropdown (context-aware: works in main window and editor dialog)"""
-        # TECHNICAL DEBT: This function hardcodes checks for specific windows (main vs editor dialog).
-        # This pattern works fine for the current two dropdown types (shows and editor) across two
-        # window contexts (main window and editor dialog), but doesn't scale well if we add more
-        # dialogs with similar dropdowns. A more scalable approach would be a registry-based system
-        # where each window registers its dropdowns and the fuzzy search automatically detects the
-        # focused window's dropdown. For now, this is acceptable given we only have two main dropdown
-        # types and two window contexts.
+        """Show fuzzy search for editor dropdown (context-aware: works in main window, editor dialog, and marker settings)"""
+        # TECHNICAL DEBT: This function hardcodes checks for specific windows (main vs editor dialog vs marker settings).
+        # This pattern works fine for the current dropdown types across multiple window contexts, but doesn't scale well
+        # if we add more dialogs with similar dropdowns. A more scalable approach would be a registry-based system
+        # where each window registers its dropdowns and the fuzzy search automatically detects the focused window's dropdown.
         
-        # Check if we're in the editor dialog
+        # Priority 1: Check if we're in the marker settings dialog
+        if hasattr(self, 'marker_settings_dialog') and self.marker_settings_dialog:
+            try:
+                if self.marker_settings_dialog.winfo_exists():
+                    if hasattr(self, 'marker_settings_editor_combo') and self.marker_settings_editor_combo:
+                        if self.marker_settings_editor_combo.winfo_exists():
+                            # Marker settings dialog context
+                            self._show_dropdown_fuzzy_search(
+                                dropdown_widget=self.marker_settings_editor_combo,
+                                var_to_set=self.marker_settings_editor_var,
+                                on_select_callback=self.marker_settings_on_editor_changed,
+                                focus_widget_after=None
+                            )
+                            return
+            except:
+                pass
+        
+        # Priority 2: Check if we're in the editor dialog
         if self._is_editor_dialog_focused() and hasattr(self, 'editor_dialog_combobox'):
             # Editor dialog context
             self._show_dropdown_fuzzy_search(
@@ -4172,6 +4226,41 @@ class RapidMomentNavigator:
                 on_select_callback=self._on_editor_changed,
                 focus_widget_after=self.search_entry
             )
+    
+    def _show_marker_color_fuzzy_search(self):
+        """Show fuzzy search for marker color dropdown (context-aware: works in marker settings and manual marker dialogs)"""
+        # Check if we're in the manual marker dialog
+        if hasattr(self, 'manual_marker_color_combo') and self.manual_marker_color_combo:
+            try:
+                if self.manual_marker_color_combo.winfo_exists():
+                    # Manual marker dialog context
+                    self._show_dropdown_fuzzy_search(
+                        dropdown_widget=self.manual_marker_color_combo,
+                        var_to_set=self.manual_marker_color_var,
+                        on_select_callback=None,
+                        focus_widget_after=None
+                    )
+                    return
+            except:
+                pass
+        
+        # Check if we're in the marker settings dialog
+        if hasattr(self, 'marker_settings_color_combo') and self.marker_settings_color_combo:
+            try:
+                if self.marker_settings_color_combo.winfo_exists():
+                    # Marker settings dialog context
+                    self._show_dropdown_fuzzy_search(
+                        dropdown_widget=self.marker_settings_color_combo,
+                        var_to_set=self.marker_settings_color_var,
+                        on_select_callback=self.marker_settings_on_color_changed,
+                        focus_widget_after=None
+                    )
+                    return
+            except:
+                pass
+        
+        # No marker color dropdown is currently active
+        self.debug_print("No marker color dropdown active to show fuzzy search")
     
     def _editor_dialog_focus_search(self):
         """Focus the search entry in editor dialog and select all text"""
@@ -8741,16 +8830,169 @@ except Exception as e:
             logging.error(f"Error using timeline navigation methods: {str(e)}")
             return False
     
-    def _resolve_create_marker_at_frame(self, frame, timeline):
-        """Create a marker at the specified frame in the DaVinci Resolve timeline"""
-        try:
-            # Get Resolve-specific marker settings from preferences
-            color = self.get_editor_setting("DaVinci Resolve", "marker_color", "Blue")
-            name = self.get_editor_setting("DaVinci Resolve", "marker_name", "Marker")
+    def _show_manual_marker_dialog(self, frame, timeline, current_editor, parent_window=None):
+        """
+        Show a dialog to manually configure marker name and/or color before inserting.
+        
+        Args:
+            frame: The frame number to insert the marker at
+            timeline: The timeline object
+            current_editor: The editor name (e.g., "DaVinci Resolve")
+            parent_window: The parent window to center on (defaults to self.root)
+        """
+        if parent_window is None:
+            parent_window = self.root
+        
+        # Get default values and available colors
+        default_editor_settings = DEFAULT_PREFS.get("editor_settings", {}).get(current_editor, {})
+        default_color = self.get_editor_setting(current_editor, "marker_color", 
+                                                default_editor_settings.get("marker_color", "Blue"))
+        default_name = self.get_editor_setting(current_editor, "marker_name", 
+                                               default_editor_settings.get("marker_name", "Marker"))
+        available_colors = self.get_editor_setting(current_editor, "available_colors", 
+                                                   default_editor_settings.get("available_colors", ["Blue"]))
+        
+        # Check which settings need manual input
+        auto_apply_name = self.get_editor_setting(current_editor, "auto_apply_marker_name", True)
+        auto_apply_color = self.get_editor_setting(current_editor, "auto_apply_marker_color", True)
+        
+        # If both are auto-apply, just create the marker directly (shouldn't happen, but safety check)
+        if auto_apply_name and auto_apply_color:
+            self._resolve_create_marker_at_frame_with_settings(frame, timeline, default_name, default_color)
+            return
+        
+        # Create dialog
+        marker_dialog = tk.Toplevel(parent_window)
+        marker_dialog.title("Insert Marker")
+        dialog_width, dialog_height = self.get_window_size("marker_settings_dialog")
+        marker_dialog.geometry(f"{dialog_width}x{dialog_height}")
+        marker_dialog.transient(parent_window)
+        marker_dialog.grab_set()
+        
+        # Store reference for focus detection
+        self.manual_marker_dialog = marker_dialog
+        
+        # Bind window close to save size and clean up references (shares sizing with marker_settings_dialog)
+        def on_close():
+            self.save_window_size("marker_settings_dialog", 
+                                 marker_dialog.winfo_width(), 
+                                 marker_dialog.winfo_height())
+            # Clean up manual marker color combo references
+            if hasattr(self, 'manual_marker_color_combo'):
+                self.manual_marker_color_combo = None
+            if hasattr(self, 'manual_marker_color_var'):
+                self.manual_marker_color_var = None
+            # Clean up dialog reference
+            if hasattr(self, 'manual_marker_dialog'):
+                self.manual_marker_dialog = None
+            marker_dialog.destroy()
+        
+        marker_dialog.protocol("WM_DELETE_WINDOW", on_close)
+        
+        # Center the dialog relative to parent (same pattern as keyboard shortcuts edit dialog)
+        marker_dialog.update()  # Use update() instead of update_idletasks() for more reliable sizing
+        if parent_window == self.root:
+            # Center on screen
+            screen_width = marker_dialog.winfo_screenwidth()
+            screen_height = marker_dialog.winfo_screenheight()
+            x = (screen_width - marker_dialog.winfo_width()) // 2
+            y = (screen_height - marker_dialog.winfo_height()) // 2
+        else:
+            # Center relative to parent dialog
+            x = parent_window.winfo_x() + (parent_window.winfo_width() - marker_dialog.winfo_width()) // 2
+            y = parent_window.winfo_y() + (parent_window.winfo_height() - marker_dialog.winfo_height()) // 2
+        marker_dialog.geometry(f"+{x}+{y}")
+        
+        # Main frame
+        main_frame = ttk.Frame(marker_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="Configure Marker", 
+                               font=("TkDefaultFont", 12, "bold"))
+        title_label.pack(anchor="w", pady=(0, 15))
+        
+        # Variables
+        marker_name_var = tk.StringVar(value=default_name)
+        marker_color_var = tk.StringVar(value=default_color)
+        
+        # Store references for context-aware fuzzy search
+        self.manual_marker_color_var = marker_color_var
+        self.manual_marker_color_combo = None
+        
+        # Marker Name (only if not auto-apply)
+        if not auto_apply_name:
+            name_frame = ttk.Frame(main_frame)
+            name_frame.pack(fill="x", pady=5)
             
-            # Get valid colors for Resolve from DEFAULT_PREFS
-            default_colors = DEFAULT_PREFS["editor_settings"]["DaVinci Resolve"]["available_colors"]
-            valid_colors = self.get_editor_setting("DaVinci Resolve", "available_colors", default_colors)
+            ttk.Label(name_frame, text="Marker Name:", width=12).pack(side="left", padx=(0, 10))
+            name_entry = ttk.Entry(name_frame, textvariable=marker_name_var, width=30)
+            name_entry.pack(side="left", fill="x", expand=True)
+            name_entry.focus_set()
+            name_entry.select_range(0, tk.END)
+        
+        # Marker Color (only if not auto-apply)
+        if not auto_apply_color:
+            color_frame = ttk.Frame(main_frame)
+            color_frame.pack(fill="x", pady=5)
+            
+            ttk.Label(color_frame, text="Marker Color:", width=12).pack(side="left", padx=(0, 10))
+            color_combo = ttk.Combobox(color_frame, textvariable=marker_color_var,
+                                      values=available_colors, width=15, state="readonly")
+            color_combo.pack(side="left", padx=5)
+            
+            # Store reference for context-aware fuzzy search
+            self.manual_marker_color_combo = color_combo
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(main_frame)
+        buttons_frame.pack(side="bottom", fill="x", pady=(15, 0))
+        
+        def apply_marker():
+            """Apply the marker with the configured settings"""
+            name = marker_name_var.get().strip() if not auto_apply_name else default_name
+            color = marker_color_var.get() if not auto_apply_color else default_color
+            
+            # Ensure name is not empty
+            if not name:
+                messagebox.showwarning("Invalid Name", "Marker name cannot be empty.", parent=marker_dialog)
+                return
+            
+            # Close dialog and create marker
+            on_close()
+            self._resolve_create_marker_at_frame_with_settings(frame, timeline, name, color)
+        
+        def cancel():
+            """Cancel marker insertion"""
+            on_close()
+        
+        # Cancel button
+        cancel_btn = ttk.Button(buttons_frame, text="Cancel", command=cancel)
+        cancel_btn.pack(side="right", padx=5)
+        
+        # Apply button
+        apply_btn = ttk.Button(buttons_frame, text="Insert Marker", command=apply_marker)
+        apply_btn.pack(side="right", padx=5)
+        
+        # Keyboard shortcuts
+        marker_dialog.bind("<Return>", lambda e: apply_marker())
+        marker_dialog.bind("<Escape>", lambda e: cancel())
+        
+        self.debug_print(f"Manual marker dialog shown (auto_name={auto_apply_name}, auto_color={auto_apply_color})")
+    
+    def _resolve_create_marker_at_frame_with_settings(self, frame, timeline, name, color):
+        """
+        Create a marker at the specified frame with explicit name and color.
+        This is the actual marker creation function called by both auto and manual paths.
+        """
+        try:
+            current_editor = self.editor_var.get()
+            
+            # Get valid colors
+            default_colors = DEFAULT_PREFS["editor_settings"].get(current_editor, {}).get("available_colors", ["Blue"])
+            valid_colors = self.get_editor_setting(current_editor, "available_colors", default_colors)
+            
+            # Validate color
             if color not in valid_colors:
                 self.debug_print(f"⚠️ Invalid color '{color}' - using 'Blue' instead")
                 color = "Blue"
@@ -8769,8 +9011,6 @@ except Exception as e:
                 self.debug_print(f"Could not check existing markers: {e}")
             
             # Create the marker at the specified frame
-            # Note: AddMarker requires a non-empty name parameter to succeed
-            # AddMarker expects: frameId (int), color (str), name (str), note (str), duration (int), customData (str)
             success = timeline.AddMarker(int(frame), color, name, "", 1, "")
             
             if success:
@@ -8788,6 +9028,35 @@ except Exception as e:
                 
         except Exception as e:
             self.debug_print(f"Error creating marker: {e}")
+            self.debug_print(f"Exception details: {traceback.format_exc()}")
+            self.status_var.set(f"Error creating marker: {e}")
+            return False
+    
+    def _resolve_create_marker_at_frame(self, frame, timeline):
+        """Create a marker at the specified frame in the DaVinci Resolve timeline"""
+        try:
+            current_editor = self.editor_var.get()
+            
+            # Check if we should prompt for manual settings
+            auto_apply_name = self.get_editor_setting(current_editor, "auto_apply_marker_name", True)
+            auto_apply_color = self.get_editor_setting(current_editor, "auto_apply_marker_color", True)
+            
+            # If either setting requires manual input, show the dialog
+            if not auto_apply_name or not auto_apply_color:
+                # Determine parent window (editor dialog if focused, otherwise main window)
+                parent_window = self.editor_dialog if self._is_editor_dialog_focused() and hasattr(self, 'editor_dialog') else self.root
+                self._show_manual_marker_dialog(frame, timeline, current_editor, parent_window)
+                return True
+            
+            # Otherwise, use automatic settings
+            color = self.get_editor_setting(current_editor, "marker_color", "Blue")
+            name = self.get_editor_setting(current_editor, "marker_name", "Marker")
+            
+            # Call the helper function to create the marker
+            return self._resolve_create_marker_at_frame_with_settings(frame, timeline, name, color)
+                
+        except Exception as e:
+            self.debug_print(f"Error in marker creation flow: {e}")
             self.debug_print(f"Exception details: {traceback.format_exc()}")
             self.status_var.set(f"Error creating marker: {e}")
             return False
@@ -9193,11 +9462,31 @@ except Exception as e:
         settings_dialog.transient(self.root)
         settings_dialog.grab_set()
         
-        # Bind window close to save size
+        # Store reference for focus detection
+        self.marker_settings_dialog = settings_dialog
+        
+        # Bind window close to save size and clean up references
         def on_close():
             self.save_window_size("marker_settings_dialog", 
                                  settings_dialog.winfo_width(), 
                                  settings_dialog.winfo_height())
+            # Clean up marker color combo references
+            if hasattr(self, 'marker_settings_color_combo'):
+                delattr(self, 'marker_settings_color_combo')
+            if hasattr(self, 'marker_settings_color_var'):
+                delattr(self, 'marker_settings_color_var')
+            if hasattr(self, 'marker_settings_on_color_changed'):
+                delattr(self, 'marker_settings_on_color_changed')
+            # Clean up editor combo references
+            if hasattr(self, 'marker_settings_editor_combo'):
+                delattr(self, 'marker_settings_editor_combo')
+            if hasattr(self, 'marker_settings_editor_var'):
+                delattr(self, 'marker_settings_editor_var')
+            if hasattr(self, 'marker_settings_on_editor_changed'):
+                delattr(self, 'marker_settings_on_editor_changed')
+            # Clean up dialog reference
+            if hasattr(self, 'marker_settings_dialog'):
+                self.marker_settings_dialog = None
             settings_dialog.destroy()
         
         settings_dialog.protocol("WM_DELETE_WINDOW", on_close)
@@ -9220,8 +9509,9 @@ except Exception as e:
         )
         close_btn.pack(side="right", padx=5)
         
-        # Keyboard shortcuts: Escape or Ctrl+Shift+C to close (Ctrl+C reserved for copying)
+        # Keyboard shortcuts: Escape, Enter, or Ctrl+Shift+C to close (Ctrl+C reserved for copying)
         settings_dialog.bind("<Escape>", lambda e: on_close())
+        settings_dialog.bind("<Return>", lambda e: on_close())
         settings_dialog.bind("<Control-Shift-C>", lambda e: on_close())
         
         # Create main frame with padding (pack after buttons so it fills remaining space)
@@ -9239,16 +9529,18 @@ except Exception as e:
         
         ttk.Label(editor_frame, text="Editor:", width=10).pack(side="left", padx=(0, 10))
         
-        # Create a local editor variable that syncs with the main one
-        dialog_editor_var = tk.StringVar(value=self.editor_var.get())
-        
         # Get list of editors from registry
         available_editors = list(self.EDITOR_REGISTRY.keys())
         available_editors.insert(0, "None")
         
-        editor_combo = ttk.Combobox(editor_frame, textvariable=dialog_editor_var,
+        # Use the main editor_var directly (tied to main window, like editor navigator does)
+        editor_combo = ttk.Combobox(editor_frame, textvariable=self.editor_var,
                                     values=available_editors, width=20, state="readonly")
         editor_combo.pack(side="left", padx=5)
+        
+        # Store references for context-aware fuzzy search
+        self.marker_settings_editor_combo = editor_combo
+        self.marker_settings_editor_var = self.editor_var
         
         # Description label (will be updated based on editor)
         desc_label = ttk.Label(
@@ -9268,13 +9560,18 @@ except Exception as e:
         marker_color_var = tk.StringVar()
         marker_name_var = tk.StringVar()
         
+        # Initialize references for context-aware fuzzy search (will be set in update_settings_ui)
+        self.marker_settings_color_combo = None
+        self.marker_settings_color_var = None
+        self.marker_settings_on_color_changed = None
+        
         def update_settings_ui():
             """Update the settings UI based on the selected editor"""
             # Clear existing widgets
             for widget in settings_container.winfo_children():
                 widget.destroy()
             
-            current_editor = dialog_editor_var.get()
+            current_editor = self.editor_var.get()
             
             # Update description based on editor
             if current_editor == "None" or current_editor not in self.EDITOR_REGISTRY:
@@ -9293,12 +9590,6 @@ except Exception as e:
             marker_frame = ttk.LabelFrame(settings_container, text="Marker Defaults", padding=10)
             marker_frame.pack(fill="x", pady=10)
             
-            # Marker Color Setting
-            color_frame = ttk.Frame(marker_frame)
-            color_frame.pack(fill="x", pady=5)
-            
-            ttk.Label(color_frame, text="Marker Color:", width=15).pack(side="left", padx=(0, 10))
-            
             # Get default values from DEFAULT_PREFS for this editor
             default_editor_settings = DEFAULT_PREFS.get("editor_settings", {}).get(current_editor, {})
             if default_editor_settings:
@@ -9314,8 +9605,23 @@ except Exception as e:
             # Get current settings and available colors from preferences
             current_color = self.get_editor_setting(current_editor, "marker_color", default_color)
             marker_colors = self.get_editor_setting(current_editor, "available_colors", default_colors)
+            current_name = self.get_editor_setting(current_editor, "marker_name", default_name)
+            
+            # Get current auto-apply settings
+            auto_apply_name = self.get_editor_setting(current_editor, "auto_apply_marker_name", True)
+            auto_apply_color = self.get_editor_setting(current_editor, "auto_apply_marker_color", True)
             
             marker_color_var.set(current_color)
+            marker_name_var.set(current_name)
+            
+            auto_apply_name_var = tk.BooleanVar(value=auto_apply_name)
+            auto_apply_color_var = tk.BooleanVar(value=auto_apply_color)
+            
+            # Marker Color Setting with inline checkbox
+            color_frame = ttk.Frame(marker_frame)
+            color_frame.pack(fill="x", pady=5)
+            
+            ttk.Label(color_frame, text="Marker Color:", width=15).pack(side="left", padx=(0, 10))
             
             def on_color_changed(event=None):
                 """Auto-save when color changes"""
@@ -9329,15 +9635,29 @@ except Exception as e:
             marker_color_combo.pack(side="left", padx=5)
             marker_color_combo.bind("<<ComboboxSelected>>", on_color_changed)
             
-            # Marker Name Setting
+            # Store references for context-aware fuzzy search
+            self.marker_settings_color_combo = marker_color_combo
+            self.marker_settings_color_var = marker_color_var
+            self.marker_settings_on_color_changed = on_color_changed
+            
+            # Inline checkbox for auto-apply color
+            def on_auto_apply_color_changed():
+                """Auto-save when auto-apply color checkbox changes"""
+                self.set_editor_setting(current_editor, "auto_apply_marker_color", auto_apply_color_var.get())
+            
+            auto_color_check = ttk.Checkbutton(
+                color_frame,
+                text="Auto-apply",
+                variable=auto_apply_color_var,
+                command=on_auto_apply_color_changed
+            )
+            auto_color_check.pack(side="left", padx=(10, 0))
+            
+            # Marker Name Setting with inline checkbox
             name_frame = ttk.Frame(marker_frame)
             name_frame.pack(fill="x", pady=5)
             
             ttk.Label(name_frame, text="Marker Name:", width=15).pack(side="left", padx=(0, 10))
-            
-            # Get current name (default_name already retrieved above)
-            current_name = self.get_editor_setting(current_editor, "marker_name", default_name)
-            marker_name_var.set(current_name)
             
             def on_name_changed(*args):
                 """Auto-save when name changes"""
@@ -9349,6 +9669,19 @@ except Exception as e:
             marker_name_entry.pack(side="left", padx=5)
             marker_name_var.trace_add("write", on_name_changed)
             
+            # Inline checkbox for auto-apply name
+            def on_auto_apply_name_changed():
+                """Auto-save when auto-apply name checkbox changes"""
+                self.set_editor_setting(current_editor, "auto_apply_marker_name", auto_apply_name_var.get())
+            
+            auto_name_check = ttk.Checkbutton(
+                name_frame,
+                text="Auto-apply",
+                variable=auto_apply_name_var,
+                command=on_auto_apply_name_changed
+            )
+            auto_name_check.pack(side="left", padx=(10, 0))
+            
             # Add editor-specific notes
             if current_editor == "DaVinci Resolve":
                 name_desc_label = ttk.Label(
@@ -9359,6 +9692,17 @@ except Exception as e:
                     foreground="gray"
                 )
                 name_desc_label.pack(anchor="w", padx=(20, 0), pady=(5, 0))
+            
+            # Description for auto-apply behavior
+            auto_apply_desc = ttk.Label(
+                marker_frame,
+                text="'Auto-apply' checkboxes control whether markers are inserted immediately with these default values, "
+                     "or whether you are prompted to customize before insertion (Shift+Click / Shift+Enter).",
+                wraplength=450,
+                font=("TkDefaultFont", 8),
+                foreground="gray"
+            )
+            auto_apply_desc.pack(anchor="w", padx=(0, 0), pady=(10, 0))
             
             # Note about auto-save
             note_label = ttk.Label(
@@ -9377,6 +9721,9 @@ except Exception as e:
             self._on_editor_changed(event)
             # Then update the marker settings UI for the new editor
             update_settings_ui()
+        
+        # Store reference for context-aware fuzzy search
+        self.marker_settings_on_editor_changed = on_editor_changed_in_dialog
         
         editor_combo.bind("<<ComboboxSelected>>", on_editor_changed_in_dialog)
         
