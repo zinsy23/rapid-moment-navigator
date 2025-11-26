@@ -8752,7 +8752,9 @@ except Exception as e:
                 text_widget.pack(anchor="w", padx=10, fill="x", expand=True)
                 
                 # Insert text and calculate height based on actual content
-                text_widget.insert("1.0", match['text'])
+                # Restore line breaks from DaVinci Resolve's Unicode separators
+                display_text = self._restore_subtitle_line_breaks(match['text'])
+                text_widget.insert("1.0", display_text)
                 
                 # Get the actual number of lines after wrapping (same as main navigator)
                 line_count = int(text_widget.index('end-1c').split('.')[0])
