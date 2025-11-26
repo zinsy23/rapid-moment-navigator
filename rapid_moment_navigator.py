@@ -8754,8 +8754,17 @@ except Exception as e:
                 text_widget.insert("1.0", match['text'])
                 
                 # Get the actual number of lines after wrapping (same as main navigator)
+                # Note: This counts logical lines (newlines), not wrapped display lines
+                # For long lines that wrap, we add buffer space
                 line_count = int(text_widget.index('end-1c').split('.')[0])
-                text_widget.config(height=line_count, state="disabled")
+                
+                # Estimate wrapped lines: if text is long and has few newlines, it will wrap
+                # Add extra height for wrapping (rough heuristic: 1 extra line per 80 chars)
+                text_length = len(match['text'])
+                estimated_wrap_lines = max(1, text_length // 80)
+                total_height = max(line_count, estimated_wrap_lines)
+                
+                text_widget.config(height=total_height, state="disabled")
                 
                 # Configure tag for search highlighting
                 text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
