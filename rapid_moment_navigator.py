@@ -8769,6 +8769,9 @@ except Exception as e:
                 # Configure tag for search highlighting
                 text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
                 
+                # Add some space after each result (same as main navigator)
+                ttk.Separator(self.editor_results_container, orient="horizontal").pack(fill="x", pady=5)
+                
                 # Track this result item for keyboard navigation
                 self.editor_result_items.append({
                     'frame': result_frame,
