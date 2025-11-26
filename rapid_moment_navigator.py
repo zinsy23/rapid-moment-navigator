@@ -3020,6 +3020,10 @@ class RapidMomentNavigator:
             second_key_map: Dict mapping second keys to (handler, action_id) tuples
             has_standalone_action: If True, this key also has a standalone action (e.g., 'j', 'k')
         """
+        # Block all two-letter sequences when fuzzy search is active
+        if self._is_fuzzy_search_active():
+            return
+        
         # Don't navigate if app window doesn't have focus AND no dialogs are focused
         # Allow two-letter sequences in keyboard shortcuts dialog, window sizing dialog, debug window, and editor dialog
         app_focused = self._is_app_window_focused()
@@ -5528,6 +5532,10 @@ class RapidMomentNavigator:
     
     def _handle_number_key(self, digit):
         """Handle digit key press for Vim-style number prefix"""
+        # Block when fuzzy search is active
+        if self._is_fuzzy_search_active():
+            return
+        
         if not self._is_app_window_focused():
             return
         
@@ -5747,6 +5755,15 @@ class RapidMomentNavigator:
                             # Pass event to handler in case it needs to check modifier state
                             def make_handler_wrapper(h, aid):
                                 def wrapper(e):
+                                    # Block all shortcuts when fuzzy search is active (except Escape)
+                                    if self._is_fuzzy_search_active():
+                                        # Only allow escape_search to close fuzzy finder
+                                        if aid == "escape_search":
+                                            # Let escape close the fuzzy finder
+                                            return None
+                                        # Block all other shortcuts
+                                        return None
+                                    
                                     # Check if we're specifically in the main search bar
                                     focused = self.root.focus_get()
                                     in_main_search = focused == self.search_entry
@@ -5801,6 +5818,15 @@ class RapidMomentNavigator:
                                 def make_handler(h, aid):
                                     last_call = [0]  # Use list to allow modification in closure
                                     def wrapper(e):
+                                        # Block all shortcuts when fuzzy search is active (except Escape)
+                                        if self._is_fuzzy_search_active():
+                                            # Only allow escape_search to close fuzzy finder
+                                            if aid == "escape_search":
+                                                # Let escape close the fuzzy finder
+                                                return None
+                                            # Block all other shortcuts
+                                            return None
+                                        
                                         import time
                                         current_time = time.time()
                                         # Only call if more than 50ms since last call (prevents duplicate from case variants)
@@ -5833,6 +5859,15 @@ class RapidMomentNavigator:
                                 # Add wrapper for escape_search to prevent typing in search bar
                                 def make_special_key_wrapper(h, aid):
                                     def wrapper(e):
+                                        # Block all shortcuts when fuzzy search is active (except Escape)
+                                        if self._is_fuzzy_search_active():
+                                            # Only allow escape_search to close fuzzy finder
+                                            if aid == "escape_search":
+                                                # Let escape close the fuzzy finder
+                                                return None
+                                            # Block all other shortcuts
+                                            return None
+                                        
                                         # Check if we're specifically in the main search bar
                                         focused = self.root.focus_get()
                                         in_main_search = focused == self.search_entry
@@ -5888,6 +5923,10 @@ class RapidMomentNavigator:
                 # Bind to check if this completes a sequence
                 def make_sequence_completer(fk, sk, h, aid):
                     def completer(event):
+                        # Block when fuzzy search is active
+                        if self._is_fuzzy_search_active():
+                            return None
+                        
                         # Check if the first key was pressed (no timeout check - like Vim's notimeout)
                         last_press_info = self.last_key_press_times.get(fk, None)
                         
