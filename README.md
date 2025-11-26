@@ -29,6 +29,29 @@ A Python application for searching subtitle files and quickly navigating to spec
 1. Make sure you have Python installed. If not, download and install from [python.org](https://python.org)
 2. No additional packages are needed beyond the standard library
 
+
+### Keyboard Shortcut Support is Currently in Beta:
+
+If you want to try out a beta version of this program that supports keyboard shortcuts (VIM style), download it via:
+```
+git clone -b feature/better-keyboard-navigation --depth=1 https://github.com/zinsy23/rapid-moment-navigator.git
+```
+
+If you already had this program downloaded, you can switch to that beta via:
+```
+git fetch origin && git checkout feature/better-keyboard-navigation
+```
+
+You can switch back to the official release at any time via:
+```
+git checkout master
+```
+
+You can grab the latest release on the correct branch at any time via:
+```
+git pull
+```
+
 ## Usage
 
 1. Place the `rapid_moment_navigator.py` script in any directory
