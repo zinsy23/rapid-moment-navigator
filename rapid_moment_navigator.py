@@ -8726,8 +8726,8 @@ except Exception as e:
 
             # Create a frame for each match
             for idx, match in enumerate(matches):
-                result_frame = ttk.Frame(self.editor_results_container)
-                result_frame.pack(fill="x", pady=5)
+                result_frame = ttk.Frame(self.editor_results_container, padding=(5, 2))
+                result_frame.pack(fill="x", padx=5, pady=2, anchor="w")
                 timecode_string = f"{self._format_timecode(match['start'], timeline_fps)} - {self._format_timecode(match['end'], timeline_fps)}"
                 
                 # Create clickable timecode with proper parameters
@@ -8768,9 +8768,6 @@ except Exception as e:
                 
                 # Configure tag for search highlighting
                 text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
-                
-                # Add some space after each result (same as main navigator)
-                ttk.Separator(self.editor_results_container, orient="horizontal").pack(fill="x", pady=5)
                 
                 # Track this result item for keyboard navigation
                 self.editor_result_items.append({
