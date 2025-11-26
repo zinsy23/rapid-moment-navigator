@@ -8745,26 +8745,18 @@ except Exception as e:
                 self.debug_print(f"EDITOR SEARCH - text: {repr(match['text'])}")
                 
                 # Add text widget (allows highlighting of search matches, same as main navigator)
+                # Note: Don't set width in characters - let it expand to fill space like the Label did
                 text_widget = tk.Text(result_frame, wrap="word", relief="flat", 
                                      background=self.root.cget('bg'), font=("TkDefaultFont", 10),
-                                     cursor="arrow", highlightthickness=0, width=100)
-                text_widget.pack(anchor="w", padx=10, fill="x")
+                                     cursor="arrow", highlightthickness=0)
+                text_widget.pack(anchor="w", padx=10, fill="x", expand=True)
                 
                 # Insert text and calculate height based on actual content
                 text_widget.insert("1.0", match['text'])
                 
                 # Get the actual number of lines after wrapping (same as main navigator)
-                # Note: This counts logical lines (newlines), not wrapped display lines
-                # For long lines that wrap, we add buffer space
                 line_count = int(text_widget.index('end-1c').split('.')[0])
-                
-                # Estimate wrapped lines: if text is long and has few newlines, it will wrap
-                # Add extra height for wrapping (rough heuristic: 1 extra line per 80 chars)
-                text_length = len(match['text'])
-                estimated_wrap_lines = max(1, text_length // 80)
-                total_height = max(line_count, estimated_wrap_lines)
-                
-                text_widget.config(height=total_height, state="disabled")
+                text_widget.config(height=line_count, state="disabled")
                 
                 # Configure tag for search highlighting
                 text_widget.tag_configure("search_match", background="#ffff00", foreground="#000000")
