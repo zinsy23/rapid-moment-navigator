@@ -3782,12 +3782,54 @@ class RapidMomentNavigator:
             dropdown_widget: The combobox widget to search
             var_to_set: The StringVar to update when selection is made
             on_select_callback: Optional callback to run after selection (receives None as event)
-            focus_widget_after: Widget to focus and select all text after selection. None = no focus change.
+            focus_widget_after: Widget to focus and select all text after selection. None = auto-detect based on dialog context.
         """
         # Don't show if app window doesn't have focus
         if not self._is_app_window_focused():
             self.debug_print("App window doesn't have focus, ignoring fuzzy search")
             return
+        
+        # Auto-detect focus target if not specified
+        if focus_widget_after is None:
+            # Determine which dialog we're in by checking the dropdown's toplevel window
+            try:
+                parent_window = dropdown_widget.winfo_toplevel()
+                
+                # Check if we're in the marker settings dialog
+                if hasattr(self, 'marker_settings_dialog') and self.marker_settings_dialog:
+                    try:
+                        if parent_window == self.marker_settings_dialog and self.marker_settings_dialog.winfo_exists():
+                            # In marker settings dialog - focus the marker name entry if it exists
+                            # (it's created dynamically in update_settings_ui)
+                            # We'll set a flag to focus the dialog itself, and let the dialog handle focusing the right widget
+                            focus_widget_after = "marker_settings_dialog"
+                            self.debug_print("Auto-detected marker settings dialog context for focus restoration")
+                    except:
+                        pass
+                
+                # Check if we're in the manual marker dialog
+                if focus_widget_after is None and hasattr(self, 'manual_marker_dialog') and self.manual_marker_dialog:
+                    try:
+                        if parent_window == self.manual_marker_dialog and self.manual_marker_dialog.winfo_exists():
+                            # In manual marker dialog - focus the marker name entry if it exists
+                            focus_widget_after = "manual_marker_dialog"
+                            self.debug_print("Auto-detected manual marker dialog context for focus restoration")
+                    except:
+                        pass
+                
+                # Check if we're in the editor dialog
+                if focus_widget_after is None and hasattr(self, 'editor_dialog') and self.editor_dialog:
+                    try:
+                        if parent_window == self.editor_dialog and self.editor_dialog.winfo_exists():
+                            # In editor dialog - this shouldn't happen as editor dialog always passes focus_widget_after
+                            # But just in case, focus the search entry
+                            if hasattr(self, 'editor_search_entry'):
+                                focus_widget_after = self.editor_search_entry
+                                self.debug_print("Auto-detected editor dialog context for focus restoration")
+                    except:
+                        pass
+            except Exception as e:
+                self.debug_print(f"Error auto-detecting focus context: {e}")
         
         # Close any active search overlay (/ or ?) before opening fuzzy search
         if self.search_overlay is not None:
@@ -4029,19 +4071,112 @@ class RapidMomentNavigator:
                     on_select_callback(None)
                 fuzzy_overlay.destroy()
                 self.fuzzy_search_overlay = None  # Clear reference
-                # Return focus to main window
-                self.root.focus_force()
-                # Focus and select all in widget if specified
-                if focus_widget_after is not None:
-                    self.root.after(50, lambda: focus_widget_after.focus_set())
-                    self.root.after(100, lambda: focus_widget_after.select_range(0, tk.END) if hasattr(focus_widget_after, 'select_range') else None)
+                
+                # Determine which window to focus based on context
+                # Handle string identifiers for dialog contexts
+                if focus_widget_after == "marker_settings_dialog":
+                    # Focus marker settings dialog - use stored reference to marker name entry
+                    def focus_marker_settings():
+                        try:
+                            if hasattr(self, 'marker_settings_dialog') and self.marker_settings_dialog and self.marker_settings_dialog.winfo_exists():
+                                # First focus the dialog window itself
+                                self.marker_settings_dialog.focus_force()
+                                # Try to focus the marker name entry if it exists
+                                if hasattr(self, 'marker_settings_name_entry') and self.marker_settings_name_entry:
+                                    try:
+                                        if self.marker_settings_name_entry.winfo_exists():
+                                            self.marker_settings_name_entry.focus_set()
+                                            self.marker_settings_name_entry.select_range(0, tk.END)
+                                            self.debug_print("Focused marker name entry in marker settings dialog")
+                                            return
+                                    except:
+                                        pass
+                                self.debug_print("Focused marker settings dialog (no entry found)")
+                        except Exception as e:
+                            self.debug_print(f"Error focusing marker settings dialog: {e}")
+                    self.root.after(50, focus_marker_settings)
+                elif focus_widget_after == "manual_marker_dialog":
+                    # Focus manual marker dialog - use stored reference to marker name entry
+                    def focus_manual_marker():
+                        try:
+                            if hasattr(self, 'manual_marker_dialog') and self.manual_marker_dialog and self.manual_marker_dialog.winfo_exists():
+                                # First focus the dialog window itself
+                                self.manual_marker_dialog.focus_force()
+                                # Try to focus the marker name entry if it exists
+                                if hasattr(self, 'manual_marker_name_entry') and self.manual_marker_name_entry:
+                                    try:
+                                        if self.manual_marker_name_entry.winfo_exists():
+                                            self.manual_marker_name_entry.focus_set()
+                                            self.manual_marker_name_entry.select_range(0, tk.END)
+                                            self.debug_print("Focused marker name entry in manual marker dialog")
+                                            return
+                                    except:
+                                        pass
+                                self.debug_print("Focused manual marker dialog (no entry found)")
+                        except Exception as e:
+                            self.debug_print(f"Error focusing manual marker dialog: {e}")
+                    self.root.after(50, focus_manual_marker)
+                elif focus_widget_after is not None:
+                    # Regular widget focus - focus main window first, then the widget
+                    self.root.focus_force()
+                    self.root.after(50, lambda: focus_widget_after.focus_set() if focus_widget_after.winfo_exists() else None)
+                    self.root.after(100, lambda: focus_widget_after.select_range(0, tk.END) if hasattr(focus_widget_after, 'select_range') and focus_widget_after.winfo_exists() else None)
+                else:
+                    # No focus target specified, just focus main window
+                    self.root.focus_force()
         
         def close_overlay():
             """Close the overlay without selecting"""
             fuzzy_overlay.destroy()
             self.fuzzy_search_overlay = None  # Clear reference
-            # Return focus to main window
-            self.root.focus_force()
+            
+            # Determine which window to focus based on context
+            # Handle string identifiers for dialog contexts
+            if focus_widget_after == "marker_settings_dialog":
+                # Focus marker settings dialog - use stored reference to marker name entry
+                def focus_marker_settings():
+                    try:
+                        if hasattr(self, 'marker_settings_dialog') and self.marker_settings_dialog and self.marker_settings_dialog.winfo_exists():
+                            # First focus the dialog window itself
+                            self.marker_settings_dialog.focus_force()
+                            # Try to focus the marker name entry if it exists
+                            if hasattr(self, 'marker_settings_name_entry') and self.marker_settings_name_entry:
+                                try:
+                                    if self.marker_settings_name_entry.winfo_exists():
+                                        self.marker_settings_name_entry.focus_set()
+                                        self.marker_settings_name_entry.select_range(0, tk.END)
+                                        self.debug_print("Focused marker name entry in marker settings dialog (on close)")
+                                        return
+                                except:
+                                    pass
+                            self.debug_print("Focused marker settings dialog (on close, no entry found)")
+                    except Exception as e:
+                        self.debug_print(f"Error focusing marker settings dialog on close: {e}")
+                self.root.after(50, focus_marker_settings)
+            elif focus_widget_after == "manual_marker_dialog":
+                # Focus manual marker dialog - use stored reference to marker name entry
+                def focus_manual_marker():
+                    try:
+                        if hasattr(self, 'manual_marker_dialog') and self.manual_marker_dialog and self.manual_marker_dialog.winfo_exists():
+                            # First focus the dialog window itself
+                            self.manual_marker_dialog.focus_force()
+                            # Try to focus the marker name entry if it exists
+                            if hasattr(self, 'manual_marker_name_entry') and self.manual_marker_name_entry:
+                                try:
+                                    if self.manual_marker_name_entry.winfo_exists():
+                                        self.manual_marker_name_entry.focus_set()
+                                        self.manual_marker_name_entry.select_range(0, tk.END)
+                                        self.debug_print("Focused marker name entry in manual marker dialog (on close)")
+                                        return
+                                except:
+                                    pass
+                            self.debug_print("Focused manual marker dialog (on close, no entry found)")
+                    except Exception as e:
+                        self.debug_print(f"Error focusing manual marker dialog on close: {e}")
+                self.root.after(50, focus_manual_marker)
+            else:
+                # Return focus to main window (default behavior)
+                self.root.focus_force()
         
         def navigate_up():
             """Navigate up in results"""
@@ -4116,8 +4251,8 @@ class RapidMomentNavigator:
         search_entry.bind("<Escape>", lambda e: close_overlay())
         search_entry.bind("<Control-c>", lambda e: close_overlay())
         
-        results_listbox.bind("<Double-Button-1>", lambda e: select_show() or "break")
-        results_listbox.bind("<Return>", lambda e: select_show() or "break")
+        results_listbox.bind("<Double-Button-1>", lambda e: select_option() or "break")
+        results_listbox.bind("<Return>", lambda e: select_option() or "break")
         results_listbox.bind("<Escape>", lambda e: close_overlay())
         
         # Close overlay when clicking outside (focus lost)
@@ -8517,8 +8652,15 @@ except Exception as e:
             self.debug_print(f"Searching for text: {text_to_find}")
 
         # Clear previous search results
-        for widget in self.editor_results_container.winfo_children():
-            widget.destroy()
+        try:
+            if hasattr(self, 'editor_results_container') and self.editor_results_container:
+                if self.editor_results_container.winfo_exists():
+                    for widget in self.editor_results_container.winfo_children():
+                        widget.destroy()
+        except Exception as e:
+            self.debug_print(f"Error clearing editor results container: {e}")
+            # If the container is gone, we can't proceed with the search
+            return
 
         # Get current editor configuration
         current_editor = self.editor_var.get()
@@ -8742,8 +8884,15 @@ except Exception as e:
                 return
 
             # Clear previous search results and tracking
-            for widget in self.editor_results_container.winfo_children():
-                widget.destroy()
+            try:
+                if hasattr(self, 'editor_results_container') and self.editor_results_container:
+                    if self.editor_results_container.winfo_exists():
+                        for widget in self.editor_results_container.winfo_children():
+                            widget.destroy()
+            except Exception as e:
+                self.debug_print(f"Error clearing editor results container: {e}")
+                # If the container is gone, we can't proceed with displaying results
+                return
             
             # Reset result tracking
             self.editor_result_items = []
@@ -8938,6 +9087,8 @@ except Exception as e:
                 self.manual_marker_color_combo = None
             if hasattr(self, 'manual_marker_color_var'):
                 self.manual_marker_color_var = None
+            if hasattr(self, 'manual_marker_name_entry'):
+                self.manual_marker_name_entry = None
             # Clean up dialog reference
             if hasattr(self, 'manual_marker_dialog'):
                 self.manual_marker_dialog = None
@@ -8975,6 +9126,7 @@ except Exception as e:
         # Store references for context-aware fuzzy search
         self.manual_marker_color_var = marker_color_var
         self.manual_marker_color_combo = None
+        self.manual_marker_name_entry = None  # Will be set if name entry is created
         
         # Marker Name (only if not auto-apply)
         if not auto_apply_name:
@@ -8989,6 +9141,9 @@ except Exception as e:
             name_entry.bind("<Shift-Return>", lambda e: apply_marker() or "break")
             name_entry.focus_set()
             name_entry.select_range(0, tk.END)
+            
+            # Store reference for focus restoration after fuzzy finder
+            self.manual_marker_name_entry = name_entry
         
         # Marker Color (only if not auto-apply)
         if not auto_apply_color:
@@ -9537,6 +9692,8 @@ except Exception as e:
                 delattr(self, 'marker_settings_color_var')
             if hasattr(self, 'marker_settings_on_color_changed'):
                 delattr(self, 'marker_settings_on_color_changed')
+            if hasattr(self, 'marker_settings_name_entry'):
+                delattr(self, 'marker_settings_name_entry')
             # Clean up editor combo references
             if hasattr(self, 'marker_settings_editor_combo'):
                 delattr(self, 'marker_settings_editor_combo')
@@ -9624,12 +9781,16 @@ except Exception as e:
         self.marker_settings_color_combo = None
         self.marker_settings_color_var = None
         self.marker_settings_on_color_changed = None
+        self.marker_settings_name_entry = None  # Will be set if name entry is created
         
         def update_settings_ui():
             """Update the settings UI based on the selected editor"""
             # Clear existing widgets
             for widget in settings_container.winfo_children():
                 widget.destroy()
+            
+            # Clear the marker name entry reference when UI is rebuilt
+            self.marker_settings_name_entry = None
             
             current_editor = self.editor_var.get()
             
@@ -9728,6 +9889,9 @@ except Exception as e:
             marker_name_entry = ttk.Entry(name_frame, textvariable=marker_name_var, width=30)
             marker_name_entry.pack(side="left", padx=5)
             marker_name_var.trace_add("write", on_name_changed)
+            
+            # Store reference for focus restoration after fuzzy finder
+            self.marker_settings_name_entry = marker_name_entry
             
             # Inline checkbox for auto-apply name
             def on_auto_apply_name_changed():
