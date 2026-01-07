@@ -3048,12 +3048,15 @@ class RapidMomentNavigator:
         if not (app_focused or editor_focused or keyboard_shortcuts_focused or window_sizing_focused or debug_focused):
             return
         
-        # Don't navigate if search bar has focus (user is typing)
+        # Don't navigate if text entry has focus (user is typing in search bars or bulk import)
         focused_widget = self.root.focus_get()
         if focused_widget == self.search_entry:
             return
         # Also check editor search bar
         if hasattr(self, 'editor_search_entry') and self.editor_search_entry and focused_widget == self.editor_search_entry:
+            return
+        # Also check bulk import text widget
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget and focused_widget == self.bulk_import_text_widget:
             return
         
         # Get last press info for this key (default to None if not found)
@@ -4217,8 +4220,15 @@ class RapidMomentNavigator:
                     except Exception as e:
                         self.debug_print(f"Error focusing manual marker dialog on close: {e}")
                 self.root.after(50, focus_manual_marker)
+            elif focus_widget_after is not None:
+                # Regular widget focus - focus main window first, then the widget
+                self.root.focus_force()
+                self.root.after(50, lambda: focus_widget_after.focus_set() if focus_widget_after.winfo_exists() else None)
+                # Don't try to select_range on Text widgets, only on Entry widgets
+                if hasattr(focus_widget_after, 'select_range') and not isinstance(focus_widget_after, tk.Text):
+                    self.root.after(100, lambda: focus_widget_after.select_range(0, tk.END) if focus_widget_after.winfo_exists() else None)
             else:
-                # Return focus to main window (default behavior)
+                # No focus target specified, just focus main window
                 self.root.focus_force()
         
         def navigate_up():
@@ -4349,7 +4359,16 @@ class RapidMomentNavigator:
     def _show_fuzzy_search(self):
         """Show fuzzy search for shows dropdown (context-aware: also works for marker color in marker dialogs)"""
         # Check if we're in a marker dialog with a color dropdown
-        # Priority 1: Manual marker dialog color
+        # Priority 1: Bulk marker import dialog color
+        if hasattr(self, 'bulk_import_color_combo') and self.bulk_import_color_combo:
+            try:
+                if self.bulk_import_color_combo.winfo_exists():
+                    self._show_marker_color_fuzzy_search()
+                    return
+            except:
+                pass
+
+        # Priority 2: Manual marker dialog color
         if hasattr(self, 'manual_marker_color_combo') and self.manual_marker_color_combo:
             try:
                 if self.manual_marker_color_combo.winfo_exists():
@@ -4357,8 +4376,8 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
-        # Priority 2: Marker settings dialog color
+
+        # Priority 3: Marker settings dialog color
         if hasattr(self, 'marker_settings_color_combo') and self.marker_settings_color_combo:
             try:
                 if self.marker_settings_color_combo.winfo_exists():
@@ -4366,7 +4385,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Default: Show fuzzy search for shows dropdown
         self._show_dropdown_fuzzy_search(
             dropdown_widget=self.show_dropdown,
@@ -4388,12 +4407,13 @@ class RapidMomentNavigator:
                 if self.bulk_marker_import_dialog.winfo_exists():
                     if hasattr(self, 'bulk_import_editor_combo') and self.bulk_import_editor_combo:
                         if self.bulk_import_editor_combo.winfo_exists():
-                            # Bulk import dialog context
+                            # Bulk import dialog context - return focus to text widget after selection
+                            focus_target = self.bulk_import_text_widget if hasattr(self, 'bulk_import_text_widget') else None
                             self._show_dropdown_fuzzy_search(
                                 dropdown_widget=self.bulk_import_editor_combo,
                                 var_to_set=self.bulk_import_editor_var,
                                 on_select_callback=self.bulk_import_on_editor_changed,
-                                focus_widget_after=None
+                                focus_widget_after=focus_target
                             )
                             return
             except:
@@ -4440,12 +4460,13 @@ class RapidMomentNavigator:
         if hasattr(self, 'bulk_import_color_combo') and self.bulk_import_color_combo:
             try:
                 if self.bulk_import_color_combo.winfo_exists():
-                    # Bulk import dialog context
+                    # Bulk import dialog context - return focus to text widget after selection
+                    focus_target = self.bulk_import_text_widget if hasattr(self, 'bulk_import_text_widget') else None
                     self._show_dropdown_fuzzy_search(
                         dropdown_widget=self.bulk_import_color_combo,
                         var_to_set=self.bulk_import_color_var,
                         on_select_callback=self.bulk_import_on_color_changed,
-                        focus_widget_after=None
+                        focus_widget_after=focus_target
                     )
                     return
             except:
@@ -5454,13 +5475,29 @@ class RapidMomentNavigator:
     
     def _context_aware_navigate_next(self):
         """Navigate to next result - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return  # User is typing in bulk import dialog
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_navigate_next()
         else:
             self._navigate_result_next()
-    
+
     def _context_aware_navigate_prev(self):
         """Navigate to previous result - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return  # User is typing in bulk import dialog
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_navigate_prev()
         else:
@@ -5482,20 +5519,44 @@ class RapidMomentNavigator:
     
     def _context_aware_next_page(self):
         """Go to next page - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_next_page()
         else:
             self._go_to_next_page()
-    
+
     def _context_aware_prev_page(self):
         """Go to previous page - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_prev_page()
         else:
             self._go_to_previous_page()
-    
+
     def _context_aware_activate_result(self):
         """Activate selected result - routes to appropriate window"""
+        # Don't activate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_activate_result(shift_held=False)
         else:
@@ -5525,6 +5586,14 @@ class RapidMomentNavigator:
     
     def _context_aware_scroll_down(self):
         """Scroll down half page - routes to appropriate window or dialog"""
+        # Don't scroll if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         # Check for keyboard shortcuts dialog (pixel-based)
         if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
             try:
@@ -5533,7 +5602,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for window sizing dialog (pixel-based)
         if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
             try:
@@ -5542,7 +5611,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for debug window (ScrolledText - different widget type)
         if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
             try:
@@ -5555,7 +5624,7 @@ class RapidMomentNavigator:
                     return
             except Exception as e:
                 self.debug_print(f"Error scrolling debug window: {e}")
-        
+
         # Check for editor dialog (item-based scrolling)
         if self._is_editor_dialog_focused():
             self._editor_dialog_scroll_half_page_down()
@@ -5565,6 +5634,14 @@ class RapidMomentNavigator:
     
     def _context_aware_scroll_up(self):
         """Scroll up half page - routes to appropriate window or dialog"""
+        # Don't scroll if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         # Check for keyboard shortcuts dialog (pixel-based)
         if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
             try:
@@ -5573,7 +5650,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for window sizing dialog (pixel-based)
         if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
             try:
@@ -5582,7 +5659,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for debug window (ScrolledText - different widget type)
         if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
             try:
@@ -5595,7 +5672,7 @@ class RapidMomentNavigator:
                     return
             except Exception as e:
                 self.debug_print(f"Error scrolling debug window: {e}")
-        
+
         # Check for editor dialog (item-based scrolling)
         if self._is_editor_dialog_focused():
             self._editor_dialog_scroll_half_page_up()
@@ -5605,20 +5682,44 @@ class RapidMomentNavigator:
     
     def _context_aware_center_result(self):
         """Center result in viewport - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_center_result()
         else:
             self._center_result()
-    
+
     def _context_aware_result_to_top(self):
         """Position result at top - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_top_result()
         else:
             self._result_to_top()
-    
+
     def _context_aware_result_to_bottom(self):
         """Position result at bottom - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_bottom_result()
         else:
@@ -5626,6 +5727,14 @@ class RapidMomentNavigator:
     
     def _context_aware_scroll_to_top(self):
         """Scroll to top - routes to appropriate window or dialog"""
+        # Don't scroll if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         # Check for keyboard shortcuts dialog
         if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
             try:
@@ -5634,7 +5743,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for window sizing dialog
         if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
             try:
@@ -5643,7 +5752,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for debug window
         if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
             try:
@@ -5653,7 +5762,7 @@ class RapidMomentNavigator:
                     return
             except Exception as e:
                 self.debug_print(f"Error scrolling debug window to top: {e}")
-        
+
         # Check for editor dialog (item-based)
         if self._is_editor_dialog_focused():
             self._editor_dialog_goto_first()
@@ -5663,6 +5772,14 @@ class RapidMomentNavigator:
     
     def _context_aware_scroll_to_bottom(self):
         """Scroll to bottom - routes to appropriate window or dialog"""
+        # Don't scroll if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         # Check for keyboard shortcuts dialog
         if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
             try:
@@ -5671,7 +5788,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for window sizing dialog
         if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
             try:
@@ -5700,20 +5817,44 @@ class RapidMomentNavigator:
     
     def _context_aware_search_in_results(self, reverse=False):
         """Search in results (/ or ?) - routes to appropriate window"""
+        # Don't search if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_search_in_results(reverse=reverse)
         else:
             self._search_in_results(reverse=reverse)
-    
+
     def _context_aware_next_search_match(self):
         """Go to next search match (n) - routes to appropriate window"""
+        # Don't search if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_next_search_match()
         else:
             self._next_search_match()
-    
+
     def _context_aware_previous_search_match(self):
         """Go to previous search match (N) - routes to appropriate window"""
+        # Don't search if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_previous_search_match()
         else:
@@ -5749,11 +5890,13 @@ class RapidMomentNavigator:
         if not self._is_app_window_focused():
             return
         
-        # Don't capture numbers if any search bar has focus (main window or editor dialog)
+        # Don't capture numbers if any text entry has focus (search bars, bulk import text box)
         focused = self.root.focus_get()
         if focused == self.search_entry:
             return
         if hasattr(self, 'editor_search_entry') and focused == self.editor_search_entry:
+            return
+        if hasattr(self, 'bulk_import_text_widget') and focused == self.bulk_import_text_widget:
             return
         
         # Add digit to prefix
@@ -5975,10 +6118,10 @@ class RapidMomentNavigator:
                                         # Block all other shortcuts
                                         return None
                                     
-                                    # Check if we're specifically in the main search bar
+                                    # Check if we're specifically in a text entry widget
                                     focused = self.root.focus_get()
                                     in_main_search = focused == self.search_entry
-                                    
+
                                     # Also check if in editor dialog search bar (if it exists)
                                     in_editor_search = False
                                     if hasattr(self, 'editor_search_entry') and self.editor_search_entry:
@@ -5986,8 +6129,16 @@ class RapidMomentNavigator:
                                             in_editor_search = focused == self.editor_search_entry
                                         except:
                                             pass
-                                    
-                                    if in_main_search or in_editor_search:
+
+                                    # Also check if in bulk import text widget (if it exists)
+                                    in_bulk_import = False
+                                    if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+                                        try:
+                                            in_bulk_import = focused == self.bulk_import_text_widget
+                                        except:
+                                            pass
+
+                                    if in_main_search or in_editor_search or in_bulk_import:
                                         # If in a search bar, only handle "escape_search" action (unfocus shortcuts)
                                         # These should work while typing and prevent the character from being typed
                                         if aid == "escape_search":
@@ -6079,10 +6230,10 @@ class RapidMomentNavigator:
                                             # Block all other shortcuts
                                             return None
                                         
-                                        # Check if we're specifically in the main search bar
+                                        # Check if we're specifically in a text entry widget
                                         focused = self.root.focus_get()
                                         in_main_search = focused == self.search_entry
-                                        
+
                                         # Also check if in editor dialog search bar (if it exists)
                                         in_editor_search = False
                                         if hasattr(self, 'editor_search_entry') and self.editor_search_entry:
@@ -6090,8 +6241,16 @@ class RapidMomentNavigator:
                                                 in_editor_search = focused == self.editor_search_entry
                                             except:
                                                 pass
-                                        
-                                        if in_main_search or in_editor_search:
+
+                                        # Also check if in bulk import text widget (if it exists)
+                                        in_bulk_import = False
+                                        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+                                            try:
+                                                in_bulk_import = focused == self.bulk_import_text_widget
+                                            except:
+                                                pass
+
+                                        if in_main_search or in_editor_search or in_bulk_import:
                                             # If in a search bar, only handle "escape_search" action
                                             if aid == "escape_search":
                                                 # Call handler and return "break" to prevent character typing
@@ -6137,7 +6296,16 @@ class RapidMomentNavigator:
                         # Block when fuzzy search is active
                         if self._is_fuzzy_search_active():
                             return None
-                        
+
+                        # Don't complete sequence if text entry has focus (user is typing)
+                        focused_widget = self.root.focus_get()
+                        if focused_widget == self.search_entry:
+                            return None
+                        if hasattr(self, 'editor_search_entry') and self.editor_search_entry and focused_widget == self.editor_search_entry:
+                            return None
+                        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget and focused_widget == self.bulk_import_text_widget:
+                            return None
+
                         # Check if the first key was pressed (no timeout check - like Vim's notimeout)
                         last_press_info = self.last_key_press_times.get(fk, None)
                         
@@ -10069,6 +10237,9 @@ except Exception as e:
             # Clean up text widget reference
             if hasattr(self, 'bulk_import_text_widget'):
                 delattr(self, 'bulk_import_text_widget')
+            # Clean up placeholder flag
+            if hasattr(self, 'bulk_import_showing_placeholder'):
+                delattr(self, 'bulk_import_showing_placeholder')
             # Clean up status label and button references
             if hasattr(self, 'bulk_import_status_label'):
                 delattr(self, 'bulk_import_status_label')
@@ -10194,9 +10365,136 @@ except Exception as e:
         # Store reference to text widget
         self.bulk_import_text_widget = text_widget
 
-        # Example text
-        example_text = "00:05:30 Opening Scene\n00:12:45 Character Introduction\n01:23:15:10 Climax\n5400 End Credits"
-        text_widget.insert("1.0", example_text)
+        # Reorder bindtags to process global handlers (bind_all) BEFORE widget-level bindings
+        # Default order: (widget_name, widget_class, toplevel, "all")
+        # New order: ("all", widget_name, widget_class, toplevel)
+        # This ensures global shortcuts fire before our placeholder key handler
+        current_tags = list(text_widget.bindtags())
+        if "all" in current_tags:
+            current_tags.remove("all")
+            current_tags.insert(0, "all")  # Put "all" first
+            text_widget.bindtags(tuple(current_tags))
+
+        # Placeholder hint text
+        placeholder_text = "00:05:30 Opening Scene\n00:12:45 Character Introduction\n01:23:15:10 Climax\n5400 End Credits"
+
+        # Get system-appropriate colors (works in both light and dark mode)
+        # Get the default text color before we change anything
+        default_fg = text_widget.cget('foreground')
+
+        # Get disabled/dimmed color from ttk theme
+        try:
+            style = ttk.Style()
+            # Try to get disabled foreground color from theme
+            dimmed_color = style.lookup('TEntry', 'foreground', ['disabled'])
+            if not dimmed_color:
+                # Fallback: use selectforeground which is usually a good dimmed color
+                dimmed_color = text_widget.cget('selectforeground')
+        except:
+            # Ultimate fallback
+            dimmed_color = 'gray'
+
+        # Track whether we're showing placeholder
+        self.bulk_import_showing_placeholder = True
+
+        # Insert placeholder text with dimmed color
+        text_widget.insert("1.0", placeholder_text)
+        text_widget.config(foreground=dimmed_color)
+        # Position cursor at beginning (like real placeholder text)
+        text_widget.mark_set("insert", "1.0")
+
+        # Placeholder hint handlers
+        def on_focus_in(event):
+            """Handle focus in - select all if has real content"""
+            if not self.bulk_import_showing_placeholder:
+                # Has real content - select all for easy replacement
+                text_widget.tag_add("sel", "1.0", "end-1c")
+                text_widget.mark_set("insert", "1.0")
+                text_widget.see("insert")
+                return "break"  # Prevent default behavior
+            else:
+                # Showing placeholder - just ensure cursor is at beginning, don't select
+                text_widget.mark_set("insert", "1.0")
+                text_widget.see("insert")
+
+        def on_key_press(event):
+            """Clear placeholder on first keypress (only for printable characters and editing keys)"""
+            if self.bulk_import_showing_placeholder:
+                # Check if Ctrl/Cmd modifier is held (Control=0x4, Command=0x8 on Mac)
+                has_ctrl_or_cmd = (event.state & 0x4) or (event.state & 0x8)
+
+                if has_ctrl_or_cmd:
+                    # Special case: Paste (Ctrl+V) inserts text, so clear placeholder first
+                    if event.keysym.lower() == 'v':
+                        text_widget.delete("1.0", "end")
+                        text_widget.config(foreground=default_fg)
+                        self.bulk_import_showing_placeholder = False
+                        return
+
+                    # All other Ctrl/Cmd shortcuts (fuzzy finder, vim navigation, copy, etc.)
+                    # Global handlers already processed these (due to reordered bindtags)
+                    # Just block control character insertion, don't clear placeholder
+                    return "break"
+
+                # Enter, Backspace, Delete - clear placeholder and let Text widget handle the rest
+                if event.keysym in ('Return', 'BackSpace', 'Delete'):
+                    text_widget.delete("1.0", "end")
+                    text_widget.config(foreground=default_fg)
+                    self.bulk_import_showing_placeholder = False
+                    # Don't return anything - let event continue to Text widget's default handler
+                    # which will properly insert newline, handle backspace, etc.
+
+                # Arrow keys and navigation - keep cursor at beginning when placeholder showing
+                elif event.keysym in ('Left', 'Right', 'Up', 'Down', 'Home', 'End', 'Prior', 'Next'):
+                    text_widget.mark_set("insert", "1.0")
+                    return "break"
+
+                # Printable characters - clear placeholder
+                elif event.char and ord(event.char) >= 32:
+                    text_widget.delete("1.0", "end")
+                    text_widget.config(foreground=default_fg)
+                    self.bulk_import_showing_placeholder = False
+                    return
+
+                # Everything else (control characters, etc.) - block it
+                else:
+                    return "break"
+
+        def on_mouse_click(event):
+            """Handle mouse click - position cursor at beginning when placeholder is showing"""
+            if self.bulk_import_showing_placeholder:
+                # Position cursor at beginning instead of where clicked
+                text_widget.mark_set("insert", "1.0")
+                text_widget.see("insert")
+                return "break"  # Prevent default click positioning
+
+        def on_focus_out(event):
+            """Restore placeholder if field is empty (but not when fuzzy search is active)"""
+            # Don't restore placeholder if fuzzy search is open (it's still part of the dialog workflow)
+            if hasattr(self, 'fuzzy_search_overlay') and self.fuzzy_search_overlay:
+                try:
+                    if self.fuzzy_search_overlay.winfo_exists():
+                        # Fuzzy search is active, don't restore placeholder yet
+                        # The hint stays visible if text box is empty
+                        return
+                except:
+                    pass
+
+            # Only restore placeholder if field is empty and dialog is truly losing focus
+            content = text_widget.get("1.0", "end-1c").strip()
+            if not content:
+                text_widget.delete("1.0", "end")
+                text_widget.insert("1.0", placeholder_text)
+                text_widget.config(foreground=dimmed_color)
+                # Position cursor at beginning (like real placeholder text)
+                text_widget.mark_set("insert", "1.0")
+                self.bulk_import_showing_placeholder = True
+
+        # Bind events
+        text_widget.bind("<FocusIn>", on_focus_in)
+        text_widget.bind("<FocusOut>", on_focus_out)
+        text_widget.bind("<Key>", on_key_press)
+        text_widget.bind("<Button-1>", on_mouse_click)
 
         # Status label at bottom
         status_label = ttk.Label(
@@ -10262,6 +10560,10 @@ except Exception as e:
 
         # Initial UI update
         update_ui_for_editor()
+
+        # Auto-focus the text box when dialog opens
+        # Use after() to ensure dialog is fully rendered first
+        import_dialog.after(50, lambda: text_widget.focus_set())
 
     def _parse_timecode_to_frames(self, timecode_str, timeline_framerate=24):
         """
@@ -10334,9 +10636,21 @@ except Exception as e:
             self.debug_print("ERROR: No text widget found")
             return
 
+        # Check if showing placeholder text
+        if hasattr(self, 'bulk_import_showing_placeholder') and self.bulk_import_showing_placeholder:
+            self.debug_print("ERROR: Placeholder text is showing, no markers to import")
+            self.bulk_import_status_label.config(text="Please enter markers to import.", foreground="orange")
+            return
+
         # Get text from widget
         text_content = self.bulk_import_text_widget.get("1.0", "end-1c")
         lines = text_content.strip().split('\n')
+
+        # Double-check it's not empty
+        if not text_content.strip():
+            self.debug_print("ERROR: No text content to process")
+            self.bulk_import_status_label.config(text="Please enter markers to import.", foreground="orange")
+            return
         self.debug_print(f"Processing {len(lines)} lines")
 
         # Get editor and color settings
