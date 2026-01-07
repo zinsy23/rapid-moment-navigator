@@ -171,6 +171,11 @@ DEFAULT_KEYBOARD_SHORTCUTS = {
         "category": "Settings & Dialogs",
         "keys": ["<Control-Shift-M>"]
     },
+    "open_bulk_marker_import": {
+        "description": "Open Bulk Marker Import",
+        "category": "Settings & Dialogs",
+        "keys": ["<Control-Shift-B>"]
+    },
     "open_keyboard_shortcuts": {
         "description": "Open Keyboard Shortcuts",
         "category": "Settings & Dialogs",
@@ -2922,7 +2927,15 @@ class RapidMomentNavigator:
                         return True
                 except:
                     pass
-            
+
+            # Check if it's the bulk marker import dialog (if it exists and is open)
+            if hasattr(self, 'bulk_marker_import_dialog') and self.bulk_marker_import_dialog is not None:
+                try:
+                    if self.bulk_marker_import_dialog.winfo_exists() and toplevel == self.bulk_marker_import_dialog:
+                        return True
+                except:
+                    pass
+
             # Not a recognized application window
             return False
         except:
@@ -3035,12 +3048,15 @@ class RapidMomentNavigator:
         if not (app_focused or editor_focused or keyboard_shortcuts_focused or window_sizing_focused or debug_focused):
             return
         
-        # Don't navigate if search bar has focus (user is typing)
+        # Don't navigate if text entry has focus (user is typing in search bars or bulk import)
         focused_widget = self.root.focus_get()
         if focused_widget == self.search_entry:
             return
         # Also check editor search bar
         if hasattr(self, 'editor_search_entry') and self.editor_search_entry and focused_widget == self.editor_search_entry:
+            return
+        # Also check bulk import text widget
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget and focused_widget == self.bulk_import_text_widget:
             return
         
         # Get last press info for this key (default to None if not found)
@@ -3795,8 +3811,18 @@ class RapidMomentNavigator:
             try:
                 parent_window = dropdown_widget.winfo_toplevel()
                 
+                # Check if we're in the bulk marker import dialog
+                if hasattr(self, 'bulk_marker_import_dialog') and self.bulk_marker_import_dialog:
+                    try:
+                        if parent_window == self.bulk_marker_import_dialog and self.bulk_marker_import_dialog.winfo_exists():
+                            # In bulk import dialog - focus the dialog itself
+                            focus_widget_after = "bulk_marker_import_dialog"
+                            self.debug_print("Auto-detected bulk marker import dialog context for focus restoration")
+                    except:
+                        pass
+
                 # Check if we're in the marker settings dialog
-                if hasattr(self, 'marker_settings_dialog') and self.marker_settings_dialog:
+                if focus_widget_after is None and hasattr(self, 'marker_settings_dialog') and self.marker_settings_dialog:
                     try:
                         if parent_window == self.marker_settings_dialog and self.marker_settings_dialog.winfo_exists():
                             # In marker settings dialog - focus the marker name entry if it exists
@@ -3806,7 +3832,7 @@ class RapidMomentNavigator:
                             self.debug_print("Auto-detected marker settings dialog context for focus restoration")
                     except:
                         pass
-                
+
                 # Check if we're in the manual marker dialog
                 if focus_widget_after is None and hasattr(self, 'manual_marker_dialog') and self.manual_marker_dialog:
                     try:
@@ -4074,7 +4100,17 @@ class RapidMomentNavigator:
                 
                 # Determine which window to focus based on context
                 # Handle string identifiers for dialog contexts
-                if focus_widget_after == "marker_settings_dialog":
+                if focus_widget_after == "bulk_marker_import_dialog":
+                    # Focus bulk marker import dialog
+                    def focus_bulk_import():
+                        try:
+                            if hasattr(self, 'bulk_marker_import_dialog') and self.bulk_marker_import_dialog and self.bulk_marker_import_dialog.winfo_exists():
+                                self.bulk_marker_import_dialog.focus_force()
+                                self.debug_print("Focused bulk marker import dialog")
+                        except Exception as e:
+                            self.debug_print(f"Error focusing bulk marker import dialog: {e}")
+                    self.root.after(50, focus_bulk_import)
+                elif focus_widget_after == "marker_settings_dialog":
                     # Focus marker settings dialog - use stored reference to marker name entry
                     def focus_marker_settings():
                         try:
@@ -4132,7 +4168,17 @@ class RapidMomentNavigator:
             
             # Determine which window to focus based on context
             # Handle string identifiers for dialog contexts
-            if focus_widget_after == "marker_settings_dialog":
+            if focus_widget_after == "bulk_marker_import_dialog":
+                # Focus bulk marker import dialog
+                def focus_bulk_import():
+                    try:
+                        if hasattr(self, 'bulk_marker_import_dialog') and self.bulk_marker_import_dialog and self.bulk_marker_import_dialog.winfo_exists():
+                            self.bulk_marker_import_dialog.focus_force()
+                            self.debug_print("Focused bulk marker import dialog (on close)")
+                    except Exception as e:
+                        self.debug_print(f"Error focusing bulk marker import dialog on close: {e}")
+                self.root.after(50, focus_bulk_import)
+            elif focus_widget_after == "marker_settings_dialog":
                 # Focus marker settings dialog - use stored reference to marker name entry
                 def focus_marker_settings():
                     try:
@@ -4174,8 +4220,15 @@ class RapidMomentNavigator:
                     except Exception as e:
                         self.debug_print(f"Error focusing manual marker dialog on close: {e}")
                 self.root.after(50, focus_manual_marker)
+            elif focus_widget_after is not None:
+                # Regular widget focus - focus main window first, then the widget
+                self.root.focus_force()
+                self.root.after(50, lambda: focus_widget_after.focus_set() if focus_widget_after.winfo_exists() else None)
+                # Don't try to select_range on Text widgets, only on Entry widgets
+                if hasattr(focus_widget_after, 'select_range') and not isinstance(focus_widget_after, tk.Text):
+                    self.root.after(100, lambda: focus_widget_after.select_range(0, tk.END) if focus_widget_after.winfo_exists() else None)
             else:
-                # Return focus to main window (default behavior)
+                # No focus target specified, just focus main window
                 self.root.focus_force()
         
         def navigate_up():
@@ -4306,7 +4359,16 @@ class RapidMomentNavigator:
     def _show_fuzzy_search(self):
         """Show fuzzy search for shows dropdown (context-aware: also works for marker color in marker dialogs)"""
         # Check if we're in a marker dialog with a color dropdown
-        # Priority 1: Manual marker dialog color
+        # Priority 1: Bulk marker import dialog color
+        if hasattr(self, 'bulk_import_color_combo') and self.bulk_import_color_combo:
+            try:
+                if self.bulk_import_color_combo.winfo_exists():
+                    self._show_marker_color_fuzzy_search()
+                    return
+            except:
+                pass
+
+        # Priority 2: Manual marker dialog color
         if hasattr(self, 'manual_marker_color_combo') and self.manual_marker_color_combo:
             try:
                 if self.manual_marker_color_combo.winfo_exists():
@@ -4314,8 +4376,8 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
-        # Priority 2: Marker settings dialog color
+
+        # Priority 3: Marker settings dialog color
         if hasattr(self, 'marker_settings_color_combo') and self.marker_settings_color_combo:
             try:
                 if self.marker_settings_color_combo.winfo_exists():
@@ -4323,7 +4385,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Default: Show fuzzy search for shows dropdown
         self._show_dropdown_fuzzy_search(
             dropdown_widget=self.show_dropdown,
@@ -4333,13 +4395,31 @@ class RapidMomentNavigator:
         )
     
     def _show_editor_fuzzy_search(self):
-        """Show fuzzy search for editor dropdown (context-aware: works in main window, editor dialog, and marker settings)"""
-        # TECHNICAL DEBT: This function hardcodes checks for specific windows (main vs editor dialog vs marker settings).
+        """Show fuzzy search for editor dropdown (context-aware: works in main window, editor dialog, marker settings, and bulk import)"""
+        # TECHNICAL DEBT: This function hardcodes checks for specific windows (main vs editor dialog vs marker settings vs bulk import).
         # This pattern works fine for the current dropdown types across multiple window contexts, but doesn't scale well
         # if we add more dialogs with similar dropdowns. A more scalable approach would be a registry-based system
         # where each window registers its dropdowns and the fuzzy search automatically detects the focused window's dropdown.
-        
-        # Priority 1: Check if we're in the marker settings dialog
+
+        # Priority 1: Check if we're in the bulk marker import dialog
+        if hasattr(self, 'bulk_marker_import_dialog') and self.bulk_marker_import_dialog:
+            try:
+                if self.bulk_marker_import_dialog.winfo_exists():
+                    if hasattr(self, 'bulk_import_editor_combo') and self.bulk_import_editor_combo:
+                        if self.bulk_import_editor_combo.winfo_exists():
+                            # Bulk import dialog context - return focus to text widget after selection
+                            focus_target = self.bulk_import_text_widget if hasattr(self, 'bulk_import_text_widget') else None
+                            self._show_dropdown_fuzzy_search(
+                                dropdown_widget=self.bulk_import_editor_combo,
+                                var_to_set=self.bulk_import_editor_var,
+                                on_select_callback=self.bulk_import_on_editor_changed,
+                                focus_widget_after=focus_target
+                            )
+                            return
+            except:
+                pass
+
+        # Priority 2: Check if we're in the marker settings dialog
         if hasattr(self, 'marker_settings_dialog') and self.marker_settings_dialog:
             try:
                 if self.marker_settings_dialog.winfo_exists():
@@ -4355,8 +4435,8 @@ class RapidMomentNavigator:
                             return
             except:
                 pass
-        
-        # Priority 2: Check if we're in the editor dialog
+
+        # Priority 3: Check if we're in the editor dialog
         if self._is_editor_dialog_focused() and hasattr(self, 'editor_dialog_combobox'):
             # Editor dialog context
             self._show_dropdown_fuzzy_search(
@@ -4375,8 +4455,24 @@ class RapidMomentNavigator:
             )
     
     def _show_marker_color_fuzzy_search(self):
-        """Show fuzzy search for marker color dropdown (context-aware: works in marker settings and manual marker dialogs)"""
-        # Check if we're in the manual marker dialog
+        """Show fuzzy search for marker color dropdown (context-aware: works in marker settings, manual marker, and bulk import dialogs)"""
+        # Priority 1: Check if we're in the bulk marker import dialog
+        if hasattr(self, 'bulk_import_color_combo') and self.bulk_import_color_combo:
+            try:
+                if self.bulk_import_color_combo.winfo_exists():
+                    # Bulk import dialog context - return focus to text widget after selection
+                    focus_target = self.bulk_import_text_widget if hasattr(self, 'bulk_import_text_widget') else None
+                    self._show_dropdown_fuzzy_search(
+                        dropdown_widget=self.bulk_import_color_combo,
+                        var_to_set=self.bulk_import_color_var,
+                        on_select_callback=self.bulk_import_on_color_changed,
+                        focus_widget_after=focus_target
+                    )
+                    return
+            except:
+                pass
+
+        # Priority 2: Check if we're in the manual marker dialog
         if hasattr(self, 'manual_marker_color_combo') and self.manual_marker_color_combo:
             try:
                 if self.manual_marker_color_combo.winfo_exists():
@@ -4390,8 +4486,8 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
-        # Check if we're in the marker settings dialog
+
+        # Priority 3: Check if we're in the marker settings dialog
         if hasattr(self, 'marker_settings_color_combo') and self.marker_settings_color_combo:
             try:
                 if self.marker_settings_color_combo.winfo_exists():
@@ -4405,7 +4501,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # No marker color dropdown is currently active
         self.debug_print("No marker color dropdown active to show fuzzy search")
     
@@ -5379,13 +5475,29 @@ class RapidMomentNavigator:
     
     def _context_aware_navigate_next(self):
         """Navigate to next result - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return  # User is typing in bulk import dialog
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_navigate_next()
         else:
             self._navigate_result_next()
-    
+
     def _context_aware_navigate_prev(self):
         """Navigate to previous result - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return  # User is typing in bulk import dialog
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_navigate_prev()
         else:
@@ -5407,20 +5519,44 @@ class RapidMomentNavigator:
     
     def _context_aware_next_page(self):
         """Go to next page - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_next_page()
         else:
             self._go_to_next_page()
-    
+
     def _context_aware_prev_page(self):
         """Go to previous page - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_prev_page()
         else:
             self._go_to_previous_page()
-    
+
     def _context_aware_activate_result(self):
         """Activate selected result - routes to appropriate window"""
+        # Don't activate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_activate_result(shift_held=False)
         else:
@@ -5450,6 +5586,14 @@ class RapidMomentNavigator:
     
     def _context_aware_scroll_down(self):
         """Scroll down half page - routes to appropriate window or dialog"""
+        # Don't scroll if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         # Check for keyboard shortcuts dialog (pixel-based)
         if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
             try:
@@ -5458,7 +5602,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for window sizing dialog (pixel-based)
         if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
             try:
@@ -5467,7 +5611,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for debug window (ScrolledText - different widget type)
         if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
             try:
@@ -5480,7 +5624,7 @@ class RapidMomentNavigator:
                     return
             except Exception as e:
                 self.debug_print(f"Error scrolling debug window: {e}")
-        
+
         # Check for editor dialog (item-based scrolling)
         if self._is_editor_dialog_focused():
             self._editor_dialog_scroll_half_page_down()
@@ -5490,6 +5634,14 @@ class RapidMomentNavigator:
     
     def _context_aware_scroll_up(self):
         """Scroll up half page - routes to appropriate window or dialog"""
+        # Don't scroll if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         # Check for keyboard shortcuts dialog (pixel-based)
         if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
             try:
@@ -5498,7 +5650,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for window sizing dialog (pixel-based)
         if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
             try:
@@ -5507,7 +5659,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for debug window (ScrolledText - different widget type)
         if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
             try:
@@ -5520,7 +5672,7 @@ class RapidMomentNavigator:
                     return
             except Exception as e:
                 self.debug_print(f"Error scrolling debug window: {e}")
-        
+
         # Check for editor dialog (item-based scrolling)
         if self._is_editor_dialog_focused():
             self._editor_dialog_scroll_half_page_up()
@@ -5530,20 +5682,44 @@ class RapidMomentNavigator:
     
     def _context_aware_center_result(self):
         """Center result in viewport - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_center_result()
         else:
             self._center_result()
-    
+
     def _context_aware_result_to_top(self):
         """Position result at top - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_top_result()
         else:
             self._result_to_top()
-    
+
     def _context_aware_result_to_bottom(self):
         """Position result at bottom - routes to appropriate window"""
+        # Don't navigate if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_dialog_bottom_result()
         else:
@@ -5551,6 +5727,14 @@ class RapidMomentNavigator:
     
     def _context_aware_scroll_to_top(self):
         """Scroll to top - routes to appropriate window or dialog"""
+        # Don't scroll if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         # Check for keyboard shortcuts dialog
         if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
             try:
@@ -5559,7 +5743,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for window sizing dialog
         if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
             try:
@@ -5568,7 +5752,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for debug window
         if hasattr(self, 'debug_window') and self.debug_window and hasattr(self.debug_window, 'text_area'):
             try:
@@ -5578,7 +5762,7 @@ class RapidMomentNavigator:
                     return
             except Exception as e:
                 self.debug_print(f"Error scrolling debug window to top: {e}")
-        
+
         # Check for editor dialog (item-based)
         if self._is_editor_dialog_focused():
             self._editor_dialog_goto_first()
@@ -5588,6 +5772,14 @@ class RapidMomentNavigator:
     
     def _context_aware_scroll_to_bottom(self):
         """Scroll to bottom - routes to appropriate window or dialog"""
+        # Don't scroll if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         # Check for keyboard shortcuts dialog
         if hasattr(self, 'keyboard_shortcuts_canvas') and self.keyboard_shortcuts_canvas:
             try:
@@ -5596,7 +5788,7 @@ class RapidMomentNavigator:
                     return
             except:
                 pass
-        
+
         # Check for window sizing dialog
         if hasattr(self, 'window_sizing_canvas') and self.window_sizing_canvas:
             try:
@@ -5625,20 +5817,44 @@ class RapidMomentNavigator:
     
     def _context_aware_search_in_results(self, reverse=False):
         """Search in results (/ or ?) - routes to appropriate window"""
+        # Don't search if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_search_in_results(reverse=reverse)
         else:
             self._search_in_results(reverse=reverse)
-    
+
     def _context_aware_next_search_match(self):
         """Go to next search match (n) - routes to appropriate window"""
+        # Don't search if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_next_search_match()
         else:
             self._next_search_match()
-    
+
     def _context_aware_previous_search_match(self):
         """Go to previous search match (N) - routes to appropriate window"""
+        # Don't search if bulk import text widget has focus (user is typing)
+        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+            try:
+                if self.bulk_import_text_widget.winfo_exists() and self.root.focus_get() == self.bulk_import_text_widget:
+                    return
+            except:
+                pass
+
         if self._is_editor_dialog_focused():
             self._editor_previous_search_match()
         else:
@@ -5674,11 +5890,13 @@ class RapidMomentNavigator:
         if not self._is_app_window_focused():
             return
         
-        # Don't capture numbers if any search bar has focus (main window or editor dialog)
+        # Don't capture numbers if any text entry has focus (search bars, bulk import text box)
         focused = self.root.focus_get()
         if focused == self.search_entry:
             return
         if hasattr(self, 'editor_search_entry') and focused == self.editor_search_entry:
+            return
+        if hasattr(self, 'bulk_import_text_widget') and focused == self.bulk_import_text_widget:
             return
         
         # Add digit to prefix
@@ -5850,6 +6068,7 @@ class RapidMomentNavigator:
             "open_editor_dialog": lambda: self._is_app_window_focused() and self._show_editor_dialog(),
             "open_media_settings": lambda: self._is_app_window_focused() and self._show_media_player_dialog(),
             "open_marker_settings": lambda: self._is_app_window_focused() and self._show_marker_settings_dialog(),
+            "open_bulk_marker_import": lambda: self._is_app_window_focused() and self._show_bulk_marker_import_dialog(),
             "open_keyboard_shortcuts": lambda: self._is_app_window_focused() and self._show_keyboard_shortcuts_dialog(),
             "open_window_sizing": lambda: self._is_app_window_focused() and self._show_window_sizing_dialog(),
             "open_debug_console": lambda: self._is_app_window_focused() and self._open_debug_console(),
@@ -5899,10 +6118,10 @@ class RapidMomentNavigator:
                                         # Block all other shortcuts
                                         return None
                                     
-                                    # Check if we're specifically in the main search bar
+                                    # Check if we're specifically in a text entry widget
                                     focused = self.root.focus_get()
                                     in_main_search = focused == self.search_entry
-                                    
+
                                     # Also check if in editor dialog search bar (if it exists)
                                     in_editor_search = False
                                     if hasattr(self, 'editor_search_entry') and self.editor_search_entry:
@@ -5910,8 +6129,16 @@ class RapidMomentNavigator:
                                             in_editor_search = focused == self.editor_search_entry
                                         except:
                                             pass
-                                    
-                                    if in_main_search or in_editor_search:
+
+                                    # Also check if in bulk import text widget (if it exists)
+                                    in_bulk_import = False
+                                    if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+                                        try:
+                                            in_bulk_import = focused == self.bulk_import_text_widget
+                                        except:
+                                            pass
+
+                                    if in_main_search or in_editor_search or in_bulk_import:
                                         # If in a search bar, only handle "escape_search" action (unfocus shortcuts)
                                         # These should work while typing and prevent the character from being typed
                                         if aid == "escape_search":
@@ -6003,10 +6230,10 @@ class RapidMomentNavigator:
                                             # Block all other shortcuts
                                             return None
                                         
-                                        # Check if we're specifically in the main search bar
+                                        # Check if we're specifically in a text entry widget
                                         focused = self.root.focus_get()
                                         in_main_search = focused == self.search_entry
-                                        
+
                                         # Also check if in editor dialog search bar (if it exists)
                                         in_editor_search = False
                                         if hasattr(self, 'editor_search_entry') and self.editor_search_entry:
@@ -6014,8 +6241,16 @@ class RapidMomentNavigator:
                                                 in_editor_search = focused == self.editor_search_entry
                                             except:
                                                 pass
-                                        
-                                        if in_main_search or in_editor_search:
+
+                                        # Also check if in bulk import text widget (if it exists)
+                                        in_bulk_import = False
+                                        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget:
+                                            try:
+                                                in_bulk_import = focused == self.bulk_import_text_widget
+                                            except:
+                                                pass
+
+                                        if in_main_search or in_editor_search or in_bulk_import:
                                             # If in a search bar, only handle "escape_search" action
                                             if aid == "escape_search":
                                                 # Call handler and return "break" to prevent character typing
@@ -6061,7 +6296,16 @@ class RapidMomentNavigator:
                         # Block when fuzzy search is active
                         if self._is_fuzzy_search_active():
                             return None
-                        
+
+                        # Don't complete sequence if text entry has focus (user is typing)
+                        focused_widget = self.root.focus_get()
+                        if focused_widget == self.search_entry:
+                            return None
+                        if hasattr(self, 'editor_search_entry') and self.editor_search_entry and focused_widget == self.editor_search_entry:
+                            return None
+                        if hasattr(self, 'bulk_import_text_widget') and self.bulk_import_text_widget and focused_widget == self.bulk_import_text_widget:
+                            return None
+
                         # Check if the first key was pressed (no timeout check - like Vim's notimeout)
                         last_press_info = self.last_key_press_times.get(fk, None)
                         
@@ -7227,6 +7471,7 @@ except Exception as e:
             "media_player_dialog": (550, 400),
             "editor_dialog": (600, 500),
             "marker_settings_dialog": (500, 300),
+            "bulk_marker_import_dialog": (600, 500),
             "debug_window": (800, 425),
             "window_sizing_dialog": (600, 700),
             "resolve_paths_dialog": (600, 500),
@@ -9954,6 +10199,598 @@ except Exception as e:
         # Initial UI population
         update_settings_ui()
 
+    def _show_bulk_marker_import_dialog(self):
+        """Show a dialog for bulk importing markers from text"""
+        # Get saved size and calculate centered position BEFORE creating window
+        dialog_width, dialog_height = self.get_window_size("bulk_marker_import_dialog")
+        dialog_x = self.root.winfo_x() + (self.root.winfo_width() - dialog_width) // 2
+        dialog_y = self.root.winfo_y() + (self.root.winfo_height() - dialog_height) // 2
+
+        import_dialog = tk.Toplevel(self.root)
+        import_dialog.title("Bulk Import Markers")
+        import_dialog.geometry(f"{dialog_width}x{dialog_height}+{dialog_x}+{dialog_y}")
+        import_dialog.transient(self.root)
+        import_dialog.grab_set()
+
+        # Store reference for focus detection
+        self.bulk_marker_import_dialog = import_dialog
+
+        # Bind window close to save size and clean up references
+        def on_close():
+            self.save_window_size("bulk_marker_import_dialog",
+                                 import_dialog.winfo_width(),
+                                 import_dialog.winfo_height())
+            # Clean up marker color combo references
+            if hasattr(self, 'bulk_import_color_combo'):
+                delattr(self, 'bulk_import_color_combo')
+            if hasattr(self, 'bulk_import_color_var'):
+                delattr(self, 'bulk_import_color_var')
+            if hasattr(self, 'bulk_import_on_color_changed'):
+                delattr(self, 'bulk_import_on_color_changed')
+            # Clean up editor combo references
+            if hasattr(self, 'bulk_import_editor_combo'):
+                delattr(self, 'bulk_import_editor_combo')
+            if hasattr(self, 'bulk_import_editor_var'):
+                delattr(self, 'bulk_import_editor_var')
+            if hasattr(self, 'bulk_import_on_editor_changed'):
+                delattr(self, 'bulk_import_on_editor_changed')
+            # Clean up text widget reference
+            if hasattr(self, 'bulk_import_text_widget'):
+                delattr(self, 'bulk_import_text_widget')
+            # Clean up placeholder flag
+            if hasattr(self, 'bulk_import_showing_placeholder'):
+                delattr(self, 'bulk_import_showing_placeholder')
+            # Clean up status label and button references
+            if hasattr(self, 'bulk_import_status_label'):
+                delattr(self, 'bulk_import_status_label')
+            if hasattr(self, 'bulk_import_button'):
+                delattr(self, 'bulk_import_button')
+            # Clean up dialog reference
+            if hasattr(self, 'bulk_marker_import_dialog'):
+                self.bulk_marker_import_dialog = None
+            import_dialog.destroy()
+
+        import_dialog.protocol("WM_DELETE_WINDOW", on_close)
+
+        # Set minimum window size
+        import_dialog.minsize(500, 400)
+
+        # Make dialog modal
+        import_dialog.focus_set()
+
+        # Create buttons frame FIRST and pack at bottom
+        buttons_frame = ttk.Frame(import_dialog)
+        buttons_frame.pack(side="bottom", fill="x", padx=15, pady=15)
+
+        # Import button will be enabled/disabled based on editor selection
+        def do_import():
+            """Process and import all markers from the text field"""
+            self._process_bulk_marker_import()
+
+        import_btn = ttk.Button(
+            buttons_frame,
+            text="Import Markers",
+            command=do_import
+        )
+        import_btn.pack(side="right", padx=5)
+
+        # Cancel button
+        cancel_btn = ttk.Button(
+            buttons_frame,
+            text="Cancel",
+            command=on_close
+        )
+        cancel_btn.pack(side="right", padx=5)
+
+        # Keyboard shortcuts: Escape or Ctrl+Shift+C to close (Ctrl+C reserved for copying)
+        import_dialog.bind("<Escape>", lambda e: on_close())
+        import_dialog.bind("<Control-Shift-C>", lambda e: on_close())
+
+        # Create main frame with padding
+        main_frame = ttk.Frame(import_dialog, padding=15)
+        main_frame.pack(fill="both", expand=True)
+
+        # Title label
+        title_label = ttk.Label(main_frame, text="Bulk Import Markers",
+                                font=("TkDefaultFont", 12, "bold"))
+        title_label.pack(anchor="w", pady=(0, 10))
+
+        # Editor selection frame
+        editor_frame = ttk.Frame(main_frame)
+        editor_frame.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(editor_frame, text="Editor:", width=10).pack(side="left", padx=(0, 10))
+
+        # Get list of editors from registry
+        available_editors = list(self.EDITOR_REGISTRY.keys())
+        available_editors.insert(0, "None")
+
+        # Use the main editor_var directly (consistent with marker settings dialog)
+        editor_combo = ttk.Combobox(editor_frame, textvariable=self.editor_var,
+                                    values=available_editors, width=20, state="readonly")
+        editor_combo.pack(side="left", padx=5)
+
+        # Store references for context-aware fuzzy search
+        self.bulk_import_editor_combo = editor_combo
+        self.bulk_import_editor_var = self.editor_var
+
+        # Marker color selection frame
+        color_frame = ttk.Frame(main_frame)
+        color_frame.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(color_frame, text="Import As:", width=10).pack(side="left", padx=(0, 10))
+
+        # Marker color variable
+        bulk_import_color_var = tk.StringVar()
+
+        # Color combo (will be populated when editor changes)
+        color_combo = ttk.Combobox(color_frame, textvariable=bulk_import_color_var,
+                                   values=[], width=20, state="readonly")
+        color_combo.pack(side="left", padx=5)
+
+        # Store references for context-aware fuzzy search
+        self.bulk_import_color_combo = color_combo
+        self.bulk_import_color_var = bulk_import_color_var
+        self.bulk_import_on_color_changed = None  # No callback needed for this dropdown
+
+        # Description/instructions label
+        desc_label = ttk.Label(
+            main_frame,
+            text="Enter markers below, one per line. Supported formats:\n"
+                 "HH:MM:SS Marker Title\n"
+                 "HH:MM:SS:FF Marker Title\n"
+                 "MM:SS Marker Title\n"
+                 "SS Marker Title",
+            wraplength=550,
+            font=("TkDefaultFont", 9),
+            foreground="gray",
+            justify="left"
+        )
+        desc_label.pack(anchor="w", pady=(0, 10))
+
+        # Text entry frame with scrollbar
+        text_frame = ttk.Frame(main_frame)
+        text_frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        # Scrollbar
+        text_scrollbar = ttk.Scrollbar(text_frame)
+        text_scrollbar.pack(side="right", fill="y")
+
+        # Text widget for bulk input
+        text_widget = tk.Text(text_frame, wrap="word", yscrollcommand=text_scrollbar.set,
+                             font=("TkDefaultFont", 10))
+        text_widget.pack(side="left", fill="both", expand=True)
+        text_scrollbar.config(command=text_widget.yview)
+
+        # Store reference to text widget
+        self.bulk_import_text_widget = text_widget
+
+        # Reorder bindtags to process global handlers (bind_all) BEFORE widget-level bindings
+        # Default order: (widget_name, widget_class, toplevel, "all")
+        # New order: ("all", widget_name, widget_class, toplevel)
+        # This ensures global shortcuts fire before our placeholder key handler
+        current_tags = list(text_widget.bindtags())
+        if "all" in current_tags:
+            current_tags.remove("all")
+            current_tags.insert(0, "all")  # Put "all" first
+            text_widget.bindtags(tuple(current_tags))
+
+        # Placeholder hint text
+        placeholder_text = "00:05:30 Opening Scene\n00:12:45 Character Introduction\n01:23:15:10 Climax\n5400 End Credits"
+
+        # Get system-appropriate colors (works in both light and dark mode)
+        # Get the default text color before we change anything
+        default_fg = text_widget.cget('foreground')
+
+        # Get disabled/dimmed color from ttk theme
+        try:
+            style = ttk.Style()
+            # Try to get disabled foreground color from theme
+            dimmed_color = style.lookup('TEntry', 'foreground', ['disabled'])
+            if not dimmed_color:
+                # Fallback: use selectforeground which is usually a good dimmed color
+                dimmed_color = text_widget.cget('selectforeground')
+        except:
+            # Ultimate fallback
+            dimmed_color = 'gray'
+
+        # Track whether we're showing placeholder
+        self.bulk_import_showing_placeholder = True
+
+        # Insert placeholder text with dimmed color
+        text_widget.insert("1.0", placeholder_text)
+        text_widget.config(foreground=dimmed_color)
+        # Position cursor at beginning (like real placeholder text)
+        text_widget.mark_set("insert", "1.0")
+
+        # Placeholder hint handlers
+        def on_focus_in(event):
+            """Handle focus in - select all if has real content"""
+            if not self.bulk_import_showing_placeholder:
+                # Has real content - select all for easy replacement
+                text_widget.tag_add("sel", "1.0", "end-1c")
+                text_widget.mark_set("insert", "1.0")
+                text_widget.see("insert")
+                return "break"  # Prevent default behavior
+            else:
+                # Showing placeholder - just ensure cursor is at beginning, don't select
+                text_widget.mark_set("insert", "1.0")
+                text_widget.see("insert")
+
+        def on_key_press(event):
+            """Clear placeholder on first keypress (only for printable characters and editing keys)"""
+            if self.bulk_import_showing_placeholder:
+                # Check if Ctrl/Cmd modifier is held (Control=0x4, Command=0x8 on Mac)
+                has_ctrl_or_cmd = (event.state & 0x4) or (event.state & 0x8)
+
+                if has_ctrl_or_cmd:
+                    # Special case: Paste (Ctrl+V) inserts text, so clear placeholder first
+                    if event.keysym.lower() == 'v':
+                        text_widget.delete("1.0", "end")
+                        text_widget.config(foreground=default_fg)
+                        self.bulk_import_showing_placeholder = False
+                        return
+
+                    # All other Ctrl/Cmd shortcuts (fuzzy finder, vim navigation, copy, etc.)
+                    # Global handlers already processed these (due to reordered bindtags)
+                    # Just block control character insertion, don't clear placeholder
+                    return "break"
+
+                # Enter, Backspace, Delete - clear placeholder and let Text widget handle the rest
+                if event.keysym in ('Return', 'BackSpace', 'Delete'):
+                    text_widget.delete("1.0", "end")
+                    text_widget.config(foreground=default_fg)
+                    self.bulk_import_showing_placeholder = False
+                    # Don't return anything - let event continue to Text widget's default handler
+                    # which will properly insert newline, handle backspace, etc.
+
+                # Arrow keys and navigation - keep cursor at beginning when placeholder showing
+                elif event.keysym in ('Left', 'Right', 'Up', 'Down', 'Home', 'End', 'Prior', 'Next'):
+                    text_widget.mark_set("insert", "1.0")
+                    return "break"
+
+                # Printable characters - clear placeholder
+                elif event.char and ord(event.char) >= 32:
+                    text_widget.delete("1.0", "end")
+                    text_widget.config(foreground=default_fg)
+                    self.bulk_import_showing_placeholder = False
+                    return
+
+                # Everything else (control characters, etc.) - block it
+                else:
+                    return "break"
+
+        def on_mouse_click(event):
+            """Handle mouse click - position cursor at beginning when placeholder is showing"""
+            if self.bulk_import_showing_placeholder:
+                # Position cursor at beginning instead of where clicked
+                text_widget.mark_set("insert", "1.0")
+                text_widget.see("insert")
+                return "break"  # Prevent default click positioning
+
+        def on_focus_out(event):
+            """Restore placeholder if field is empty (but not when fuzzy search is active)"""
+            # Don't restore placeholder if fuzzy search is open (it's still part of the dialog workflow)
+            if hasattr(self, 'fuzzy_search_overlay') and self.fuzzy_search_overlay:
+                try:
+                    if self.fuzzy_search_overlay.winfo_exists():
+                        # Fuzzy search is active, don't restore placeholder yet
+                        # The hint stays visible if text box is empty
+                        return
+                except:
+                    pass
+
+            # Only restore placeholder if field is empty and dialog is truly losing focus
+            content = text_widget.get("1.0", "end-1c").strip()
+            if not content:
+                text_widget.delete("1.0", "end")
+                text_widget.insert("1.0", placeholder_text)
+                text_widget.config(foreground=dimmed_color)
+                # Position cursor at beginning (like real placeholder text)
+                text_widget.mark_set("insert", "1.0")
+                self.bulk_import_showing_placeholder = True
+
+        # Bind events
+        text_widget.bind("<FocusIn>", on_focus_in)
+        text_widget.bind("<FocusOut>", on_focus_out)
+        text_widget.bind("<Key>", on_key_press)
+        text_widget.bind("<Button-1>", on_mouse_click)
+
+        # Status label at bottom
+        status_label = ttk.Label(
+            main_frame,
+            text="",
+            font=("TkDefaultFont", 8),
+            foreground="gray"
+        )
+        status_label.pack(anchor="w", pady=(5, 0))
+
+        # Store reference for status updates
+        self.bulk_import_status_label = status_label
+        self.bulk_import_button = import_btn
+
+        def update_ui_for_editor():
+            """Update UI elements based on selected editor"""
+            current_editor = self.editor_var.get()
+
+            if current_editor == "None" or current_editor not in self.EDITOR_REGISTRY:
+                # Disable color combo and import button
+                color_combo.config(state="disabled")
+                import_btn.config(state="disabled")
+                bulk_import_color_var.set("")
+                color_combo.config(values=[])
+                status_label.config(text="Please select an editor to enable marker import.")
+                return
+
+            # Get available colors for this editor
+            editor_prefs = self.preferences.get("editor_settings", {}).get(current_editor, {})
+            default_editor_settings = DEFAULT_PREFS.get("editor_settings", {}).get(current_editor, {})
+
+            if default_editor_settings and "available_colors" in default_editor_settings:
+                available_colors = self.get_editor_setting(current_editor, "available_colors",
+                                                          default_editor_settings["available_colors"])
+                default_color = self.get_editor_setting(current_editor, "marker_color",
+                                                       default_editor_settings["marker_color"])
+            else:
+                # Fallback
+                available_colors = ["Blue"]
+                default_color = "Blue"
+
+            # Update color combo
+            color_combo.config(values=available_colors, state="readonly")
+            bulk_import_color_var.set(default_color)
+
+            # Enable import button
+            import_btn.config(state="normal")
+            status_label.config(text=f"Ready to import markers to {current_editor}.")
+
+        # Bind editor dropdown change
+        def on_editor_changed_in_dialog(event=None):
+            """When editor changes in dialog, update the UI and use the main handler"""
+            # First, call the main editor change handler to handle all the standard logic
+            # (saves preferences, updates import buttons, etc.)
+            self._on_editor_changed(event)
+            # Then update the UI for the new editor
+            update_ui_for_editor()
+
+        # Store reference for context-aware fuzzy search
+        self.bulk_import_on_editor_changed = on_editor_changed_in_dialog
+
+        editor_combo.bind("<<ComboboxSelected>>", on_editor_changed_in_dialog)
+
+        # Initial UI update
+        update_ui_for_editor()
+
+        # Auto-focus the text box when dialog opens
+        # Use after() to ensure dialog is fully rendered first
+        import_dialog.after(50, lambda: text_widget.focus_set())
+
+    def _parse_timecode_to_frames(self, timecode_str, timeline_framerate=24):
+        """
+        Parse a timecode string in various formats and convert to frame number.
+        Supported formats:
+        - HH:MM:SS:FF (e.g., 01:23:45:12)
+        - HH:MM:SS (e.g., 01:23:45)
+        - MM:SS (e.g., 23:45)
+        - SS (e.g., 90)
+
+        Returns frame number or None if invalid.
+        """
+        try:
+            timecode_str = timecode_str.strip()
+            parts = timecode_str.split(':')
+
+            hours = 0
+            minutes = 0
+            seconds = 0
+            frames = 0
+
+            if len(parts) == 4:
+                # HH:MM:SS:FF
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                seconds = int(parts[2])
+                frames = int(parts[3])
+                # Validate component ranges for time format
+                if hours < 0 or minutes < 0 or minutes > 59 or seconds < 0 or seconds > 59 or frames < 0 or frames >= timeline_framerate:
+                    return None
+            elif len(parts) == 3:
+                # HH:MM:SS
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                seconds = int(parts[2])
+                # Validate component ranges for time format
+                if hours < 0 or minutes < 0 or minutes > 59 or seconds < 0 or seconds > 59:
+                    return None
+            elif len(parts) == 2:
+                # MM:SS (minutes can be any positive number, seconds 0-59)
+                minutes = int(parts[0])
+                seconds = int(parts[1])
+                # Validate ranges
+                if minutes < 0 or seconds < 0 or seconds > 59:
+                    return None
+            elif len(parts) == 1:
+                # SS (total seconds - can be any positive number)
+                seconds = int(parts[0])
+                # Only validate it's non-negative
+                if seconds < 0:
+                    return None
+            else:
+                return None
+
+            # Convert to total frames
+            total_seconds = (hours * 3600) + (minutes * 60) + seconds
+            total_frames = int(total_seconds * timeline_framerate) + frames
+
+            return total_frames
+
+        except (ValueError, IndexError):
+            return None
+
+    def _process_bulk_marker_import(self):
+        """Process the bulk marker import from the text widget"""
+        global dvr_script
+        self.debug_print("=== Starting bulk marker import ===")
+
+        if not hasattr(self, 'bulk_import_text_widget') or not self.bulk_import_text_widget:
+            self.debug_print("ERROR: No text widget found")
+            return
+
+        # Check if showing placeholder text
+        if hasattr(self, 'bulk_import_showing_placeholder') and self.bulk_import_showing_placeholder:
+            self.debug_print("ERROR: Placeholder text is showing, no markers to import")
+            self.bulk_import_status_label.config(text="Please enter markers to import.", foreground="orange")
+            return
+
+        # Get text from widget
+        text_content = self.bulk_import_text_widget.get("1.0", "end-1c")
+        lines = text_content.strip().split('\n')
+
+        # Double-check it's not empty
+        if not text_content.strip():
+            self.debug_print("ERROR: No text content to process")
+            self.bulk_import_status_label.config(text="Please enter markers to import.", foreground="orange")
+            return
+        self.debug_print(f"Processing {len(lines)} lines")
+
+        # Get editor and color settings
+        current_editor = self.bulk_import_editor_var.get()
+        marker_color = self.bulk_import_color_var.get()
+        self.debug_print(f"Editor: {current_editor}, Color: {marker_color}")
+
+        if current_editor == "None" or current_editor not in self.EDITOR_REGISTRY:
+            self.debug_print(f"ERROR: Invalid editor selection: {current_editor}")
+            self.bulk_import_status_label.config(text="Error: Please select a valid editor.", foreground="red")
+            return
+
+        if not marker_color:
+            self.debug_print("ERROR: No marker color selected")
+            self.bulk_import_status_label.config(text="Error: Please select a marker color.", foreground="red")
+            return
+
+        # Get timeline from editor
+        try:
+            if current_editor == "DaVinci Resolve":
+                self.debug_print("Ensuring DaVinci Resolve is ready...")
+                # Ensure Resolve API is initialized
+                if not self._ensure_resolve_ready():
+                    self.debug_print("ERROR: DaVinci Resolve API not ready")
+                    self.bulk_import_status_label.config(text="Error: Could not initialize DaVinci Resolve API.", foreground="red")
+                    return
+
+                self.debug_print("Attempting to connect to DaVinci Resolve...")
+                # Get Resolve instance using the global dvr_script module
+                resolve = dvr_script.scriptapp("Resolve")
+                if not resolve:
+                    self.debug_print("ERROR: Could not connect to DaVinci Resolve")
+                    self.bulk_import_status_label.config(text="Error: Could not connect to DaVinci Resolve.", foreground="red")
+                    return
+
+                self.debug_print("Connected to DaVinci Resolve, getting project...")
+                project = resolve.GetProjectManager().GetCurrentProject()
+                if not project:
+                    self.debug_print("ERROR: No project open in DaVinci Resolve")
+                    self.bulk_import_status_label.config(text="Error: No project open in DaVinci Resolve.", foreground="red")
+                    return
+
+                self.debug_print(f"Got project: {project.GetName()}, getting timeline...")
+                timeline = project.GetCurrentTimeline()
+                if not timeline:
+                    self.debug_print("ERROR: No timeline open in DaVinci Resolve")
+                    self.bulk_import_status_label.config(text="Error: No timeline open in DaVinci Resolve.", foreground="red")
+                    return
+
+                # Get timeline framerate
+                self.debug_print(f"Got timeline: {timeline.GetName()}, getting framerate...")
+                timeline_framerate = float(timeline.GetSetting("timelineFrameRate"))
+                self.debug_print(f"Timeline framerate: {timeline_framerate} fps")
+            else:
+                self.debug_print(f"ERROR: Bulk import not yet implemented for {current_editor}")
+                self.bulk_import_status_label.config(text=f"Error: Bulk import not yet implemented for {current_editor}.", foreground="red")
+                return
+        except Exception as e:
+            self.debug_print(f"EXCEPTION connecting to editor: {e}")
+            import traceback
+            self.debug_print(traceback.format_exc())
+            self.bulk_import_status_label.config(text=f"Error connecting to editor: {e}", foreground="red")
+            return
+
+        # Process each line
+        imported_count = 0
+        skipped_count = 0
+        error_count = 0
+
+        self.debug_print(f"Timeline framerate: {timeline_framerate}")
+
+        for line_num, line in enumerate(lines, start=1):
+            line = line.strip()
+            if not line:
+                self.debug_print(f"Line {line_num}: Empty, skipping")
+                continue
+
+            self.debug_print(f"Line {line_num}: Processing '{line}'")
+
+            # Parse line - split on first space to separate timecode from title
+            parts = line.split(' ', 1)
+            if len(parts) < 2:
+                # No title provided - skip
+                self.debug_print(f"Line {line_num}: No title provided, skipping")
+                skipped_count += 1
+                continue
+
+            timecode_str = parts[0]
+            marker_name = parts[1].strip()
+
+            if not marker_name:
+                # Empty title - skip
+                self.debug_print(f"Line {line_num}: Empty title, skipping")
+                skipped_count += 1
+                continue
+
+            # Parse timecode to frames
+            frame_number = self._parse_timecode_to_frames(timecode_str, timeline_framerate)
+            self.debug_print(f"Line {line_num}: Timecode '{timecode_str}' -> frame {frame_number}")
+
+            if frame_number is None:
+                # Invalid timecode format
+                self.debug_print(f"Line {line_num}: Invalid timecode format")
+                error_count += 1
+                continue
+
+            # Create marker using existing API
+            try:
+                self.debug_print(f"Line {line_num}: Creating marker '{marker_name}' at frame {frame_number} with color {marker_color}")
+                success = self._resolve_create_marker_at_frame_with_settings(
+                    frame_number, timeline, marker_name, marker_color
+                )
+                if success:
+                    self.debug_print(f"Line {line_num}: Marker created successfully")
+                    imported_count += 1
+                else:
+                    self.debug_print(f"Line {line_num}: Marker creation returned False (likely duplicate)")
+                    skipped_count += 1
+            except Exception as e:
+                self.debug_print(f"Line {line_num}: Exception importing marker: {e}")
+                import traceback
+                self.debug_print(traceback.format_exc())
+                error_count += 1
+
+        # Update status
+        status_msg = f"Imported {imported_count} marker(s)."
+        if skipped_count > 0:
+            status_msg += f" Skipped {skipped_count} (duplicate or invalid)."
+        if error_count > 0:
+            status_msg += f" {error_count} error(s)."
+
+        self.debug_print(f"=== Bulk import complete: {imported_count} imported, {skipped_count} skipped, {error_count} errors ===")
+
+        if imported_count > 0:
+            self.bulk_import_status_label.config(text=status_msg, foreground="green")
+        elif error_count > 0:
+            self.bulk_import_status_label.config(text=status_msg, foreground="red")
+        else:
+            self.bulk_import_status_label.config(text=status_msg, foreground="orange")
+
     def _show_media_player_dialog(self):
         """Show a dialog for selecting and configuring media players"""
         # Get saved size and calculate centered position BEFORE creating window
@@ -10486,6 +11323,7 @@ except Exception as e:
             "prefix_keys_dialog": "Prefix Keys Dialog (Manage Prefix Keys)",
             "editor_dialog": "Editor Navigator Dialog",
             "marker_settings_dialog": "Marker Settings Dialog",
+            "bulk_marker_import_dialog": "Bulk Marker Import Dialog",
             "debug_window": "Debug Console Window",
             "window_sizing_dialog": "Window Sizing Dialog (this dialog)",
             "resolve_paths_dialog": "DaVinci Resolve Paths Dialog",
@@ -12792,20 +13630,23 @@ if __name__ == "__main__":
             
         # Add Editor Menu
         editor_menu = tk.Menu(menu_bar, tearoff=0)
-        editor_menu.add_command(label="Editor Navigator", 
+        editor_menu.add_command(label="Editor Navigator",
                                 command=app._show_editor_dialog)
-        editor_menu.add_command(label="Marker Settings...", 
+        editor_menu.add_command(label="Marker Settings...",
                                 command=app._show_marker_settings_dialog)
+        editor_menu.add_command(label="Bulk Import Markers...",
+                                command=app._show_bulk_marker_import_dialog)
         editor_menu.add_separator()
         
         # Add cache setting with dynamic label showing current state
         auto_cache_enabled = app.preferences.get("auto_cache_update", True)
         cache_label = "✓ Auto Update Cache on Focus" if auto_cache_enabled else "Auto Update Cache on Focus"
-        editor_menu.add_command(label=cache_label, 
+        editor_menu.add_command(label=cache_label,
                                 command=app._toggle_auto_cache_update)
-        
-        # Store reference for dynamic menu updates (cache item is at index 2)
-        app._set_editor_menu_reference(editor_menu, 2)
+
+        # Store reference for dynamic menu updates (cache item is the last item)
+        cache_index = editor_menu.index('end')
+        app._set_editor_menu_reference(editor_menu, cache_index)
         
         menu_bar.add_cascade(label="Editor", menu=editor_menu, underline=0)  # Underline 'E'
             
