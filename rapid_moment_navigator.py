@@ -13330,8 +13330,9 @@ if __name__ == "__main__":
         editor_menu.add_command(label=cache_label,
                                 command=app._toggle_auto_cache_update)
 
-        # Store reference for dynamic menu updates (cache item is at index 4)
-        app._set_editor_menu_reference(editor_menu, 4)
+        # Store reference for dynamic menu updates (cache item is the last item)
+        cache_index = editor_menu.index('end')
+        app._set_editor_menu_reference(editor_menu, cache_index)
         
         menu_bar.add_cascade(label="Editor", menu=editor_menu, underline=0)  # Underline 'E'
             
